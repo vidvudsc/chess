@@ -1,0 +1,101 @@
+# 100 curated opening games (name|uci-sequence)
+Alekhine Defense A|e2e4 g8f6 e4e5 f6d5 d2d4 d7d6 g1f3
+Alekhine Defense B|e2e4 g8f6 e4e5 f6d5 d2d4 d7d6 c2c4 d5b6
+Benko Gambit A|d2d4 g8f6 c2c4 c7c5 d4d5 b7b5 c4b5 a7a6
+Benko Gambit B|d2d4 g8f6 c2c4 c7c5 d4d5 b7b5 g1f3
+Benoni Defense A|d2d4 g8f6 c2c4 c7c5 d4d5 e7e6 b1c3 e6d5 c4d5
+Benoni Defense B|d2d4 g8f6 c2c4 c7c5 d4d5 e7e6 g1f3 e6d5 c4d5 d7d6
+Bird Opening A|f2f4 d7d5 g1f3 g8f6 e2e3 g7g6
+Bird Opening B|f2f4 g8f6 g1f3 d7d5 e2e3 c7c5
+Bogo Indian A|d2d4 g8f6 c2c4 e7e6 g1f3 f8b4 c1d2
+Bogo Indian B|d2d4 g8f6 c2c4 e7e6 g1f3 f8b4 b1d2
+Budapest Gambit A|d2d4 g8f6 c2c4 e7e5 d4e5 f6g4 c1f4 b8c6
+Budapest Gambit B|d2d4 g8f6 c2c4 e7e5 d4e5 f6g4 g1f3 b8c6
+Catalan A|d2d4 g8f6 c2c4 e7e6 g2g3 d7d5 f1g2
+Catalan B|d2d4 g8f6 c2c4 e7e6 g2g3 d7d5 g1f3 f8e7
+Caro-Kann A|e2e4 c7c6 d2d4 d7d5 b1c3 d5e4 c3e4
+Caro-Kann B|e2e4 c7c6 d2d4 d7d5 e4e5 c8f5
+Caro-Kann C|e2e4 c7c6 d2d4 d7d5 e4d5 c6d5 b1c3
+Colle System A|d2d4 d7d5 g1f3 g8f6 e2e3 e7e6 f1d3
+Colle System B|d2d4 d7d5 g1f3 g8f6 e2e3 c7c5 c2c3
+Dutch Defense A|d2d4 f7f5 g2g3 g8f6 f1g2 e7e6
+Dutch Defense B|d2d4 f7f5 c2c4 g8f6 b1c3 e7e6 g1f3
+Giuoco Piano A|e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 c2c3 g8f6 d2d3
+Giuoco Piano B|e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 b1c3 g8f6 d2d3
+English Opening A|c2c4 e7e5 b1c3 g8f6 g2g3 d7d5 c4d5
+English Opening B|c2c4 g8f6 b1c3 e7e5 g1f3 b8c6 g2g3
+Evans Gambit A|e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 b2b4 c5b4 c2c3
+Evans Gambit B|e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 b2b4 c5b4 c2c3 b4a5 d2d4
+Four Knights A|e2e4 e7e5 g1f3 b8c6 b1c3 g8f6 f1b5 f8b4
+Four Knights B|e2e4 e7e5 g1f3 b8c6 b1c3 g8f6 d2d4 e5d4
+French Defense A|e2e4 e7e6 d2d4 d7d5 b1c3 f8b4
+French Defense B|e2e4 e7e6 d2d4 d7d5 b1d2 g8f6 e4e5
+French Defense C|e2e4 e7e6 d2d4 d7d5 b1c3 g8f6 c1g5
+Grunfeld A|d2d4 g8f6 c2c4 g7g6 b1c3 d7d5 c4d5 f6d5 e2e4
+Grunfeld B|d2d4 g8f6 c2c4 g7g6 b1c3 d7d5 g1f3 f8g7
+Italian Game A|e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 d2d3
+Italian Game B|e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 c2c3 g8f6 d2d4
+Kings Gambit A|e2e4 e7e5 f2f4 e5f4 g1f3 g7g5
+Kings Gambit B|e2e4 e7e5 f2f4 d7d5 e4d5
+Kings Indian Attack A|g1f3 d7d5 g2g3 g8f6 f1g2 e7e6 e1g1
+Kings Indian Attack B|g1f3 d7d5 g2g3 c7c6 f1g2 c8g4
+Kings Indian Defense A|d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6
+Kings Indian Defense B|d2d4 g8f6 c2c4 g7g6 g1f3 f8g7 b1c3 e8g8
+Kings Pawn Game A|e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4
+Kings Pawn Game B|e2e4 e7e5 g1f3 b8c6
+London System A|d2d4 g8f6 g1f3 d7d5 c1f4 e7e6 e2e3
+London System B|d2d4 d7d5 c1f4 g8f6 e2e3 c7c5 c2c3
+Modern Defense A|d2d4 g7g6 e2e4 d7d6 b1c3 f8g7
+Modern Defense B|e2e4 g7g6 d2d4 f8g7 b1c3 d7d6
+Nimzo Indian A|d2d4 g8f6 c2c4 e7e6 b1c3 f8b4 e2e3
+Nimzo Indian B|d2d4 g8f6 c2c4 e7e6 b1c3 f8b4 d1c2
+Nimzowitsch Defense A|e2e4 b8c6 d2d4 d7d5 b1c3
+Nimzowitsch Defense B|e2e4 b8c6 g1f3 d7d5 e4d5 d8d5 b1c3
+Petrov Defense A|e2e4 e7e5 g1f3 g8f6 f3e5 d7d6
+Petrov Defense B|e2e4 e7e5 g1f3 g8f6 b1c3 b8c6
+Philidor Defense A|e2e4 e7e5 g1f3 d7d6 d2d4 e5d4
+Philidor Defense B|e2e4 e7e5 g1f3 d7d6 f1c4 g8f6
+Pirc Defense A|e2e4 d7d6 d2d4 g8f6 b1c3 g7g6 g1f3
+Pirc Defense B|e2e4 d7d6 d2d4 g8f6 b1c3 g7g6 f2f4
+Queens Pawn Game A|d2d4 d7d5 g1f3 g8f6
+Queens Pawn Game B|d2d4 g8f6 c2c4 e7e6 g1f3
+QGA A|d2d4 d7d5 c2c4 d5c4 g1f3 g8f6 e2e3
+QGA B|d2d4 d7d5 c2c4 d5c4 e2e3 b7b5 a2a4
+QGD A|d2d4 d7d5 c2c4 e7e6 b1c3 g8f6
+QGD B|d2d4 d7d5 c2c4 e7e6 g1f3 g8f6 b1c3 c7c6
+Queens Indian A|d2d4 g8f6 c2c4 e7e6 g1f3 b7b6 g2g3
+Queens Indian B|d2d4 g8f6 c2c4 e7e6 g1f3 b7b6 b1c3 c8b7
+Reti Opening A|g1f3 d7d5 c2c4 e7e6 d2d4
+Reti Opening B|g1f3 d7d5 c2c4 d5c4 e2e3
+Ruy Lopez A|e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6
+Ruy Lopez B|e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5c6 d7c6
+Scandinavian A|e2e4 d7d5 e4d5 d8d5 b1c3 d5a5
+Scandinavian B|e2e4 d7d5 e4d5 g8f6 d2d4
+Scotch Game A|e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4
+Scotch Game B|e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4 f8c5
+Sicilian A|e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6
+Sicilian B|e2e4 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g7g6
+Sicilian C|e2e4 c7c5 b1c3 b8c6 g2g3
+Slav Defense A|d2d4 d7d5 c2c4 c7c6 g1f3 g8f6
+Slav Defense B|d2d4 d7d5 c2c4 c7c6 b1c3 g8f6 g1f3
+Torre Attack A|d2d4 g8f6 g1f3 e7e6 c1g5 d7d5
+Torre Attack B|d2d4 g8f6 g1f3 d7d5 c1g5 c7c5
+Two Knights A|e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 d2d3
+Two Knights B|e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 f3g5 d7d5 e4d5 c6a5
+Vienna Game A|e2e4 e7e5 b1c3 g8f6 f2f4
+Vienna Game B|e2e4 e7e5 b1c3 g8f6 g2g3 d7d5
+Wade Defense A|d2d4 d7d6 g1f3 c8g4 c2c4
+Wade Defense B|d2d4 d7d6 g1f3 c8g4 e2e4
+Ruy Lopez C|e2e4 e7e5 g1f3 b8c6 f1b5 g8f6 e1g1
+Ruy Lopez D|e2e4 e7e5 g1f3 b8c6 f1b5 f7f5
+Sicilian D|e2e4 c7c5 g1f3 e7e6 d2d4 c5d4 f3d4 b8c6
+Sicilian E|e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 g7g6
+Sicilian F|e2e4 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 e7e5
+QGD C|d2d4 d7d5 c2c4 e7e6 b1c3 g8f6 c1g5
+QGD D|d2d4 d7d5 c2c4 e7e6 g1f3 g8f6 e2e3
+KID C|d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6 g1f3 e8g8
+KID D|d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6 f2f3
+Caro-Kann D|e2e4 c7c6 d2d4 d7d5 b1c3 g8f6 e4e5 f6d7
+French Defense D|e2e4 e7e6 d2d4 d7d5 b1c3 g8f6 e4e5 f6d7
+English Opening C|c2c4 e7e5 g2g3 g8f6 f1g2 c7c6
+London System C|d2d4 g8f6 g1f3 d7d5 c1f4 c7c5 e2e3 b8c6
