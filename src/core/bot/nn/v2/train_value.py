@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -122,6 +123,54 @@ class V2ValueDataset(IterableDataset):
                 "target": float(row["target_stm"]),
                 "weight": sample_weight(row),
             }
+
+
+class PrecomputedFeatureDataset(IterableDataset):
+    def __init__(self,
+                 feature_dir: Path,
+                 split: str,
+                 val_buckets: int,
+                 sample_limit: int) -> None:
+        super().__init__()
+        self.feature_dir = feature_dir
+        self.split = split
+        self.val_buckets = val_buckets
+        self.sample_limit = sample_limit
+        manifest_path = feature_dir / "manifest.json"
+        with manifest_path.open("r", encoding="utf-8") as fp:
+            self.manifest = json.load(fp)
+        self.shards = [feature_dir / item["file"] for item in self.manifest.get("shards", [])]
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        yielded = 0
+        index = 0
+        for shard in self.shards:
+            with np.load(shard) as data:
+                white = data["white"]
+                white_len = data["white_len"]
+                black = data["black"]
+                black_len = data["black_len"]
+                stm_white = data["stm_white"]
+                target = data["target"]
+                weight = data["weight"]
+                for row_idx in range(target.shape[0]):
+                    if self.sample_limit > 0 and yielded >= self.sample_limit:
+                        return
+                    bucket = index % 1000
+                    index += 1
+                    in_val = bucket < self.val_buckets
+                    if self.split == "train" and in_val:
+                        continue
+                    if self.split == "val" and not in_val:
+                        continue
+                    yielded += 1
+                    yield {
+                        "white_half": white[row_idx, :int(white_len[row_idx])].tolist(),
+                        "black_half": black[row_idx, :int(black_len[row_idx])].tolist(),
+                        "stm_white": bool(stm_white[row_idx]),
+                        "target": float(target[row_idx]),
+                        "weight": float(weight[row_idx]),
+                    }
 
 
 def collate(samples: list[dict[str, Any]]) -> Batch:
@@ -279,6 +328,8 @@ def resolve_device(raw: str) -> torch.device:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train the NNUE v2 value model from v2 dataset rows.")
     parser.add_argument("--input", type=Path, required=True, help="v2 JSONL dataset.")
+    parser.add_argument("--input-features", type=Path, default=None,
+                        help="Precomputed feature directory from precompute_features.py.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--export-path", type=Path, default=DEFAULT_EXPORT_PATH)
     parser.add_argument("--epochs", type=int, default=2)
@@ -304,18 +355,31 @@ def main() -> int:
     torch.manual_seed(args.seed)
     device = resolve_device(args.device)
     print(f"[init] input={args.input}", flush=True)
+    if args.input_features is not None:
+        print(f"[init] input_features={args.input_features}", flush=True)
     print(f"[init] output_dir={args.output_dir}", flush=True)
     print(f"[init] device={device}", flush=True)
 
+    def make_dataset(split: str, sample_limit: int) -> IterableDataset:
+        if args.input_features is not None:
+            return PrecomputedFeatureDataset(
+                args.input_features,
+                split=split,
+                val_buckets=args.val_buckets,
+                sample_limit=sample_limit,
+            )
+        return V2ValueDataset(args.input, split=split, val_buckets=args.val_buckets, sample_limit=sample_limit)
+
     train_loader = DataLoader(
-        V2ValueDataset(args.input, split="train", val_buckets=args.val_buckets, sample_limit=args.train_samples),
+        make_dataset("train", args.train_samples),
         batch_size=args.batch_size,
         collate_fn=collate,
         num_workers=0,
     )
+
     def make_val_loader(split: str) -> DataLoader:
         return DataLoader(
-            V2ValueDataset(args.input, split=split, val_buckets=args.val_buckets, sample_limit=args.val_samples),
+            make_dataset(split, args.val_samples),
             batch_size=args.batch_size,
             collate_fn=collate,
             num_workers=0,

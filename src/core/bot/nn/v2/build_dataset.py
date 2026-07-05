@@ -17,6 +17,11 @@ from urllib.parse import quote, urlparse
 from urllib.request import urlopen
 
 try:
+    import orjson
+except ImportError:  # pragma: no cover
+    orjson = None
+
+try:
     from .data import convert_flat_eval_row, convert_lichess_eval_row, terminal_fixture_rows
 except ImportError:  # pragma: no cover - lets this script run directly
     from data import convert_flat_eval_row, convert_lichess_eval_row, terminal_fixture_rows
@@ -223,15 +228,27 @@ def counter_dict(counter: Counter[str]) -> dict[str, int]:
     return {key: counter[key] for key in sorted(counter)}
 
 
+def loads_json(raw: str | bytes) -> dict[str, Any]:
+    if orjson is not None:
+        return orjson.loads(raw)
+    return json.loads(raw)
+
+
+def dumps_json(row: dict[str, Any]) -> str:
+    if orjson is not None:
+        return orjson.dumps(row, option=orjson.OPT_SORT_KEYS).decode("utf-8")
+    return json.dumps(row, separators=(",", ":"), sort_keys=True)
+
+
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fp:
         for row in rows:
-            fp.write(json.dumps(row, separators=(",", ":"), sort_keys=True) + "\n")
+            fp.write(dumps_json(row) + "\n")
 
 
 def write_jsonl_row(fp: TextIO, row: dict[str, Any]) -> None:
-    fp.write(json.dumps(row, separators=(",", ":"), sort_keys=True) + "\n")
+    fp.write(dumps_json(row) + "\n")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -245,6 +262,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-per-bucket", type=int, default=0, help="Reservoir cap per side/phase/eval/tactical bucket.")
     parser.add_argument("--stream-output", action="store_true",
                         help="Write rows as they are accepted. Scales to large datasets; uses first-N per bucket, not reservoir sampling.")
+    parser.add_argument("--fast", action="store_true",
+                        help="Use faster approximate conversion for scale builds. Skips python-chess terminal/legal-move checks for non-fixture rows.")
     parser.add_argument("--max-input-rows", type=int, default=0, help="Stop after reading this many input rows.")
     parser.add_argument("--skip-input-rows", type=int, default=0, help="Skip this many input rows before converting.")
     parser.add_argument("--sample-every", type=int, default=1, help="Only try every Nth row after skipped rows.")
@@ -268,20 +287,27 @@ def iter_source_items(args: argparse.Namespace) -> Iterator[SourceItem]:
     try:
         for raw in handle.text:
             try:
-                row = json.loads(raw)
+                row = loads_json(raw)
             except json.JSONDecodeError:
                 yield SourceItem(row={"__bad_json__": True}, flat=False, source_name=args.input)
                 continue
             yield SourceItem(row=row, flat=False, source_name=args.input)
     finally:
         handle.close()
-        handle.check(allow_early_stop=args.stop_after_accepted > 0 or args.max_input_rows > 0)
+        handle.check(
+            allow_early_stop=(
+                args.stop_after_accepted > 0 or
+                args.max_input_rows > 0 or
+                (args.stream_output and args.limit > 0)
+            )
+        )
 
 
 def convert_source_item(item: SourceItem,
                         min_depth: int,
                         min_knodes: int,
-                        score_perspective: str) -> dict[str, Any] | None:
+                        score_perspective: str,
+                        fast: bool) -> dict[str, Any] | None:
     if item.row.get("__bad_json__"):
         return None
     if item.flat:
@@ -291,12 +317,14 @@ def convert_source_item(item: SourceItem,
             min_knodes=min_knodes,
             score_perspective=score_perspective,
             source=item.source_name,
+            fast=fast,
         )
     return convert_lichess_eval_row(
         item.row,
         min_depth=min_depth,
         min_knodes=min_knodes,
         score_perspective=score_perspective,
+        fast=fast,
     )
 
 
@@ -339,6 +367,7 @@ def main() -> int:
                 min_depth=args.min_depth,
                 min_knodes=args.min_knodes,
                 score_perspective="white",
+                fast=args.fast,
             )
             if item is None:
                 stats["rejected"] += 1
@@ -438,6 +467,7 @@ def main() -> int:
         "limit": args.limit,
         "max_per_bucket": args.max_per_bucket,
         "stream_output": bool(args.stream_output),
+        "fast": bool(args.fast),
         "max_input_rows": args.max_input_rows,
         "skip_input_rows": args.skip_input_rows,
         "sample_every": args.sample_every,

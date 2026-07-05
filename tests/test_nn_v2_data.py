@@ -86,6 +86,25 @@ def test_convert_lichess_eval_row_adds_targets_and_buckets() -> None:
         raise AssertionError(f"unexpected target/bucket: {out}")
 
 
+def test_fast_convert_preserves_label_fields() -> None:
+    row = {
+        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 7 9",
+        "evals": [
+            {"depth": 22, "knodes": 100, "pvs": [{"cp": 34, "line": "e7e5 g1f3"}]},
+        ],
+    }
+
+    exact = convert_lichess_eval_row(row, min_depth=18, fast=False)
+    fast = convert_lichess_eval_row(row, min_depth=18, fast=True)
+    if exact is None or fast is None:
+        raise AssertionError("expected both conversions")
+    for key in ["fen", "depth", "knodes", "evaluation", "target_stm", "cp_stm", "is_mate", "terminal", "best_move"]:
+        if exact[key] != fast[key]:
+            raise AssertionError(f"fast conversion changed {key}: exact={exact} fast={fast}")
+    if fast["bucket"].split("/")[:3] != exact["bucket"].split("/")[:3]:
+        raise AssertionError(f"fast conversion changed non-tactical bucket fields: exact={exact} fast={fast}")
+
+
 def test_convert_flat_eval_row_supports_hf_schema() -> None:
     row = {
         "fen": "7r/1p3k2/p1bPR3/5p2/2B2P1p/8/PP4P1/3K4 b - -",
@@ -134,6 +153,7 @@ def main() -> None:
     test_terminal_labels_override_eval()
     test_best_eval_prefers_depth_then_knodes()
     test_convert_lichess_eval_row_adds_targets_and_buckets()
+    test_fast_convert_preserves_label_fields()
     test_convert_flat_eval_row_supports_hf_schema()
     test_bucket_detects_black_side_and_capture()
     test_normalize_fen_drops_halfmove_and_fullmove()

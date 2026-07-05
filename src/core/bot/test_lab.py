@@ -9,7 +9,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -534,8 +536,12 @@ def run_lab(competitors: List[CompetitorBuild],
             book_file: str,
             seed: int,
             baseline_name: Optional[str],
-            restart_each_game: bool) -> Dict[str, object]:
+            restart_each_game: bool,
+            concurrency: int = 1) -> Dict[str, object]:
     engines: Dict[str, chess.engine.SimpleEngine] = {}
+    thread_state = threading.local()
+    all_engines: List[chess.engine.SimpleEngine] = []
+    engines_lock = threading.Lock()
     records: List[GameRecord] = []
     standings: Dict[str, Dict[str, float]] = {}
     competitor_by_name = {competitor.name: competitor for competitor in competitors}
@@ -558,27 +564,28 @@ def run_lab(competitors: List[CompetitorBuild],
                 "losses": 0.0,
                 "engine_failures": 0.0,
             }
-        if not restart_each_game:
-            for competitor in competitors:
-                engine = open_configured_engine(competitor, think_ms, max_depth, book_file)
-                engines[competitor.name] = engine
+        concurrency = max(1, concurrency)
 
-        game_index = 0
-        current_round = None
-        for scheduled in schedule:
-            if scheduled.round_name != current_round:
-                current_round = scheduled.round_name
-                round_games = sum(1 for item in schedule if item.round_name == current_round)
-                log(f"[pairing] {current_round} ({round_games} games)")
+        def thread_engine(name: str) -> chess.engine.SimpleEngine:
+            cache = getattr(thread_state, "engines", None)
+            if cache is None:
+                cache = {}
+                thread_state.engines = cache
+            if name not in cache:
+                engine = open_configured_engine(competitor_by_name[name], think_ms, max_depth, book_file)
+                cache[name] = engine
+                with engines_lock:
+                    all_engines.append(engine)
+            return cache[name]
 
-            game_index += 1
+        def play_scheduled(game_index: int, scheduled: ScheduledGame) -> GameRecord:
             if restart_each_game:
                 white_engine = None
                 black_engine = None
                 try:
                     white_engine = open_configured_engine(competitor_by_name[scheduled.white], think_ms, max_depth, book_file)
                     black_engine = open_configured_engine(competitor_by_name[scheduled.black], think_ms, max_depth, book_file)
-                    record = play_one_game(
+                    return play_one_game(
                         game_index=game_index,
                         round_name=scheduled.round_name,
                         white_name=scheduled.white,
@@ -598,21 +605,47 @@ def run_lab(competitors: List[CompetitorBuild],
                             engine.quit()
                         except Exception:
                             pass
-            else:
-                record = play_one_game(
-                    game_index=game_index,
-                    round_name=scheduled.round_name,
-                    white_name=scheduled.white,
-                    black_name=scheduled.black,
-                    white_engine=engines[scheduled.white],
-                    black_engine=engines[scheduled.black],
-                    start_fen=scheduled.start_fen,
-                    think_ms=think_ms,
-                    max_depth=max_depth,
-                    max_plies=max_plies,
-                )
-            records.append(record)
+            return play_one_game(
+                game_index=game_index,
+                round_name=scheduled.round_name,
+                white_name=scheduled.white,
+                black_name=scheduled.black,
+                white_engine=thread_engine(scheduled.white),
+                black_engine=thread_engine(scheduled.black),
+                start_fen=scheduled.start_fen,
+                think_ms=think_ms,
+                max_depth=max_depth,
+                max_plies=max_plies,
+            )
 
+        for round_name in dict.fromkeys(item.round_name for item in schedule):
+            round_games = sum(1 for item in schedule if item.round_name == round_name)
+            log(f"[pairing] {round_name} ({round_games} games)")
+
+        if concurrency == 1:
+            for game_index, scheduled in enumerate(schedule, start=1):
+                record = play_scheduled(game_index, scheduled)
+                records.append(record)
+                log(
+                    f"[game {record.index}] {record.white} vs {record.black} "
+                    f"result={record.result} plies={record.plies} term={record.termination}"
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                futures = [
+                    pool.submit(play_scheduled, game_index, scheduled)
+                    for game_index, scheduled in enumerate(schedule, start=1)
+                ]
+                for future in futures:
+                    record = future.result()
+                    records.append(record)
+                    log(
+                        f"[game {record.index}/{len(schedule)}] {record.white} vs {record.black} "
+                        f"result={record.result} plies={record.plies} term={record.termination}"
+                    )
+            records.sort(key=lambda item: item.index)
+
+        for record in records:
             white_row = standings[record.white]
             black_row = standings[record.black]
             white_row["games"] += 1.0
@@ -637,12 +670,8 @@ def run_lab(competitors: List[CompetitorBuild],
                 elif record.termination.endswith(record.black) or f"by_{record.black}" in record.termination:
                     black_row["engine_failures"] += 1.0
 
-            log(
-                f"[game {record.index}] {record.white} vs {record.black} "
-                f"result={record.result} plies={record.plies} term={record.termination}"
-            )
     finally:
-        for engine in engines.values():
+        for engine in list(engines.values()) + all_engines:
             try:
                 engine.quit()
             except Exception:
@@ -726,6 +755,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--book-file", default="", help="Book file to pass to engines. Empty disables it.")
     parser.add_argument("--seed", type=int, default=20260305, help="PRNG seed for position order.")
     parser.add_argument("--out", default="", help="Optional JSON output path.")
+    parser.add_argument("--concurrency", type=int, default=1,
+                        help="Play this many games in parallel (each worker uses its own engine processes).")
     parser.add_argument("--restart-each-game", action="store_true",
                         help="Launch fresh engine processes for every game instead of reusing long-lived ones.")
     return parser.parse_args()

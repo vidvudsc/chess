@@ -186,6 +186,7 @@ make nn_v2_build_dataset ARGS="\
   --max-per-bucket 300000 \
   --sample-every 20 \
   --stream-output \
+  --fast \
   --no-dedupe \
   --terminal-fixtures \
   --log-every 1000000"
@@ -203,6 +204,7 @@ make nn_v2_build_dataset ARGS="\
   --max-per-bucket 300000 \
   --sample-every 20 \
   --stream-output \
+  --fast \
   --no-dedupe \
   --terminal-fixtures \
   --log-every 1000000"
@@ -211,8 +213,17 @@ make nn_v2_build_dataset ARGS="\
 Train from the selected set:
 
 ```bash
+make nn_v2_precompute_features ARGS="\
+  --input /workspace/data/labels/nnv2_eval_20m.jsonl \
+  --output-dir /workspace/data/features/nnv2_eval_20m \
+  --rows-per-shard 1000000 \
+  --log-every 1000000"
+```
+
+```bash
 make nn_v2_train ARGS="\
   --input /workspace/data/labels/nnv2_eval_20m.jsonl \
+  --input-features /workspace/data/features/nnv2_eval_20m \
   --output-dir /workspace/current/nnv2_20m/model \
   --export-path /workspace/current/nnv2_20m/nn_eval.bin \
   --epochs 6 \
@@ -229,6 +240,14 @@ Notes:
 
 - `--stream-output` makes the builder scale to millions of rows by writing rows
   directly instead of keeping them in Python lists.
+- `--fast` avoids `python-chess` board construction for normal non-fixture
+  rows. It keeps side-to-move labels, eval bands, mate scores, and phase
+  estimates, but tactical buckets become approximate (`mate`, `promotion`, or
+  `quiet`). This is the recommended path for 20M+ value datasets.
+- `nn_v2_precompute_features` removes JSON parsing and FEN feature extraction
+  from every training epoch. For serious GPU runs, train from
+  `--input-features`; keep `--input` too so checkpoint metadata still points to
+  the source labels.
 - `--no-dedupe` is recommended for the raw Lichess eval stream because it avoids
   holding a multi-million-FEN set in RAM. Do not use it for denormalized HF
   parquet/Viewer rows unless duplicates are desired.

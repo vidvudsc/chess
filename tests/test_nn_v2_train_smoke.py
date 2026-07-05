@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TRAIN = ROOT / "src" / "core" / "bot" / "nn" / "v2" / "train_value.py"
+PRECOMPUTE = ROOT / "src" / "core" / "bot" / "nn" / "v2" / "precompute_features.py"
 UCI = ROOT / "bin" / "chess_uci"
 
 
@@ -120,8 +121,84 @@ def test_train_export_and_uci_load() -> None:
             raise AssertionError(f"UCI did not accept NN backend:\n{uci.stdout}\n{uci.stderr}")
 
 
+def test_precompute_train_export() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        dataset = tmp_path / "tiny_v2.jsonl"
+        feature_dir = tmp_path / "features"
+        out_dir = tmp_path / "model"
+        export = tmp_path / "nn_eval.bin"
+        write_dataset(dataset)
+
+        subprocess.run(
+            [
+                sys.executable,
+                str(PRECOMPUTE),
+                "--input",
+                str(dataset),
+                "--output-dir",
+                str(feature_dir),
+                "--rows-per-shard",
+                "4",
+                "--log-every",
+                "0",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        manifest = json.loads((feature_dir / "manifest.json").read_text(encoding="utf-8"))
+        if manifest["rows"] != len(POSITIONS):
+            raise AssertionError(f"bad feature manifest: {manifest}")
+
+        subprocess.run(
+            [
+                sys.executable,
+                str(TRAIN),
+                "--input",
+                str(dataset),
+                "--input-features",
+                str(feature_dir),
+                "--output-dir",
+                str(out_dir),
+                "--export-path",
+                str(export),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "4",
+                "--feature-dim",
+                "8",
+                "--hidden-dim",
+                "4",
+                "--train-samples",
+                "20",
+                "--val-samples",
+                "20",
+                "--val-buckets",
+                "1",
+                "--lr",
+                "0.01",
+                "--log-every",
+                "0",
+                "--device",
+                "cpu",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        if export.read_bytes()[:8] != b"CHNNUE1\0":
+            raise AssertionError("precomputed feature training did not export CHNNUE1")
+
+
 def main() -> None:
     test_train_export_and_uci_load()
+    test_precompute_train_export()
     print("test_nn_v2_train_smoke: OK")
 
 

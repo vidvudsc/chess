@@ -49,6 +49,40 @@ def normalize_fen_key(fen: str) -> str:
     return " ".join(parts[:4])
 
 
+def normalize_fen_key_fast(fen: str) -> str:
+    parts = fen.strip().split()
+    if len(parts) < 4:
+        return normalize_fen_key(fen)
+    return " ".join(parts[:4])
+
+
+def side_to_move_from_fen(fen: str) -> Literal["white", "black"]:
+    parts = fen.strip().split()
+    return "black" if len(parts) > 1 and parts[1] == "b" else "white"
+
+
+def fullmove_from_fen(fen: str) -> int:
+    parts = fen.strip().split()
+    if len(parts) >= 6:
+        try:
+            return int(parts[5])
+        except ValueError:
+            return 1
+    return 1
+
+
+def fast_phase_from_fen(fen: str) -> Literal["opening", "middlegame", "endgame"]:
+    if fullmove_from_fen(fen) <= 10:
+        return "opening"
+    placement = fen.strip().split()[0]
+    queens = placement.count("q") + placement.count("Q")
+    rooks = placement.count("r") + placement.count("R")
+    minors = placement.count("b") + placement.count("B") + placement.count("n") + placement.count("N")
+    if queens == 0 and rooks <= 2 and minors <= 4:
+        return "endgame"
+    return "middlegame"
+
+
 def value_from_cp(cp: int, cp_clip: int = CP_CLIP, cp_scale: float = CP_SCALE) -> float:
     clipped = max(-cp_clip, min(cp_clip, int(cp)))
     return math.tanh(clipped / cp_scale)
@@ -164,6 +198,43 @@ def buckets_for_position(fen: str, label: ValueLabel, best_move_uci: str = "") -
     )
 
 
+def fast_tactical_bucket(best_move_uci: str, is_mate: bool) -> Literal["quiet", "capture", "check", "promotion", "mate"]:
+    if is_mate:
+        return "mate"
+    if len(best_move_uci) >= 5:
+        return "promotion"
+    return "quiet"
+
+
+def fast_buckets_for_position(fen: str, label: ValueLabel, best_move_uci: str = "") -> PositionBuckets:
+    return PositionBuckets(
+        side_to_move=side_to_move_from_fen(fen),
+        phase=fast_phase_from_fen(fen),
+        eval_band=eval_band(label.cp_stm),
+        tactical=fast_tactical_bucket(best_move_uci, label.is_mate),
+    )
+
+
+def label_from_eval_fast(fen: str,
+                         evaluation: str,
+                         perspective: ScorePerspective = "white",
+                         cp_clip: int = CP_CLIP,
+                         cp_scale: float = CP_SCALE) -> ValueLabel:
+    is_mate, cp = parse_eval_to_cp(evaluation, cp_clip=cp_clip)
+    if perspective == "white":
+        cp_stm = cp if side_to_move_from_fen(fen) == "white" else -cp
+    elif perspective == "stm":
+        cp_stm = cp
+    else:
+        raise ValueError(f"unsupported score perspective: {perspective}")
+    return ValueLabel(
+        value_stm=value_from_cp(cp_stm, cp_clip=cp_clip, cp_scale=cp_scale),
+        cp_stm=cp_stm,
+        is_mate=is_mate,
+        terminal="none",
+    )
+
+
 def best_eval_item(evals: Iterable[dict[str, Any]],
                    min_depth: int,
                    min_knodes: int = 0) -> dict[str, Any] | None:
@@ -219,7 +290,8 @@ def eval_text_from_flat_fields(row: dict[str, Any]) -> str | None:
 def convert_lichess_eval_row(row: dict[str, Any],
                              min_depth: int = 18,
                              min_knodes: int = 0,
-                             score_perspective: ScorePerspective = "white") -> dict[str, Any] | None:
+                             score_perspective: ScorePerspective = "white",
+                             fast: bool = False) -> dict[str, Any] | None:
     fen = str(row.get("fen", "")).strip()
     if not fen:
         return None
@@ -230,14 +302,20 @@ def convert_lichess_eval_row(row: dict[str, Any],
     evaluation = eval_text_from_pv(pv)
     line = str(pv.get("line", "")).strip()
     best_move = line.split()[0] if line else ""
-    label = label_from_eval(
-        fen,
-        evaluation,
-        perspective=score_perspective,
-    )
-    buckets = buckets_for_position(fen, label, best_move)
+    if fast:
+        label = label_from_eval_fast(fen, evaluation, perspective=score_perspective)
+        buckets = fast_buckets_for_position(fen, label, best_move)
+        normalized_fen = normalize_fen_key_fast(fen)
+    else:
+        label = label_from_eval(
+            fen,
+            evaluation,
+            perspective=score_perspective,
+        )
+        buckets = buckets_for_position(fen, label, best_move)
+        normalized_fen = normalize_fen_key(fen)
     return {
-        "fen": normalize_fen_key(fen),
+        "fen": normalized_fen,
         "depth": selected["depth"],
         "knodes": selected["knodes"],
         "evaluation": evaluation,
@@ -257,7 +335,8 @@ def convert_flat_eval_row(row: dict[str, Any],
                           min_depth: int = 18,
                           min_knodes: int = 0,
                           score_perspective: ScorePerspective = "white",
-                          source: str = "flat-evals") -> dict[str, Any] | None:
+                          source: str = "flat-evals",
+                          fast: bool = False) -> dict[str, Any] | None:
     fen = str(row.get("fen", "")).strip()
     if not fen:
         return None
@@ -279,14 +358,20 @@ def convert_flat_eval_row(row: dict[str, Any],
     if best_move and not line:
         line = best_move
 
-    label = label_from_eval(
-        fen,
-        evaluation,
-        perspective=score_perspective,
-    )
-    buckets = buckets_for_position(fen, label, best_move)
+    if fast:
+        label = label_from_eval_fast(fen, evaluation, perspective=score_perspective)
+        buckets = fast_buckets_for_position(fen, label, best_move)
+        normalized_fen = normalize_fen_key_fast(fen)
+    else:
+        label = label_from_eval(
+            fen,
+            evaluation,
+            perspective=score_perspective,
+        )
+        buckets = buckets_for_position(fen, label, best_move)
+        normalized_fen = normalize_fen_key(fen)
     return {
-        "fen": normalize_fen_key(fen),
+        "fen": normalized_fen,
         "depth": depth,
         "knodes": knodes,
         "evaluation": evaluation,

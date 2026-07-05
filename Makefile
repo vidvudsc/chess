@@ -70,7 +70,7 @@ CONTENTS_DIR := $(APP_DIR)/Contents
 MACOS_DIR := $(CONTENTS_DIR)/MacOS
 RES_DIR := $(CONTENTS_DIR)/Resources
 
-.PHONY: all run run-bin run-app test test_bot_time test_nn_v2 nn_v2_check_tools nn_v2_fetch_eval nn_v2_build_dataset nn_v2_train nn_v2_pipeline arch perft bench uci ai_test_lab snapshot_engine fetch_positions build_testlab_positions opening_book hce_suite hce_testlab umbrel_bundle deploy_umbrel clean icns bundle
+.PHONY: all run run-bin run-app test test_bot_time test_nn_v2 nn_v2_check_tools nn_v2_fetch_eval nn_v2_build_dataset nn_v2_precompute_features nn_v2_train nn_v2_pipeline arch perft bench uci ai_test_lab snapshot_engine fetch_positions build_testlab_positions opening_book hce_suite hce_testlab umbrel_bundle deploy_umbrel clean icns bundle
 
 all: $(BIN_DIR)/chess
 
@@ -165,6 +165,9 @@ nn_v2_fetch_eval:
 
 nn_v2_build_dataset:
 	python3 $(SRC_BOT_DIR)/nn/v2/build_dataset.py $(ARGS)
+
+nn_v2_precompute_features:
+	python3 $(SRC_BOT_DIR)/nn/v2/precompute_features.py $(ARGS)
 
 nn_v2_train:
 	python3 $(SRC_BOT_DIR)/nn/v2/train_value.py $(ARGS)
