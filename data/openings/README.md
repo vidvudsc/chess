@@ -29,8 +29,7 @@ The runtime book file is `data/openings/opening_book.txt`.
 Build from the curated 100-game seed set:
 
 ```bash
-If you want to reseed the book from custom games, generate a new `opening_book.txt`
-outside the repo and drop it into `data/openings/opening_book.txt`.
+python3 scripts/build_solid_opening_book.py
 ```
 
 Behavior note:

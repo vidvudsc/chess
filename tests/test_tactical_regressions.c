@@ -86,6 +86,22 @@ int main(void) {
             .avoid_uci = "c8d7",
             .require_searched_move = true,
         },
+        {
+            .name = "Avoid shallow queen-side tactic c3a4",
+            .fen = "3r2k1/pp2qppp/2p2n2/2b5/2Q5/1PN1pP1B/PBP3PP/R6K w - - 4 22",
+            .think_time_ms = 120,
+            .max_depth = 10,
+            .avoid_uci = "c3a4",
+            .require_searched_move = true,
+        },
+        {
+            .name = "Avoid opening king walk c8d7 under pressure",
+            .fen = "2kr1b1r/ppp1nppp/3qpnb1/3p2B1/6PN/2NP3P/PPP1PPB1/R2Q1RK1 b - - 6 11",
+            .think_time_ms = 120,
+            .max_depth = 10,
+            .avoid_uci = "c8d7",
+            .require_searched_move = true,
+        },
     };
 
     for (size_t i = 0; i < sizeof(regressions) / sizeof(regressions[0]); ++i) {

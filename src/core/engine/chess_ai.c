@@ -38,6 +38,9 @@ int engine_eval_cp_stm(const GameState *state) {
         entry->valid = true;
         return score;
     }
+    if (g_chess_ai_backend == CHESS_AI_BACKEND_EXPERIMENTAL) {
+        return hce_experimental_eval_cp_stm(state);
+    }
     return hce_eval_cp_stm(state);
 }
 
@@ -147,6 +150,11 @@ const char *chess_ai_opening_book_path(void) {
 }
 
 bool chess_ai_set_backend(ChessAiBackend backend) {
+    if (backend != CHESS_AI_BACKEND_CLASSIC &&
+        backend != CHESS_AI_BACKEND_NN &&
+        backend != CHESS_AI_BACKEND_EXPERIMENTAL) {
+        return false;
+    }
     if (backend == CHESS_AI_BACKEND_NN && !nn_eval_is_loaded()) {
         return false;
     }
@@ -162,6 +170,8 @@ const char *chess_ai_backend_name(ChessAiBackend backend) {
     switch (backend) {
         case CHESS_AI_BACKEND_NN:
             return "nn";
+        case CHESS_AI_BACKEND_EXPERIMENTAL:
+            return "experimental";
         case CHESS_AI_BACKEND_CLASSIC:
         default:
             return "classic";

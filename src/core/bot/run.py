@@ -5,9 +5,11 @@ import argparse
 import datetime
 import json
 import os
+import random
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Generator, List, Optional
@@ -21,6 +23,7 @@ LOG_FILE_LOCK = threading.Lock()
 DEFAULT_LOG_MAX_BYTES = 20 * 1024 * 1024
 DEFAULT_LOG_KEEP_FILES = 5
 MOVE_POST_MAX_ATTEMPTS = 4
+LICHESS_STANDARD_SPEEDS = {"ultrabullet", "bullet", "blitz", "rapid", "classical"}
 
 
 def rotate_log_file(path: Path, max_bytes: int, keep_files: int) -> None:
@@ -103,13 +106,17 @@ class BotConfig:
     max_human_games: int
     accept_bots: bool
     accept_humans: bool
+    accept_speeds: List[str]
     log_file: str
     log_max_bytes: int
     log_keep_files: int
     book_path: str
     seek_specs: List["SeekSpec"] = field(default_factory=list)
-    pair_poll_seconds: float = 6.0
-    min_challenge_gap_seconds: float = 15.0
+    pair_poll_seconds: float = 60.0
+    min_challenge_gap_seconds: float = 180.0
+    max_outgoing_challenges_per_hour: int = 6
+    online_bot_fetch_limit: int = 100
+    initial_pair_delay_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -184,6 +191,22 @@ def env_list(name: str) -> List[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def parse_speed_list(text: str) -> List[str]:
+    speeds = []
+    seen = set()
+    for raw in text.split(","):
+        speed = raw.strip().lower()
+        if not speed:
+            continue
+        if speed not in LICHESS_STANDARD_SPEEDS:
+            valid = ", ".join(sorted(LICHESS_STANDARD_SPEEDS))
+            raise argparse.ArgumentTypeError(f"invalid speed '{raw}', expected one of: {valid}")
+        if speed not in seen:
+            speeds.append(speed)
+            seen.add(speed)
+    return speeds
+
+
 def parse_seek_spec(text: str, rated: bool, variant: str, color: str) -> SeekSpec:
     parts = text.strip().lower().replace(" ", "")
     if "+" not in parts:
@@ -232,6 +255,24 @@ def default_nn_model_path(here: Path) -> str:
         if candidate.exists():
             return str(candidate)
     return ""
+
+
+def default_opening_book_path(here: Path) -> str:
+    env_path = os.environ.get("CHESS_OPENING_BOOK", "").strip()
+    if env_path and Path(env_path).expanduser().exists():
+        return env_path
+    for candidate in (
+        here / "opening_book.txt",
+        here / "opening_games_100.txt",
+        here.parents[2] / "data" / "openings" / "opening_book.txt",
+        here.parents[2] / "data" / "openings" / "opening_games_100.txt",
+        here.parents[3] / "data" / "openings" / "opening_book.txt",
+        here.parents[3] / "data" / "openings" / "opening_games_100.txt",
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return env_path
+
 
 def load_build_info(here: Path) -> Dict[str, str]:
     info_path = here / "BUILD_INFO.txt"
@@ -292,6 +333,13 @@ class LichessApi:
                     break
         return items
 
+    @staticmethod
+    def _should_stop_stream_retry(path: str, status_code: Optional[int]) -> bool:
+        return (
+            status_code in {404, 410} and
+            path.startswith("/api/bot/game/stream/")
+        )
+
     def stream_events(self, path: str, reconnect: bool = True) -> Generator[dict, None, None]:
         attempt = 0
         while True:
@@ -329,6 +377,9 @@ class LichessApi:
                 status_code = None
                 if hasattr(exc, "response") and exc.response is not None:
                     status_code = exc.response.status_code
+                if self._should_stop_stream_retry(path, status_code):
+                    log_event("stream", f"stop retry on terminal stream error for {path}: {exc}")
+                    return
                 if status_code is not None and 500 <= status_code < 600:
                     backoff_s = max(backoff_s, 4.0)
                 log_event(
@@ -375,8 +426,11 @@ class BotRunner:
         self.bot_cursor = 0
         self.spec_cursor = 0
         self.pair_backoff_until = 0.0
-        self.next_pair_attempt_at = 0.0
+        self.next_pair_attempt_at = time.time() + max(0.0, cfg.initial_pair_delay_seconds)
         self.pair_rate_limit_count = 0
+        self.outgoing_challenge_times: deque[float] = deque()
+        self.pair_wait_logs: Dict[str, float] = {}
+        self.rng = random.SystemRandom()
         self.lock = threading.Lock()
         log_event("init", f"logged in as {self.username}")
         log_event(
@@ -385,7 +439,8 @@ class BotRunner:
                 f"think_time={cfg.think_time:.2f}s "
                 f"max_depth={cfg.max_depth if cfg.max_depth > 0 else 'engine-default'} "
                 f"max_games={cfg.max_games} bot_slots={cfg.max_bot_games} human_slots={cfg.max_human_games} "
-                f"accept_bots={cfg.accept_bots} accept_humans={cfg.accept_humans}"
+                f"accept_bots={cfg.accept_bots} accept_humans={cfg.accept_humans} "
+                f"accept_speeds={','.join(cfg.accept_speeds) if cfg.accept_speeds else 'all'}"
             ),
         )
         log_event("init", f"engine_path={cfg.engine_path}")
@@ -399,7 +454,9 @@ class BotRunner:
                 "init",
                 (
                     f"bot_pairings={', '.join(spec.label for spec in cfg.seek_specs)} "
-                    f"poll={cfg.pair_poll_seconds:.1f}s gap={cfg.min_challenge_gap_seconds:.1f}s"
+                    f"poll={cfg.pair_poll_seconds:.1f}s gap={cfg.min_challenge_gap_seconds:.1f}s "
+                    f"hour_cap={cfg.max_outgoing_challenges_per_hour} "
+                    f"online_limit={cfg.online_bot_fetch_limit} initial_delay={cfg.initial_pair_delay_seconds:.1f}s"
                 ),
             )
 
@@ -507,8 +564,39 @@ class BotRunner:
                     cooldown_seconds = 120.0 if slot.outgoing else 30.0
                 self.bot_cooldowns[slot.target.lower()] = time.time() + max(1.0, cooldown_seconds)
 
+    def _prune_outgoing_challenge_times_locked(self, now: float) -> None:
+        cutoff = now - 3600.0
+        while self.outgoing_challenge_times and self.outgoing_challenge_times[0] < cutoff:
+            self.outgoing_challenge_times.popleft()
+
+    def _can_send_outgoing_challenge_locked(self, now: float) -> bool:
+        if self.cfg.max_outgoing_challenges_per_hour <= 0:
+            return False
+        self._prune_outgoing_challenge_times_locked(now)
+        return len(self.outgoing_challenge_times) < self.cfg.max_outgoing_challenges_per_hour
+
+    def _outgoing_cap_wait_seconds_locked(self, now: float) -> float:
+        self._prune_outgoing_challenge_times_locked(now)
+        if self.cfg.max_outgoing_challenges_per_hour <= 0:
+            return 3600.0
+        if len(self.outgoing_challenge_times) < self.cfg.max_outgoing_challenges_per_hour:
+            return 0.0
+        return max(1.0, 3600.0 - (now - self.outgoing_challenge_times[0]))
+
+    def _record_outgoing_challenge_locked(self, now: float) -> None:
+        self._prune_outgoing_challenge_times_locked(now)
+        self.outgoing_challenge_times.append(now)
+
     def _fetch_online_bots(self, limit: int = 80) -> List[dict]:
         return self.api.get_ndjson(f"/api/bot/online?nb={max(1, limit)}", limit=limit)
+
+    def _log_pair_wait(self, key: str, message: str, interval_seconds: float = 300.0) -> None:
+        now = time.time()
+        last = self.pair_wait_logs.get(key, 0.0)
+        if now - last < interval_seconds:
+            return
+        self.pair_wait_logs[key] = now
+        log_event("pair", message)
 
     def _eligible_bot_username_locked(self, bots: List[dict]) -> Optional[str]:
         if not bots:
@@ -516,6 +604,7 @@ class BotRunner:
 
         active_targets = {game.target.lower() for game in self.active_games.values() if game.target}
         pending_targets = {slot.target.lower() for slot in self.pending_slots.values() if slot.target}
+        candidates: List[str] = []
         now = time.time()
 
         for _ in range(len(bots)):
@@ -533,8 +622,10 @@ class BotRunner:
             cooldown_until = self.bot_cooldowns.get(username_lc, 0.0)
             if cooldown_until > now:
                 continue
-            return username
-        return None
+            candidates.append(username)
+        if not candidates:
+            return None
+        return self.rng.choice(candidates)
 
     def _create_outgoing_bot_challenge(self, reserved_id: str, username: str, spec: SeekSpec) -> bool:
         form = {
@@ -544,6 +635,8 @@ class BotRunner:
             "clock.limit": str(spec.initial_minutes * 60),
             "clock.increment": str(spec.increment_seconds),
         }
+        with self.lock:
+            self._record_outgoing_challenge_locked(time.time())
         try:
             resp = self.api.post(f"/api/challenge/{username}", data=form)
             payload = resp.json()
@@ -563,23 +656,29 @@ class BotRunner:
                     outgoing=True,
                     created_at=slot.created_at,
                 )
-                self.bot_cooldowns[username.lower()] = time.time() + 90.0
+                now = time.time()
+                self.bot_cooldowns[username.lower()] = now + 900.0
                 self.pair_rate_limit_count = 0
                 counts_text = self._counts_text_locked()
             log_event("pair", f"challenged {username} {spec.label} id={challenge_id} ({counts_text})")
             return True
         except requests.RequestException as exc:
             status_code = None
-            if hasattr(exc, "response") and exc.response is not None:
-                status_code = exc.response.status_code
+            details = ""
+            response = getattr(exc, "response", None)
+            if response is not None:
+                status_code = response.status_code
+                body = (response.text or "").strip().replace("\n", " ")
+                if body:
+                    details = f" body={body[:180]}"
             with self.lock:
                 self.pending_slots.pop(reserved_id, None)
-                self.bot_cooldowns[username.lower()] = time.time() + 120.0
+                self.bot_cooldowns[username.lower()] = time.time() + 900.0
                 if status_code == 429:
                     self.pair_rate_limit_count += 1
                     backoff_s = max(
-                        self._retry_after_seconds(exc, 90.0),
-                        min(900.0, 90.0 * float(self.pair_rate_limit_count)),
+                        self._retry_after_seconds(exc, 3600.0),
+                        min(21600.0, 3600.0 * float(self.pair_rate_limit_count)),
                     )
                     next_allowed = time.time() + backoff_s
                     self.pair_backoff_until = max(self.pair_backoff_until, next_allowed)
@@ -591,24 +690,40 @@ class BotRunner:
                     "pair",
                     (
                         f"challenge rate-limited user={username} {spec.label}: "
-                        f"backing off for {wait_s:.0f}s limit_count={self.pair_rate_limit_count} ({counts_text})"
+                        f"backing off for {wait_s:.0f}s limit_count={self.pair_rate_limit_count} "
+                        f"({counts_text}){details}"
                     ),
                 )
                 return False
-            log_event("pair", f"challenge failed user={username} {spec.label}: {exc}")
+            log_event("pair", f"challenge failed user={username} {spec.label}: {exc}{details}")
             return False
 
     def _issue_outgoing_bot_challenges(self) -> None:
         with self.lock:
             now = time.time()
             if self.pair_backoff_until > now:
+                wait_s = max(1.0, self.pair_backoff_until - now)
+                self._log_pair_wait("backoff", f"waiting for Lichess backoff ({wait_s:.0f}s left)")
                 return
             if self.next_pair_attempt_at > now:
                 return
+            if not self._can_send_outgoing_challenge_locked(now):
+                wait_s = self._outgoing_cap_wait_seconds_locked(now)
+                self._log_pair_wait(
+                    "hour_cap",
+                    (
+                        f"hourly outgoing cap reached "
+                        f"({len(self.outgoing_challenge_times)}/{self.cfg.max_outgoing_challenges_per_hour}); "
+                        f"next slot in {wait_s / 60.0:.1f}m"
+                    ),
+                )
+                self.next_pair_attempt_at = now + max(60.0, self.cfg.pair_poll_seconds)
+                return
             if not self._can_reserve_slot_locked("bot"):
+                self._log_pair_wait("slots", f"all bot slots busy ({self._counts_text_locked()})")
                 return
 
-        online_bots = self._fetch_online_bots(limit=100)
+        online_bots = self._fetch_online_bots(limit=self.cfg.online_bot_fetch_limit)
         if not online_bots:
             log_event("pair", "no online bots returned from /api/bot/online")
             return
@@ -618,13 +733,17 @@ class BotRunner:
                 return
             username = self._eligible_bot_username_locked(online_bots)
             if username is None:
+                self._log_pair_wait(
+                    "eligible",
+                    f"no eligible online bot found among {len(online_bots)} fetched bots; cooldowns/active games may be filtering them",
+                )
                 return
             spec = self._choose_bot_spec()
             now = time.time()
             reserved_id = f"outgoing:{username.lower()}:{int(now * 1000)}"
             self._reserve_pending_slot_locked(reserved_id, "bot", target=username, outgoing=True)
-            self.bot_cooldowns[username.lower()] = now + 30.0
-            self.next_pair_attempt_at = now + max(1.0, self.cfg.min_challenge_gap_seconds)
+            self.bot_cooldowns[username.lower()] = now + 300.0
+            self.next_pair_attempt_at = now + max(60.0, self.cfg.min_challenge_gap_seconds)
         self._create_outgoing_bot_challenge(reserved_id, username, spec)
 
     def run(self) -> None:
@@ -696,6 +815,10 @@ class BotRunner:
         if speed == "correspondence":
             self._decline(cid, "timeControl", "correspondence")
             return
+        if not self._incoming_speed_allowed(speed, self.cfg.accept_speeds):
+            allowed = ",".join(self.cfg.accept_speeds)
+            self._decline(cid, "timeControl", f"speed={speed} allowed={allowed}")
+            return
 
         challenger_title = challenge.get("challenger", {}).get("title")
         is_bot = challenger_title == "BOT"
@@ -726,6 +849,12 @@ class BotRunner:
             log_event("challenge", f"declined id={challenge_id}: {why} (reason={reason})")
         except requests.RequestException as exc:
             log_event("challenge", f"decline failed id={challenge_id}: {exc}")
+
+    @staticmethod
+    def _incoming_speed_allowed(speed: str, accept_speeds: List[str]) -> bool:
+        if not accept_speeds:
+            return True
+        return speed.strip().lower() in accept_speeds
 
     def _start_game_thread(self, game_id: str) -> None:
         with self.lock:
@@ -806,15 +935,15 @@ class BotRunner:
     @staticmethod
     def _state_clock_seconds(state: dict, initial_s: float, increment_s: float) -> tuple[float, float, float, float]:
         def _to_seconds(value: object, fallback: float) -> float:
+            if value is None:
+                return fallback
             try:
                 raw = float(value)
             except (TypeError, ValueError):
                 return fallback
-            if raw <= 0.0:
+            if raw < 0.0:
                 return fallback
-            if raw >= 1000.0:
-                return raw / 1000.0
-            return raw
+            return raw / 1000.0
 
         wtime = _to_seconds(state.get("wtime"), initial_s)
         btime = _to_seconds(state.get("btime"), initial_s)
@@ -900,7 +1029,7 @@ class BotRunner:
         remaining = wtime if my_color == chess.WHITE else btime
         increment = winc if my_color == chess.WHITE else binc
         if remaining <= 0.0:
-            return max(0.05, base_default), remaining, increment
+            return 0.05, remaining, increment
 
         moves_to_go = self._estimate_moves_to_go(board)
         reserve = max(0.15, increment * 2.0)
@@ -1521,19 +1650,7 @@ def parse_args() -> BotConfig:
     default_log_file = os.environ.get("LICHESS_BOT_LOG_FILE", str(default_log_path(here)))
     default_backend = os.environ.get("LICHESS_BOT_BACKEND", os.environ.get("CHESS_ENGINE_BACKEND", "classic")).strip().lower() or "classic"
     default_nn_model = default_nn_model_path(here)
-    default_book_path = os.environ.get("CHESS_OPENING_BOOK", "")
-    if not default_book_path:
-        for candidate in (
-            here / "opening_book.txt",
-            here / "opening_games_100.txt",
-            here.parents[2] / "data" / "openings" / "opening_book.txt",
-            here.parents[2] / "data" / "openings" / "opening_games_100.txt",
-            here.parents[3] / "data" / "openings" / "opening_book.txt",
-            here.parents[3] / "data" / "openings" / "opening_games_100.txt",
-        ):
-            if candidate.exists():
-                default_book_path = str(candidate)
-                break
+    default_book_path = default_opening_book_path(here)
     max_games_default = env_int("LICHESS_BOT_MAX_GAMES")
     max_bot_games_default = env_int("LICHESS_BOT_MAX_BOT_GAMES")
     max_human_games_default = env_int("LICHESS_BOT_MAX_HUMAN_GAMES")
@@ -1541,12 +1658,16 @@ def parse_args() -> BotConfig:
     seek_rated_default = env_bool("LICHESS_BOT_AUTO_CHALLENGE_RATED", env_bool("LICHESS_BOT_SEEK_RATED", False))
     accept_bots_default = env_bool("LICHESS_BOT_ACCEPT_BOTS", False)
     accept_humans_default = env_bool("LICHESS_BOT_ACCEPT_HUMANS", False)
+    accept_speeds_default = ",".join(env_list("LICHESS_BOT_ACCEPT_SPEEDS"))
     seek_variant_default = os.environ.get("LICHESS_BOT_AUTO_CHALLENGE_VARIANT",
                                           os.environ.get("LICHESS_BOT_SEEK_VARIANT", "standard"))
     seek_color_default = os.environ.get("LICHESS_BOT_AUTO_CHALLENGE_COLOR",
                                         os.environ.get("LICHESS_BOT_SEEK_COLOR", "random"))
     pair_poll_seconds_default = env_float("LICHESS_BOT_PAIR_POLL_SECONDS")
     min_challenge_gap_default = env_float("LICHESS_BOT_MIN_CHALLENGE_GAP_SECONDS")
+    max_outgoing_per_hour_default = env_int("LICHESS_BOT_MAX_OUTGOING_CHALLENGES_PER_HOUR")
+    online_bot_limit_default = env_int("LICHESS_BOT_ONLINE_BOT_LIMIT")
+    initial_pair_delay_default = env_float("LICHESS_BOT_INITIAL_PAIR_DELAY_SECONDS")
     log_max_mb_default = env_float("LICHESS_BOT_LOG_MAX_MB")
     log_keep_files_default = env_int("LICHESS_BOT_LOG_KEEP_FILES")
 
@@ -1554,7 +1675,7 @@ def parse_args() -> BotConfig:
     parser.add_argument("--token", default=os.environ.get("LICHESS_BOT_TOKEN", ""), help="Lichess OAuth token (bot:play)")
     parser.add_argument("--base-url", default="https://lichess.org", help="Lichess API base URL")
     parser.add_argument("--engine-path", default=str(default_engine_path), help="Path to UCI engine binary")
-    parser.add_argument("--backend", choices=["classic", "nn"], default=default_backend, help="Engine backend")
+    parser.add_argument("--backend", choices=["classic", "nn", "experimental"], default=default_backend, help="Engine backend")
     parser.add_argument("--nn-model", default=default_nn_model, help="Path to NN inference model binary")
     parser.add_argument("--think-time", type=float, default=0.35, help="Think time per move in seconds")
     parser.add_argument("--max-depth", type=int, default=0, help="Optional depth cap (0 = engine default)")
@@ -1563,6 +1684,8 @@ def parse_args() -> BotConfig:
     parser.add_argument("--max-human-games", type=int, default=max_human_games_default, help="Concurrent slots reserved for direct human challenges")
     parser.add_argument("--accept-bots", action="store_true", default=accept_bots_default, help="Accept bot challenges")
     parser.add_argument("--accept-humans", action="store_true", default=accept_humans_default, help="Accept human challenges")
+    parser.add_argument("--accept-speeds", default=accept_speeds_default,
+                        help="Comma-separated incoming speeds to accept, e.g. blitz,rapid. Empty accepts all.")
     parser.add_argument("--bot-match", "--seek", action="append", dest="seek", default=seek_default,
                         help="Outgoing bot challenge spec, e.g. 1+0 or 3+2. Repeatable.")
     parser.add_argument("--bot-match-rated", "--seek-rated", action="store_true", dest="seek_rated",
@@ -1575,6 +1698,12 @@ def parse_args() -> BotConfig:
                         help="Seconds between outgoing bot pairing loop polls")
     parser.add_argument("--min-challenge-gap-seconds", type=float, default=min_challenge_gap_default,
                         help="Minimum spacing between outgoing challenge attempts")
+    parser.add_argument("--max-outgoing-challenges-per-hour", type=int, default=max_outgoing_per_hour_default,
+                        help="Hard cap for outgoing bot challenge creations per rolling hour")
+    parser.add_argument("--online-bot-limit", type=int, default=online_bot_limit_default,
+                        help="How many online Lichess bots to fetch while searching for an opponent")
+    parser.add_argument("--initial-pair-delay-seconds", type=float, default=initial_pair_delay_default,
+                        help="Wait this long after boot before sending the first outgoing bot challenge")
     parser.add_argument("--log-file", default=default_log_file, help="Log file path")
     parser.add_argument("--log-max-mb", type=float, default=log_max_mb_default,
                         help="Rotate log after this many MiB (0 disables rotation)")
@@ -1612,10 +1741,21 @@ def parse_args() -> BotConfig:
         parser.error("per-type game caps cannot exceed --max-games")
     if seek_specs and max_bot_games <= 0:
         parser.error("outgoing bot challenges require at least one bot slot")
+    try:
+        accept_speeds = parse_speed_list(args.accept_speeds)
+    except argparse.ArgumentTypeError as exc:
+        parser.error(str(exc))
 
-    pair_poll_seconds = 6.0 if args.pair_poll_seconds is None else max(1.0, args.pair_poll_seconds)
+    pair_poll_seconds = 60.0 if args.pair_poll_seconds is None else max(10.0, args.pair_poll_seconds)
     min_challenge_gap_seconds = (
-        15.0 if args.min_challenge_gap_seconds is None else max(1.0, args.min_challenge_gap_seconds)
+        180.0 if args.min_challenge_gap_seconds is None else max(60.0, args.min_challenge_gap_seconds)
+    )
+    max_outgoing_challenges_per_hour = (
+        6 if args.max_outgoing_challenges_per_hour is None else max(0, args.max_outgoing_challenges_per_hour)
+    )
+    online_bot_fetch_limit = 100 if args.online_bot_limit is None else min(200, max(10, args.online_bot_limit))
+    initial_pair_delay_seconds = (
+        0.0 if args.initial_pair_delay_seconds is None else max(0.0, args.initial_pair_delay_seconds)
     )
     log_max_mb = DEFAULT_LOG_MAX_BYTES / (1024.0 * 1024.0) if args.log_max_mb is None else max(0.0, args.log_max_mb)
     log_keep_files = DEFAULT_LOG_KEEP_FILES if args.log_keep_files is None else max(0, args.log_keep_files)
@@ -1633,6 +1773,7 @@ def parse_args() -> BotConfig:
         max_human_games=max(0, max_human_games),
         accept_bots=args.accept_bots,
         accept_humans=args.accept_humans,
+        accept_speeds=accept_speeds,
         log_file=args.log_file,
         log_max_bytes=int(log_max_mb * 1024.0 * 1024.0),
         log_keep_files=log_keep_files,
@@ -1640,6 +1781,9 @@ def parse_args() -> BotConfig:
         seek_specs=seek_specs,
         pair_poll_seconds=pair_poll_seconds,
         min_challenge_gap_seconds=min_challenge_gap_seconds,
+        max_outgoing_challenges_per_hour=max_outgoing_challenges_per_hour,
+        online_bot_fetch_limit=online_bot_fetch_limit,
+        initial_pair_delay_seconds=initial_pair_delay_seconds,
     )
 
 

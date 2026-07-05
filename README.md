@@ -52,10 +52,17 @@ Run the engine benchmark:
 make bench
 ```
 
+Run the architecture audit:
+
+```bash
+make arch
+```
+
 Run the AI Test Lab from the command line:
 
 ```bash
 make ai_test_lab ARGS="--matchup classic-vs-stockfish --games 200"
+make ai_test_lab ARGS="--matchup experimental-vs-classic --games 200"
 bin/chess --ai-test-lab --matchup nn-vs-classic --games 50
 ```
 

@@ -711,7 +711,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--engine", metavar="NAME=PATH", action="append", default=[],
                         help="Include a prebuilt engine binary or engine directory.")
     parser.add_argument("--uci-option", metavar="NAME:OPTION=VALUE", action="append", default=[],
-                        help="Apply a competitor-specific UCI option, for example nn:Backend=nn or nn:NNModel=/abs/model.bin.")
+                        help="Apply a competitor-specific UCI option, for example exp:Backend=experimental, nn:Backend=nn, or nn:NNModel=/abs/model.bin.")
     parser.add_argument("--games", type=int, default=6, help="Games per pairing.")
     parser.add_argument("--positions-count", type=int, default=0,
                         help="Use this many FEN positions per pairing. When set, the lab samples from the FEN file instead of using --games directly.")

@@ -78,7 +78,10 @@ typedef enum AiTestModalAction {
 
 typedef enum AiTestMatchup {
     AI_TEST_MATCHUP_CLASSIC_VS_STOCKFISH = 0,
+    AI_TEST_MATCHUP_EXPERIMENTAL_VS_STOCKFISH,
     AI_TEST_MATCHUP_NN_VS_STOCKFISH,
+    AI_TEST_MATCHUP_CLASSIC_VS_EXPERIMENTAL,
+    AI_TEST_MATCHUP_EXPERIMENTAL_VS_CLASSIC,
     AI_TEST_MATCHUP_CLASSIC_VS_NN,
     AI_TEST_MATCHUP_NN_VS_CLASSIC,
     AI_TEST_MATCHUP_COUNT,
@@ -216,7 +219,10 @@ static const int k_ai_test_stockfish_levels[] = {1, 5, 10, 15, 20};
 static const int k_ai_test_time_options_ms[] = {100, 200, 350, 500, 1000};
 static const char *k_ai_test_matchup_labels[AI_TEST_MATCHUP_COUNT] = {
     "Classic vs Stockfish",
+    "Experimental vs Stockfish",
     "NN vs Stockfish",
+    "Classic vs Experimental",
+    "Experimental vs Classic",
     "Classic vs NN",
     "NN vs Classic",
 };
@@ -297,6 +303,7 @@ static bool resolve_default_nn_model_path(char out_path[1024]) {
 static ChessAiBackend next_available_ai_backend(const ChessUi *ui, ChessAiBackend current) {
     ChessAiBackend order[] = {
         CHESS_AI_BACKEND_CLASSIC,
+        CHESS_AI_BACKEND_EXPERIMENTAL,
         CHESS_AI_BACKEND_NN,
     };
     int current_index = 0;
@@ -309,7 +316,7 @@ static ChessAiBackend next_available_ai_backend(const ChessUi *ui, ChessAiBacken
 
     for (int step = 1; step <= ARRAY_LEN(order); ++step) {
         ChessAiBackend candidate = order[(current_index + step) % ARRAY_LEN(order)];
-        if (candidate == CHESS_AI_BACKEND_CLASSIC) {
+        if (candidate == CHESS_AI_BACKEND_CLASSIC || candidate == CHESS_AI_BACKEND_EXPERIMENTAL) {
             return candidate;
         }
         if (candidate == CHESS_AI_BACKEND_NN && ui->nn_backend_available) {
@@ -329,7 +336,15 @@ static void refresh_eval_bars(ChessUi *ui) {
 }
 
 static const char *ui_backend_label(ChessAiBackend backend) {
-    return (backend == CHESS_AI_BACKEND_NN) ? "NN" : "Classic";
+    switch (backend) {
+        case CHESS_AI_BACKEND_NN:
+            return "NN";
+        case CHESS_AI_BACKEND_EXPERIMENTAL:
+            return "Experimental";
+        case CHESS_AI_BACKEND_CLASSIC:
+        default:
+            return "Classic";
+    }
 }
 
 static void format_ai_result_summary(const char *prefix,
@@ -366,7 +381,10 @@ static void apply_ai_backend(ChessUi *ui) {
         }
         ui->ai_backend = CHESS_AI_BACKEND_CLASSIC;
     }
-    (void)chess_ai_set_backend(CHESS_AI_BACKEND_CLASSIC);
+    if (!chess_ai_set_backend(ui->ai_backend)) {
+        ui->ai_backend = CHESS_AI_BACKEND_CLASSIC;
+        (void)chess_ai_set_backend(CHESS_AI_BACKEND_CLASSIC);
+    }
 }
 
 static Rectangle square_rect(Rectangle board, int sq, bool flipped) {
@@ -468,7 +486,9 @@ static AiTestMatchup current_ai_test_matchup(const ChessUi *ui) {
 }
 
 static bool ai_test_matchup_uses_stockfish(AiTestMatchup matchup) {
-    return matchup == AI_TEST_MATCHUP_CLASSIC_VS_STOCKFISH || matchup == AI_TEST_MATCHUP_NN_VS_STOCKFISH;
+    return matchup == AI_TEST_MATCHUP_CLASSIC_VS_STOCKFISH ||
+           matchup == AI_TEST_MATCHUP_EXPERIMENTAL_VS_STOCKFISH ||
+           matchup == AI_TEST_MATCHUP_NN_VS_STOCKFISH;
 }
 
 static ChessAiBackend ai_test_matchup_our_backend(AiTestMatchup matchup) {
@@ -476,7 +496,11 @@ static ChessAiBackend ai_test_matchup_our_backend(AiTestMatchup matchup) {
         case AI_TEST_MATCHUP_NN_VS_STOCKFISH:
         case AI_TEST_MATCHUP_NN_VS_CLASSIC:
             return CHESS_AI_BACKEND_NN;
+        case AI_TEST_MATCHUP_EXPERIMENTAL_VS_STOCKFISH:
+        case AI_TEST_MATCHUP_EXPERIMENTAL_VS_CLASSIC:
+            return CHESS_AI_BACKEND_EXPERIMENTAL;
         case AI_TEST_MATCHUP_CLASSIC_VS_STOCKFISH:
+        case AI_TEST_MATCHUP_CLASSIC_VS_EXPERIMENTAL:
         case AI_TEST_MATCHUP_CLASSIC_VS_NN:
         default:
             return CHESS_AI_BACKEND_CLASSIC;
@@ -487,9 +511,13 @@ static ChessAiBackend ai_test_matchup_opponent_backend(AiTestMatchup matchup) {
     switch (matchup) {
         case AI_TEST_MATCHUP_CLASSIC_VS_NN:
             return CHESS_AI_BACKEND_NN;
+        case AI_TEST_MATCHUP_CLASSIC_VS_EXPERIMENTAL:
+            return CHESS_AI_BACKEND_EXPERIMENTAL;
         case AI_TEST_MATCHUP_NN_VS_CLASSIC:
+        case AI_TEST_MATCHUP_EXPERIMENTAL_VS_CLASSIC:
             return CHESS_AI_BACKEND_CLASSIC;
         case AI_TEST_MATCHUP_CLASSIC_VS_STOCKFISH:
+        case AI_TEST_MATCHUP_EXPERIMENTAL_VS_STOCKFISH:
         case AI_TEST_MATCHUP_NN_VS_STOCKFISH:
         default:
             return CHESS_AI_BACKEND_CLASSIC;
@@ -500,7 +528,7 @@ static const char *ai_test_competitor_label(AiTestMode mode, ChessAiBackend back
     if (mode == AI_TEST_MODE_VS_STOCKFISH && stockfish_side) {
         return "Stockfish";
     }
-    return (backend == CHESS_AI_BACKEND_NN) ? "NN" : "Classic";
+    return ui_backend_label(backend);
 }
 
 static void poll_ai_test_status(ChessUi *ui) {
@@ -1443,7 +1471,7 @@ static int build_ai_modal_widgets(const ChessUi *ui, int screen_w, int screen_h,
                  : "");
     out[AI_ACT_BACKEND].id = BTN_AI;
     out[AI_ACT_BACKEND].rect = (Rectangle){btn_x, y, btn_w, btn_h};
-    out[AI_ACT_BACKEND].enabled = ui->nn_backend_available;
+    out[AI_ACT_BACKEND].enabled = true;
     y += btn_h + gap;
 
     snprintf(out[AI_ACT_THINK_TIME].label, sizeof(out[AI_ACT_THINK_TIME].label), "AI think time: %s", k_ai_think_presets[ui->ai_think_index].label);
@@ -2265,9 +2293,6 @@ static void handle_ai_modal_input(ChessUi *ui, Vector2 mouse, int screen_w, int 
                 }
                 return;
             case AI_ACT_BACKEND:
-                if (!ui->nn_backend_available) {
-                    return;
-                }
                 if (ui->ai_worker_ready && ai_worker_is_busy(&ui->ai_worker)) {
                     return;
                 }

@@ -933,6 +933,10 @@ int hce_eval_cp_stm(const GameState *s) {
     return cp_stm;
 }
 
+int hce_experimental_eval_cp_stm(const GameState *s) {
+    return hce_eval_cp_stm(s);
+}
+
 bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out) {
     if (s == NULL || out == NULL) {
         return false;
@@ -945,5 +949,7 @@ bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out) {
     out->black.total = eval_side(s, PIECE_BLACK, out->phase, &out->black);
     out->score_cp_white = out->white.total - out->black.total;
     out->score_cp_stm = (s->side_to_move == PIECE_WHITE) ? out->score_cp_white : -out->score_cp_white;
+    out->score_cp_stm += 12;
+    out->score_cp_white = (s->side_to_move == PIECE_WHITE) ? out->score_cp_stm : -out->score_cp_stm;
     return true;
 }

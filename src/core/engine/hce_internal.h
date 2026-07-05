@@ -27,6 +27,7 @@ uint64_t hce_rook_attacks(int sq, uint64_t occ);
 uint64_t hce_attackers_to_square(const GameState *s, int sq, int side);
 
 int hce_eval_cp_stm(const GameState *s);
+int hce_experimental_eval_cp_stm(const GameState *s);
 bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out);
 int engine_eval_cp_stm(const GameState *s);
 int hce_score_search_draw_stm(const GameState *s);

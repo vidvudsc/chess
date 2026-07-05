@@ -836,14 +836,6 @@ static int negamax(GameState *s,
         Move m = pick_next_move(moves, move_scores, i, n);
         bool quiet = is_quiet_move(m);
         bool recapture = is_recapture_move(s, m);
-        if (!search_in_verification(ctx, ply) && !in_check && quiet && depth <= 3 && searched >= 4) {
-            int futility_margin = search_uses_nn_backend()
-                                      ? (160 * depth + searched * 10)
-                                      : (120 * depth + searched * 12);
-            if (static_eval + futility_margin <= alpha) {
-                continue;
-            }
-        }
         if (!chess_make_move_trusted(s, m)) {
             continue;
         }

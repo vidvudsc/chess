@@ -70,7 +70,7 @@ CONTENTS_DIR := $(APP_DIR)/Contents
 MACOS_DIR := $(CONTENTS_DIR)/MacOS
 RES_DIR := $(CONTENTS_DIR)/Resources
 
-.PHONY: all run run-bin run-app test perft bench uci ai_test_lab snapshot_engine fetch_positions build_testlab_positions hce_testlab umbrel_bundle deploy_umbrel clean icns bundle
+.PHONY: all run run-bin run-app test test_bot_time test_nn_v2 nn_v2_check_tools nn_v2_fetch_eval nn_v2_build_dataset nn_v2_train nn_v2_pipeline arch perft bench uci ai_test_lab snapshot_engine fetch_positions build_testlab_positions opening_book hce_suite hce_testlab umbrel_bundle deploy_umbrel clean icns bundle
 
 all: $(BIN_DIR)/chess
 
@@ -142,12 +142,38 @@ else
 	$(MAKE) run-bin
 endif
 
-test: $(BIN_DIR)/test_rules $(BIN_DIR)/test_clock $(BIN_DIR)/test_perft_suite $(BIN_DIR)/test_ai $(BIN_DIR)/test_tactical_regressions
+test: $(BIN_DIR)/test_rules $(BIN_DIR)/test_clock $(BIN_DIR)/test_perft_suite $(BIN_DIR)/test_ai $(BIN_DIR)/test_tactical_regressions test_bot_time test_nn_v2
 	./$(BIN_DIR)/test_rules
 	./$(BIN_DIR)/test_clock
 	./$(BIN_DIR)/test_perft_suite
 	./$(BIN_DIR)/test_ai
 	./$(BIN_DIR)/test_tactical_regressions
+
+test_bot_time:
+	python3 tests/test_bot_time_management.py
+
+test_nn_v2: $(BIN_DIR)/chess_uci
+	python3 tests/test_nn_v2_data.py
+	python3 tests/test_nn_v2_build_dataset.py
+	python3 tests/test_nn_v2_train_smoke.py
+
+nn_v2_check_tools:
+	python3 $(SRC_BOT_DIR)/nn/v2/fetch_eval_data.py --check-tools
+
+nn_v2_fetch_eval:
+	python3 $(SRC_BOT_DIR)/nn/v2/fetch_eval_data.py $(ARGS)
+
+nn_v2_build_dataset:
+	python3 $(SRC_BOT_DIR)/nn/v2/build_dataset.py $(ARGS)
+
+nn_v2_train:
+	python3 $(SRC_BOT_DIR)/nn/v2/train_value.py $(ARGS)
+
+nn_v2_pipeline: $(BIN_DIR)/chess_uci
+	python3 $(SRC_BOT_DIR)/nn/v2/run_pipeline.py $(ARGS)
+
+arch:
+	python3 scripts/architecture_audit.py
 
 perft: $(BIN_DIR)/perft
 	./$(BIN_DIR)/perft
@@ -191,6 +217,12 @@ build_testlab_positions:
 		--eval-window-cp 70 \
 		--material-window-cp 260 \
 		--movetime-ms 18
+
+opening_book:
+	python3 scripts/build_solid_opening_book.py
+
+hce_suite: $(BIN_DIR)/chess_uci
+	python3 scripts/run_hce_position_suite.py $(ARGS)
 
 hce_testlab:
 	python3 $(SRC_BOT_DIR)/test_lab.py $(ARGS)

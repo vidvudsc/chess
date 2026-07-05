@@ -46,6 +46,10 @@ This document describes the current built-in AI in this project (C + raylib ches
 - Mate-score normalization for ply-correct reuse
 
 ## Evaluation
+- Backends:
+  - `classic`: handcrafted evaluator plus shared search
+  - `experimental`: HCE experiment lane, currently mirroring `classic` until specific tests are enabled
+  - `nn`: neural value evaluator plus shared search
 - Tapered midgame/endgame blend with phase weighting
 - Material values (MG/EG)
 - Piece-square tables (all pieces)

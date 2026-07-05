@@ -16,6 +16,7 @@ typedef void (*AiSearchInfoCallback)(int depth,
 typedef enum ChessAiBackend {
     CHESS_AI_BACKEND_CLASSIC = 0,
     CHESS_AI_BACKEND_NN = 1,
+    CHESS_AI_BACKEND_EXPERIMENTAL = 2,
 } ChessAiBackend;
 
 typedef struct AiSearchConfig {

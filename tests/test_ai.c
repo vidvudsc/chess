@@ -1,6 +1,8 @@
 #include <assert.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -13,6 +15,68 @@ static void must(bool cond, const char *msg) {
         fprintf(stderr, "FAIL: %s\n", msg);
         assert(cond);
     }
+}
+
+static void write_tiny_quant_nn_model(const char *path) {
+    enum {
+        halfkp_dim = 64 * 10 * 64,
+        dummy_index = halfkp_dim,
+        acc_rows = halfkp_dim + 1,
+    };
+    FILE *fp = fopen(path, "wb");
+    must(fp != NULL, "Create tiny quantized NN model");
+
+    const char magic[8] = {'C', 'H', 'N', 'N', 'U', 'E', '1', '\0'};
+    uint32_t version = 2;
+    uint32_t halfkp = halfkp_dim;
+    uint32_t acc_dim = 1;
+    uint32_t hidden_dim = 1;
+    uint32_t dummy = dummy_index;
+    float cp_scale = 100.0f;
+    float acc_scale = 1.0f;
+    float fc1_scale = 0.1f;
+    float fc2_scale = 1.0f;
+    float out_scale = 1.0f;
+
+    must(fwrite(magic, 1, sizeof(magic), fp) == sizeof(magic), "Write NN magic");
+    must(fwrite(&version, sizeof(version), 1, fp) == 1, "Write NN version");
+    must(fwrite(&halfkp, sizeof(halfkp), 1, fp) == 1, "Write NN halfkp dim");
+    must(fwrite(&acc_dim, sizeof(acc_dim), 1, fp) == 1, "Write NN accumulator dim");
+    must(fwrite(&hidden_dim, sizeof(hidden_dim), 1, fp) == 1, "Write NN hidden dim");
+    must(fwrite(&dummy, sizeof(dummy), 1, fp) == 1, "Write NN dummy index");
+    must(fwrite(&cp_scale, sizeof(cp_scale), 1, fp) == 1, "Write NN cp scale");
+    must(fwrite(&acc_scale, sizeof(acc_scale), 1, fp) == 1, "Write NN acc scale");
+    must(fwrite(&fc1_scale, sizeof(fc1_scale), 1, fp) == 1, "Write NN fc1 scale");
+    must(fwrite(&fc2_scale, sizeof(fc2_scale), 1, fp) == 1, "Write NN fc2 scale");
+    must(fwrite(&out_scale, sizeof(out_scale), 1, fp) == 1, "Write NN out scale");
+
+    int16_t *acc_weight = (int16_t *)calloc((size_t)acc_rows, sizeof(*acc_weight));
+    must(acc_weight != NULL, "Allocate tiny NN accumulator");
+
+    int white_king_e1 = 4;
+    int white_queen_f1 = 5;
+    int own_queen_plane = 4;
+    int queen_feature = (white_king_e1 * 10 + own_queen_plane) * 64 + white_queen_f1;
+    acc_weight[queen_feature] = 10;
+
+    int8_t fc1_weight[2] = {1, 0};
+    float fc1_bias[1] = {0.0f};
+    int8_t fc2_weight[1] = {1};
+    float fc2_bias[1] = {0.0f};
+    int8_t out_weight[1] = {1};
+    float out_bias = 0.0f;
+
+    must(fwrite(acc_weight, sizeof(*acc_weight), (size_t)acc_rows, fp) == (size_t)acc_rows,
+         "Write NN accumulator");
+    must(fwrite(fc1_weight, sizeof(fc1_weight), 1, fp) == 1, "Write NN fc1 weights");
+    must(fwrite(fc1_bias, sizeof(fc1_bias), 1, fp) == 1, "Write NN fc1 bias");
+    must(fwrite(fc2_weight, sizeof(fc2_weight), 1, fp) == 1, "Write NN fc2 weights");
+    must(fwrite(fc2_bias, sizeof(fc2_bias), 1, fp) == 1, "Write NN fc2 bias");
+    must(fwrite(out_weight, sizeof(out_weight), 1, fp) == 1, "Write NN output weights");
+    must(fwrite(&out_bias, sizeof(out_bias), 1, fp) == 1, "Write NN output bias");
+
+    free(acc_weight);
+    must(fclose(fp) == 0, "Close tiny quantized NN model");
 }
 
 int main(void) {
@@ -56,6 +120,7 @@ int main(void) {
         .max_depth = 6,
     };
     ChessEngineResponse engine_res;
+    char err[128] = {0};
     must(chess_engine_query(&s, &engine_req, &engine_res), "Unified engine API should return best move");
     must(engine_res.ok, "Unified engine API best-move response should be ok");
     must(engine_res.found_move, "Unified engine API best-move should mark found_move");
@@ -67,6 +132,15 @@ int main(void) {
     must(engine_res.ok, "Unified engine API fast eval response should be ok");
     must(engine_res.score_cp_white == chess_ai_eval_fast_cp(&s),
          "Unified engine API fast eval should match direct fast eval");
+    ChessEvalBreakdown breakdown;
+    must(chess_ai_eval_breakdown(&s, &breakdown), "Eval breakdown should be available");
+    must(breakdown.score_cp_stm == chess_ai_eval_fast_cp(&s),
+         "Eval breakdown STM score should include tempo and match fast eval");
+    must(chess_load_fen(&s, "4k3/8/8/8/8/8/8/4K3 b - - 0 1", err, sizeof(err)),
+         "Load black-to-move eval breakdown FEN");
+    must(chess_ai_eval_breakdown(&s, &breakdown), "Black-to-move eval breakdown should be available");
+    must(breakdown.score_cp_white == chess_ai_eval_fast_cp(&s),
+         "Eval breakdown white score should include tempo with the correct side-to-move sign");
 
     engine_req.kind = CHESS_ENGINE_REQUEST_EVAL_DEEP;
     must(chess_engine_query(&s, &engine_req, &engine_res), "Unified engine API should return deep eval");
@@ -74,7 +148,37 @@ int main(void) {
     must(engine_res.score_cp_white == chess_ai_eval_cp(&s),
          "Unified engine API deep eval should match direct deep eval");
 
-    char err[128] = {0};
+    char temp_nn_path[256];
+    snprintf(temp_nn_path, sizeof(temp_nn_path), "/tmp/chess_test_nn_%ld.bin", (long)getpid());
+    write_tiny_quant_nn_model(temp_nn_path);
+    must(chess_ai_set_nn_model_path(temp_nn_path), "Load tiny quantized NN model");
+    must(chess_ai_set_backend(CHESS_AI_BACKEND_NN), "NN backend should be selectable with loaded model");
+    must(chess_load_fen(&s, "4k3/8/8/8/8/8/8/4K3 w - - 0 1", err, sizeof(err)),
+         "Load bare-kings NN regression FEN");
+    int nn_bare_eval = chess_ai_eval_fast_cp(&s);
+    must(chess_load_fen(&s, "4k3/8/8/8/8/8/8/4KQ2 w - - 0 1", err, sizeof(err)),
+         "Load queen NN regression FEN");
+    int nn_queen_eval = chess_ai_eval_fast_cp(&s);
+    must(nn_queen_eval > nn_bare_eval + 50,
+         "Quantized NN accumulator should include non-king piece features");
+    must(chess_ai_set_backend(CHESS_AI_BACKEND_CLASSIC), "Classic backend should be restored after NN regression");
+
+    must(chess_load_fen(&s, "r1bq1rk1/pp3ppp/2n1pn2/3p4/3P4/2NBPN2/PPQ1BPPP/R4RK1 w - - 2 10", err, sizeof(err)),
+         "Load experimental backend regression FEN");
+    int classic_fast_eval = chess_ai_eval_fast_cp(&s);
+    must(chess_ai_set_backend(CHESS_AI_BACKEND_EXPERIMENTAL), "Experimental backend should be selectable");
+    must(strcmp(chess_ai_backend_name(CHESS_AI_BACKEND_EXPERIMENTAL), "experimental") == 0,
+         "Experimental backend should have a stable UCI name");
+    int experimental_fast_eval = chess_ai_eval_fast_cp(&s);
+    must(experimental_fast_eval == classic_fast_eval,
+         "Experimental backend should mirror Classic eval until experiments are enabled");
+    ai_cfg.think_time_ms = 50;
+    ai_cfg.max_depth = 4;
+    must(chess_ai_pick_move(&s, &ai_cfg, &result), "Experimental backend should search");
+    must(result.found_move, "Experimental backend should return a move");
+    must(chess_is_move_legal(&s, result.best_move), "Experimental backend move must be legal");
+    must(chess_ai_set_backend(CHESS_AI_BACKEND_CLASSIC), "Classic backend should be restored after experimental regression");
+
     must(chess_load_fen(&s, "6k1/5ppp/8/8/8/8/6PP/6K1 w - - 0 1", err, sizeof(err)), "Load simple endgame FEN");
     must(chess_ai_pick_move(&s, &ai_cfg, &result), "AI should produce move in endgame");
     must(chess_is_move_legal(&s, result.best_move), "AI endgame move must be legal");
@@ -235,6 +339,7 @@ int main(void) {
 
     unlink(temp_book_path);
     unlink(temp_nonstart_book_path);
+    unlink(temp_nn_path);
 
     printf("test_ai: OK\n");
     return 0;

@@ -82,6 +82,9 @@ if [[ -f "$ROOT/shared/nn_eval.bin" ]]; then
 fi
 
 ln -sfn "releases/$RELEASE" "$ROOT/current"
+if [[ -f "$ROOT/current/opening_book.txt" ]]; then
+  ln -sfn current/opening_book.txt "$ROOT/opening_book.txt"
+fi
 
 if systemctl --user cat chessbot.service >/dev/null 2>&1; then
   systemctl --user restart chessbot.service

@@ -1,95 +1,104 @@
-# NN Training Plan
+# NN v2 Plan
 
-This directory is for Python-side NN training and dataset streaming. The engine-side C inference should live under `src/core/engine` later. Do not duplicate the source JSONL unless streaming becomes a real bottleneck.
+This folder is for the next neural engine path. The old local legacy model is
+not part of this plan.
 
-## Dataset policy
+## Rules
 
-Use the original JSONL directly:
+- Do not commit generated model binaries.
+- Do not load legacy `CHNN` files.
+- Train from reproducible public or locally generated data.
+- Export only the local `CHNNUE1` inference format.
+- Keep live Umbrel on `classic` until the NN backend beats it in head-to-head
+  tests at blitz-like time controls.
 
-- source file: `data/labels/stockfish_san_10m.jsonl`
-- default filter: `depth >= 15`
-- do not materialize a second cleaned JSONL as a first step
-- split train/validation by stable FEN hash, not by file copies
+## First Target
 
-Why:
+Start with value NNUE plus the existing alpha-beta search.
 
-- `depth >= 15` keeps almost all rows while removing the weakest tail
-- depth quality is noisy, so weighting is better than a brutal hard cutoff
-- a second 1.5 GB JSONL is wasted space unless it buys major training speed
+This is the smallest credible path to beating the handcrafted evaluator:
 
-## Mate rows
+- the engine already has search, TT, qsearch, and move ordering
+- `nn_eval.c` already supports quantized `CHNNUE1` inference
+- `hce_search.c` can call NN eval through the same search
+- we can test NN-vs-classic before changing the live bot
 
-Depth `99` rows in this dataset are effectively mate rows, not normal deep centipawn rows.
+Full end-to-end policy/value search can come later, but it should not be the
+first milestone. It needs far more games, compute, and infrastructure before it
+can beat a conventional alpha-beta engine in blitz.
 
-Practical handling:
+## Data Sources
 
-- keep them
-- encode them as bounded extreme targets for value
-- lower their sample weight a bit so they do not dominate
+Primary bootstrap source:
 
-Do not treat `depth == 99` as ordinary "best quality centipawn" data.
+- Lichess public Stockfish evaluations JSONL
+- Convert it with `build_value_dataset.py`
+- Train value from side-to-move centipawn/mate targets
 
-## First training target
+Secondary sources after the bootstrap works:
 
-Start with a value network only.
+- Lichess rated game PGNs filtered to strong players and fast time controls
+- Self-play positions from the current engine
+- Tactical regression positions from our own losses
+- Fresh Stockfish labels generated locally for positions where our engine
+  disagrees with the bootstrap net
 
-Reason:
+## Bootstrap Pipeline
 
-- the existing engine already has alpha-beta search
-- replacing the static evaluator is the smallest integration step
-- policy training can come later from `best_move`
-
-Recommended value target:
-
-- normal evals: convert pawns to centipawns, clip, then squash to `[-1, 1]`
-- mate evals: map directly to `-1` / `+1`
-- flip the target for Black-to-move positions so the network learns side-to-move value, matching the side-to-move ordered accumulators
-
-Recommended weighting:
-
-- depth weight uses a smooth square-root curve from the streaming loader
-- `depth 15` starts around normal weight
-- deeper rows get progressively more influence
-- mate rows are slightly downweighted so they do not dominate
-
-## First model shape
-
-Use a value-only HalfKP-style network:
-
-- two HalfKP accumulators:
-  - White perspective
-  - Black perspective
-- concatenate them in side-to-move order
-- feed through a small MLP
-- output a bounded scalar value in `[-1, 1]`
-
-Current prototype:
-
-- sparse HalfKP-style features from FEN
-- `EmbeddingBag` accumulator
-- `128` accumulator dim
-- `32` hidden dim
-- `tanh` output
-
-## Suggested rollout
-
-1. Stream the JSONL with filtering in code
-2. Train a small value-only model
-3. Evaluate offline against the tactical regression suite and test lab
-4. Integrate C inference into `src/core/engine`
-5. Only then consider policy or full move ordering assistance
-
-## Current helpers
-
-- `training_data.py`: streaming rows, split logic, target conversion, sample weights
-- `dataset_inspect.py`: quick dataset inspection without rewriting the file
-
-Example:
+Download or stream the Lichess eval file, then convert it:
 
 ```bash
-python3 src/core/bot/nn/dataset_inspect.py \
-  --input data/labels/stockfish_san_10m.jsonl \
-  --min-depth 15 \
-  --split train \
-  --limit 50000
+python3 src/core/bot/nn/build_value_dataset.py \
+  --input data/raw/lichess_db_eval.jsonl.zst \
+  --output data/labels/lichess_eval_value_sample.jsonl \
+  --min-depth 18 \
+  --limit 2000000
 ```
+
+Train a first small net:
+
+```bash
+python3 src/core/bot/nn/train.py \
+  --input data/labels/lichess_eval_value_sample.jsonl \
+  --epochs 4 \
+  --batch-size 1024 \
+  --feature-dim 160 \
+  --hidden-dim 40 \
+  --train-samples-per-epoch 500000 \
+  --val-samples 100000
+```
+
+Then compare with the current classic backend:
+
+```bash
+python3 src/core/bot/test_lab.py \
+  --engine classic=bin/chess_uci \
+  --engine nn=bin/chess_uci \
+  --uci-option nn:Backend=nn \
+  --uci-option nn:NNModel=src/core/bot/nn/model/nn_eval.bin \
+  --positions-count 100 \
+  --think-ms 120 \
+  --baseline classic
+```
+
+## Promotion Bar
+
+A candidate net is not interesting until it passes all of these:
+
+- `make test`
+- tactical regression suite no worse than classic
+- at least `+20 Elo` vs classic over a quick smoke match
+- then `+40 Elo` or better over a larger paired-position match
+- no speed collapse in `make bench` or UCI node logs
+
+## Longer-Term Direction
+
+After a value net is genuinely stronger, add policy-like help in this order:
+
+1. NN move ordering head for root and main search ordering.
+2. Tactical value head trained on blunder/loss positions.
+3. Search-distilled labels from Stockfish or our own deeper search.
+4. Only then consider end-to-end MCTS/policy-value play.
+
+The practical target is not to make a tiny AlphaZero clone. It is to build a
+fast CPU net that makes our alpha-beta search less blind than HCE.

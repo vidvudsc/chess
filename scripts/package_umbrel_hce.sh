@@ -34,10 +34,19 @@ rsync -a \
   --exclude='*' \
   "$ROOT_DIR/src/core/engine/" "$ENGINE_STAGE/"
 
+BOT_REQUIREMENTS="$ROOT_DIR/src/core/bot/requirements_runtime.txt"
+if [[ ! -f "$BOT_REQUIREMENTS" ]]; then
+  BOT_REQUIREMENTS="$ROOT_DIR/src/core/bot/requirements.txt"
+fi
+
 rsync -a \
   "$ROOT_DIR/src/core/bot/run.py" \
-  "$ROOT_DIR/src/core/bot/requirements.txt" \
+  "$BOT_REQUIREMENTS" \
   "$STAGE_DIR/"
+
+if [[ -f "$STAGE_DIR/requirements_runtime.txt" ]]; then
+  mv "$STAGE_DIR/requirements_runtime.txt" "$STAGE_DIR/requirements.txt"
+fi
 
 if [[ -f "$ROOT_DIR/src/core/bot/umbrel.env.example" ]]; then
   rsync -a "$ROOT_DIR/src/core/bot/umbrel.env.example" "$STAGE_DIR/.env.example"

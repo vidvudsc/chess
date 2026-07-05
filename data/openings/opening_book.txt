@@ -1,0 +1,80 @@
+# Conservative weighted opening book generated from opening_games_100.txt
+# Format: name|uci-sequence|weight
+Benoni Defense A|d2d4 g8f6 c2c4 c7c5 d4d5 e7e6 b1c3 e6d5 c4d5|3
+Benoni Defense B|d2d4 g8f6 c2c4 c7c5 d4d5 e7e6 g1f3 e6d5 c4d5 d7d6|3
+Bogo Indian A|d2d4 g8f6 c2c4 e7e6 g1f3 f8b4 c1d2|5
+Bogo Indian B|d2d4 g8f6 c2c4 e7e6 g1f3 f8b4 b1d2|5
+Catalan A|d2d4 g8f6 c2c4 e7e6 g2g3 d7d5 f1g2|5
+Catalan B|d2d4 g8f6 c2c4 e7e6 g2g3 d7d5 g1f3 f8e7|5
+Caro-Kann A|e2e4 c7c6 d2d4 d7d5 b1c3 d5e4 c3e4|7
+Caro-Kann B|e2e4 c7c6 d2d4 d7d5 e4e5 c8f5|7
+Caro-Kann C|e2e4 c7c6 d2d4 d7d5 e4d5 c6d5 b1c3|7
+Colle System A|d2d4 d7d5 g1f3 g8f6 e2e3 e7e6 f1d3|1
+Colle System B|d2d4 d7d5 g1f3 g8f6 e2e3 c7c5 c2c3|1
+Giuoco Piano A|e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 c2c3 g8f6 d2d3|9
+Giuoco Piano B|e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 b1c3 g8f6 d2d3|9
+English Opening A|c2c4 e7e5 b1c3 g8f6 g2g3 d7d5 c4d5|5
+English Opening B|c2c4 g8f6 b1c3 e7e5 g1f3 b8c6 g2g3|5
+Four Knights A|e2e4 e7e5 g1f3 b8c6 b1c3 g8f6 f1b5 f8b4|9
+Four Knights B|e2e4 e7e5 g1f3 b8c6 b1c3 g8f6 d2d4 e5d4|9
+French Defense A|e2e4 e7e6 d2d4 d7d5 b1c3 f8b4|7
+French Defense B|e2e4 e7e6 d2d4 d7d5 b1d2 g8f6 e4e5|7
+French Defense C|e2e4 e7e6 d2d4 d7d5 b1c3 g8f6 c1g5|7
+Grunfeld A|d2d4 g8f6 c2c4 g7g6 b1c3 d7d5 c4d5 f6d5 e2e4|4
+Grunfeld B|d2d4 g8f6 c2c4 g7g6 b1c3 d7d5 g1f3 f8g7|4
+Italian Game A|e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 d2d3|9
+Italian Game B|e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 c2c3 g8f6 d2d4|9
+Kings Indian Attack A|g1f3 d7d5 g2g3 g8f6 f1g2 e7e6 e1g1|1
+Kings Indian Attack B|g1f3 d7d5 g2g3 c7c6 f1g2 c8g4|1
+Kings Indian Defense A|d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6|4
+Kings Indian Defense B|d2d4 g8f6 c2c4 g7g6 g1f3 f8g7 b1c3 e8g8|4
+Kings Pawn Game A|e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4|3
+Kings Pawn Game B|e2e4 e7e5 g1f3 b8c6|3
+London System A|d2d4 g8f6 g1f3 d7d5 c1f4 e7e6 e2e3|7
+London System B|d2d4 d7d5 c1f4 g8f6 e2e3 c7c5 c2c3|7
+Nimzo Indian A|d2d4 g8f6 c2c4 e7e6 b1c3 f8b4 e2e3|5
+Nimzo Indian B|d2d4 g8f6 c2c4 e7e6 b1c3 f8b4 d1c2|5
+Petrov Defense A|e2e4 e7e5 g1f3 g8f6 f3e5 d7d6|9
+Petrov Defense B|e2e4 e7e5 g1f3 g8f6 b1c3 b8c6|9
+Philidor Defense A|e2e4 e7e5 g1f3 d7d6 d2d4 e5d4|3
+Philidor Defense B|e2e4 e7e5 g1f3 d7d6 f1c4 g8f6|3
+Pirc Defense A|e2e4 d7d6 d2d4 g8f6 b1c3 g7g6 g1f3|3
+Pirc Defense B|e2e4 d7d6 d2d4 g8f6 b1c3 g7g6 f2f4|3
+Queens Pawn Game A|d2d4 d7d5 g1f3 g8f6|7
+Queens Pawn Game B|d2d4 g8f6 c2c4 e7e6 g1f3|7
+QGA A|d2d4 d7d5 c2c4 d5c4 g1f3 g8f6 e2e3|4
+QGA B|d2d4 d7d5 c2c4 d5c4 e2e3 b7b5 a2a4|4
+QGD A|d2d4 d7d5 c2c4 e7e6 b1c3 g8f6|7
+QGD B|d2d4 d7d5 c2c4 e7e6 g1f3 g8f6 b1c3 c7c6|7
+Queens Indian A|d2d4 g8f6 c2c4 e7e6 g1f3 b7b6 g2g3|5
+Queens Indian B|d2d4 g8f6 c2c4 e7e6 g1f3 b7b6 b1c3 c8b7|5
+Reti Opening A|g1f3 d7d5 c2c4 e7e6 d2d4|5
+Reti Opening B|g1f3 d7d5 c2c4 d5c4 e2e3|5
+Ruy Lopez A|e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6|9
+Ruy Lopez B|e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5c6 d7c6|9
+Scotch Game A|e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4|9
+Scotch Game B|e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4 f8c5|9
+Sicilian A|e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6|7
+Sicilian B|e2e4 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g7g6|7
+Sicilian C|e2e4 c7c5 b1c3 b8c6 g2g3|7
+Slav Defense A|d2d4 d7d5 c2c4 c7c6 g1f3 g8f6|7
+Slav Defense B|d2d4 d7d5 c2c4 c7c6 b1c3 g8f6 g1f3|7
+Torre Attack A|d2d4 g8f6 g1f3 e7e6 c1g5 d7d5|1
+Torre Attack B|d2d4 g8f6 g1f3 d7d5 c1g5 c7c5|1
+Two Knights A|e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 d2d3|9
+Two Knights B|e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 f3g5 d7d5 e4d5 c6a5|9
+Vienna Game A|e2e4 e7e5 b1c3 g8f6 f2f4|3
+Vienna Game B|e2e4 e7e5 b1c3 g8f6 g2g3 d7d5|3
+Ruy Lopez C|e2e4 e7e5 g1f3 b8c6 f1b5 g8f6 e1g1|9
+Ruy Lopez D|e2e4 e7e5 g1f3 b8c6 f1b5 f7f5|9
+Sicilian D|e2e4 c7c5 g1f3 e7e6 d2d4 c5d4 f3d4 b8c6|7
+Sicilian E|e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 g7g6|7
+Sicilian F|e2e4 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 e7e5|7
+QGD C|d2d4 d7d5 c2c4 e7e6 b1c3 g8f6 c1g5|7
+QGD D|d2d4 d7d5 c2c4 e7e6 g1f3 g8f6 e2e3|7
+KID C|d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6 g1f3 e8g8|1
+KID D|d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6 f2f3|1
+Caro-Kann D|e2e4 c7c6 d2d4 d7d5 b1c3 g8f6 e4e5 f6d7|7
+French Defense D|e2e4 e7e6 d2d4 d7d5 b1c3 g8f6 e4e5 f6d7|7
+English Opening C|c2c4 e7e5 g2g3 g8f6 f1g2 c7c6|5
+London System C|d2d4 g8f6 g1f3 d7d5 c1f4 c7c5 e2e3 b8c6|7

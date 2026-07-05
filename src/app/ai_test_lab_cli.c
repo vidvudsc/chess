@@ -25,7 +25,10 @@ typedef struct CliMatchupSelection {
 
 static const CliMatchupSelection k_cli_matchups[] = {
     {"classic-vs-stockfish", AI_TEST_MODE_VS_STOCKFISH, CHESS_AI_BACKEND_CLASSIC, CHESS_AI_BACKEND_CLASSIC},
+    {"experimental-vs-stockfish", AI_TEST_MODE_VS_STOCKFISH, CHESS_AI_BACKEND_EXPERIMENTAL, CHESS_AI_BACKEND_CLASSIC},
     {"nn-vs-stockfish", AI_TEST_MODE_VS_STOCKFISH, CHESS_AI_BACKEND_NN, CHESS_AI_BACKEND_CLASSIC},
+    {"classic-vs-experimental", AI_TEST_MODE_INTERNAL, CHESS_AI_BACKEND_CLASSIC, CHESS_AI_BACKEND_EXPERIMENTAL},
+    {"experimental-vs-classic", AI_TEST_MODE_INTERNAL, CHESS_AI_BACKEND_EXPERIMENTAL, CHESS_AI_BACKEND_CLASSIC},
     {"classic-vs-nn", AI_TEST_MODE_INTERNAL, CHESS_AI_BACKEND_CLASSIC, CHESS_AI_BACKEND_NN},
     {"nn-vs-classic", AI_TEST_MODE_INTERNAL, CHESS_AI_BACKEND_NN, CHESS_AI_BACKEND_CLASSIC},
 };
@@ -76,7 +79,8 @@ static void ai_test_cli_print_usage(FILE *stream, const char *argv0) {
             "  bin/chess --ai-test-lab [options]\n"
             "\n"
             "Options:\n"
-            "  --matchup <name>          classic-vs-stockfish|nn-vs-stockfish|classic-vs-nn|nn-vs-classic\n"
+            "  --matchup <name>          classic-vs-stockfish|experimental-vs-stockfish|nn-vs-stockfish|\n"
+            "                            classic-vs-experimental|experimental-vs-classic|classic-vs-nn|nn-vs-classic\n"
             "  --games <n>               Total games to run (default: 200)\n"
             "  --our-think-ms <n>        Our side think time in ms (default: 350)\n"
             "  --opp-think-ms <n>        Opponent think time in ms (default: 350)\n"
@@ -118,7 +122,15 @@ static bool parse_u64(const char *text, uint64_t *out) {
 }
 
 static const char *backend_label(ChessAiBackend backend) {
-    return (backend == CHESS_AI_BACKEND_NN) ? "NN" : "Classic";
+    switch (backend) {
+        case CHESS_AI_BACKEND_NN:
+            return "NN";
+        case CHESS_AI_BACKEND_EXPERIMENTAL:
+            return "Experimental";
+        case CHESS_AI_BACKEND_CLASSIC:
+        default:
+            return "Classic";
+    }
 }
 
 static const char *cli_matchup_name(const AiTestConfig *cfg) {

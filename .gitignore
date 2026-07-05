@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 *.bin
 *.jsonl
+!data/positions/hce_position_suite.jsonl
 *.nnb
 *.pt
 src/core/bot/nn/model/*
@@ -21,4 +22,4 @@ data/*.npz
 data/**/*.npz
 data/*.zst
 data/**/*.zst
-data/openings/opening_book.txt
+!data/openings/opening_book.txt

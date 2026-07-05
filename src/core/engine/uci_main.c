@@ -189,6 +189,8 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         ChessAiBackend backend = CHESS_AI_BACKEND_CLASSIC;
         if (str_ieq(value_buf, "nn")) {
             backend = CHESS_AI_BACKEND_NN;
+        } else if (str_ieq(value_buf, "experimental")) {
+            backend = CHESS_AI_BACKEND_EXPERIMENTAL;
         }
         if (chess_ai_set_backend(backend)) {
             opt->backend = backend;
@@ -465,7 +467,7 @@ static void uci_search_info_callback(int depth,
 static void print_uci_intro(const UciOptions *opt) {
     printf("id name Chess HCE Engine\n");
     printf("id author Codex + vidvudscalitis\n");
-    printf("option name Backend type combo default classic var classic var nn\n");
+    printf("option name Backend type combo default classic var classic var nn var experimental\n");
     printf("option name MoveTime type spin default %d min 1 max 10000\n", opt->think_time_ms);
     printf("option name MaxDepth type spin default %d min 1 max 32\n", opt->max_depth);
     printf("option name NNModel type string default auto\n");
