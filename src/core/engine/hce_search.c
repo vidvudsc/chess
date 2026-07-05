@@ -776,11 +776,10 @@ static int negamax(GameState *s,
     }
 
     bool in_check = chess_in_check(s, s->side_to_move);
-    int static_eval = in_check ? 0 : search_eval_cp_stm(s, ctx, ply);
 
     if (!search_in_verification(ctx, ply) && !in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
         int margin = search_uses_nn_backend() ? (110 * depth) : (90 * depth);
-        if (static_eval >= beta + margin) {
+        if (search_eval_cp_stm(s, ctx, ply) >= beta + margin) {
             return beta;
         }
     }
@@ -929,7 +928,7 @@ static int negamax(GameState *s,
     }
 
     if (best_score == -HCE_INF) {
-        best_score = static_eval;
+        best_score = in_check ? 0 : search_eval_cp_stm(s, ctx, ply);
     }
 
     HceTtBound bound = HCE_TT_EXACT;

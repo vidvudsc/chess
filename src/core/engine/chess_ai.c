@@ -23,6 +23,10 @@ static void nn_eval_cache_clear(void) {
     memset(g_nn_eval_cache, 0, sizeof(g_nn_eval_cache));
 }
 
+// Same idea for the classic HCE eval: it is a pure function of the position,
+// so transposed/re-visited nodes can reuse the score.
+static NnEvalCacheEntry g_hce_eval_cache[NN_EVAL_CACHE_SIZE];
+
 int engine_eval_cp_stm(const GameState *state) {
     if (state == NULL) {
         return 0;
@@ -41,7 +45,15 @@ int engine_eval_cp_stm(const GameState *state) {
     if (g_chess_ai_backend == CHESS_AI_BACKEND_EXPERIMENTAL) {
         return hce_experimental_eval_cp_stm(state);
     }
-    return hce_eval_cp_stm(state);
+    NnEvalCacheEntry *entry = &g_hce_eval_cache[state->zobrist_hash & NN_EVAL_CACHE_MASK];
+    if (entry->valid && entry->key == state->zobrist_hash) {
+        return entry->score_cp_stm;
+    }
+    int score = hce_eval_cp_stm(state);
+    entry->key = state->zobrist_hash;
+    entry->score_cp_stm = score;
+    entry->valid = true;
+    return score;
 }
 
 int chess_ai_eval_cp(const GameState *state) {

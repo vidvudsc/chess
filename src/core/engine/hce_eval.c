@@ -469,11 +469,10 @@ typedef struct AttackUnions {
 
 static void compute_attack_unions(const GameState *s, AttackUnions *out) {
     for (int side = PIECE_WHITE; side <= PIECE_BLACK; ++side) {
-        uint64_t a = 0;
         uint64_t pawns = s->bb[side][PIECE_PAWN];
-        while (pawns != 0) {
-            a |= g_pawn_attacks[side][chess_pop_lsb(&pawns)];
-        }
+        uint64_t a = (side == PIECE_WHITE)
+                         ? (((pawns & ~g_file_masks[0]) << 7) | ((pawns & ~g_file_masks[7]) << 9))
+                         : (((pawns & ~g_file_masks[0]) >> 9) | ((pawns & ~g_file_masks[7]) >> 7));
         uint64_t knights = s->bb[side][PIECE_KNIGHT];
         while (knights != 0) {
             a |= g_knight_attacks[chess_pop_lsb(&knights)];
