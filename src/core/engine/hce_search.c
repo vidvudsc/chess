@@ -8,7 +8,7 @@
 #include <string.h>
 #include <time.h>
 
-#define HCE_TT_BITS 18
+#define HCE_TT_BITS 20
 #define HCE_TT_SIZE (1u << HCE_TT_BITS)
 #define HCE_TT_MASK (HCE_TT_SIZE - 1u)
 
@@ -25,6 +25,7 @@ typedef struct HceTtEntry {
     int16_t score;
     int8_t depth;
     uint8_t bound;
+    uint8_t age;
 } HceTtEntry;
 
 typedef struct HceSearchContext {
@@ -65,6 +66,7 @@ static int previous_root_order_bonus(const HceRootMoveInfo *prev_moves,
 }
 
 static HceTtEntry g_hce_tt[HCE_TT_SIZE];
+static uint8_t g_hce_tt_generation = 0;
 static atomic_flag g_hce_lock = ATOMIC_FLAG_INIT;
 
 static int64_t now_ms(void) {
@@ -210,13 +212,20 @@ static bool tt_probe(uint64_t key, int depth, int ply, int alpha, int beta, Move
 
 static void tt_store(uint64_t key, int depth, int ply, int score, HceTtBound bound, Move move) {
     HceTtEntry *entry = tt_entry(key);
-    if (entry->bound != HCE_TT_NONE && entry->key == key && entry->depth > depth && bound != HCE_TT_EXACT) {
+    // Keep deeper data for the same position within the current search
+    // generation; entries from older searches are always replaceable.
+    if (entry->bound != HCE_TT_NONE &&
+        entry->key == key &&
+        entry->age == g_hce_tt_generation &&
+        entry->depth > depth &&
+        bound != HCE_TT_EXACT) {
         return;
     }
     entry->key = key;
     entry->move = move;
     entry->depth = (int8_t)depth;
     entry->bound = (uint8_t)bound;
+    entry->age = g_hce_tt_generation;
     entry->score = (int16_t)tt_score_to_store(score, ply);
 }
 
@@ -1284,6 +1293,8 @@ bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchRe
     bool ok;
     hce_lock();
     hce_init_tables();
+    g_hce_tt_generation += 1;
+    g_hce_tt_generation += 1;
     ok = run_search(state, cfg, out, 0, 0);
     hce_unlock();
     return ok;
