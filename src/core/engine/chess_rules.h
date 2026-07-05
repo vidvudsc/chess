@@ -6,6 +6,9 @@
 void chess_init(GameState *s, const MatchConfig *cfg);
 int chess_generate_legal_moves(const GameState *s, Move out[CHESS_MAX_MOVES]);
 int chess_generate_legal_moves_mut(GameState *s, Move out[CHESS_MAX_MOVES]);
+// Legal captures and promotions only. Does not generate quiet evasions, so
+// callers must use the full generator when the side to move is in check.
+int chess_generate_tactical_moves_mut(GameState *s, Move out[CHESS_MAX_MOVES]);
 bool chess_make_move(GameState *s, Move m);
 bool chess_make_move_trusted(GameState *s, Move legal_move);
 bool chess_undo_move(GameState *s);

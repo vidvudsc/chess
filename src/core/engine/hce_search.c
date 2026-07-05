@@ -307,11 +307,6 @@ static bool search_in_verification(const HceSearchContext *ctx, int ply) {
     return ctx != NULL && ctx->verification_plies > ply;
 }
 
-static bool is_qsearch_tactical_move(Move m) {
-    return move_has_flag(m, MOVE_FLAG_CAPTURE) ||
-           move_has_flag(m, MOVE_FLAG_PROMOTION);
-}
-
 static int qsearch_move_gain_cp(const GameState *s, Move m) {
     int gain = 0;
     int captured = captured_piece_for_move(s, m);
@@ -668,26 +663,15 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
         }
     }
 
-    Move moves[CHESS_MAX_MOVES];
-    int n = chess_generate_legal_moves_mut(s, moves);
-    if (n <= 0) {
-        if (in_check) {
+    Move tactical_moves[CHESS_MAX_MOVES];
+    int tactical_n;
+    if (in_check) {
+        tactical_n = chess_generate_legal_moves_mut(s, tactical_moves);
+        if (tactical_n <= 0) {
             return -HCE_MATE + ply;
         }
-        return 0;
-    }
-
-    Move tactical_moves[CHESS_MAX_MOVES];
-    int tactical_n = 0;
-    if (in_check) {
-        memcpy(tactical_moves, moves, (size_t)n * sizeof(Move));
-        tactical_n = n;
     } else {
-        for (int i = 0; i < n; ++i) {
-            if (is_qsearch_tactical_move(moves[i])) {
-                tactical_moves[tactical_n++] = moves[i];
-            }
-        }
+        tactical_n = chess_generate_tactical_moves_mut(s, tactical_moves);
         if (tactical_n <= 0) {
             return alpha;
         }

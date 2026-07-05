@@ -759,7 +759,7 @@ static void compute_checkers_and_pins(const GameState *s,
     *checkers_out = checkers;
 }
 
-static int generate_legal_moves_mutable(GameState *s, Move out[CHESS_MAX_MOVES]) {
+static int generate_moves_impl(GameState *s, Move out[CHESS_MAX_MOVES], bool tactical_only) {
     int legal_count = 0;
     int side = s->side_to_move;
     int opp = side ^ 1;
@@ -806,12 +806,12 @@ static int generate_legal_moves_mutable(GameState *s, Move out[CHESS_MAX_MOVES])
                 if ((to_bit & check_mask) != 0 && (pin_mask == 0 || (to_bit & pin_mask) != 0)) {
                     if (square_rank(to) == promote_rank) {
                         add_pawn_promotions(out, &legal_count, from, to, MOVE_FLAG_NONE);
-                    } else {
+                    } else if (!tactical_only) {
                         add_move(out, &legal_count, move_pack(from, to, PIECE_PAWN, CHESS_PROMO_NONE, MOVE_FLAG_NONE));
                     }
                 }
 
-                if (((side == PIECE_WHITE && rank == 1) || (side == PIECE_BLACK && rank == 6))) {
+                if (!tactical_only && ((side == PIECE_WHITE && rank == 1) || (side == PIECE_BLACK && rank == 6))) {
                     int to2 = from + 2 * step;
                     if ((all_occ & (1ULL << to2)) == 0) {
                         uint64_t to2_bit = 1ULL << to2;
@@ -863,6 +863,9 @@ static int generate_legal_moves_mutable(GameState *s, Move out[CHESS_MAX_MOVES])
             if (pin_masks[from] != 0) {
                 targets &= pin_masks[from];
             }
+            if (tactical_only) {
+                targets &= opp_occ;
+            }
             add_move_targets(out, &legal_count, from, PIECE_KNIGHT, targets, opp_occ);
         }
 
@@ -872,6 +875,9 @@ static int generate_legal_moves_mutable(GameState *s, Move out[CHESS_MAX_MOVES])
             uint64_t targets = bishop_attacks(from, all_occ) & ~own_occ & check_mask;
             if (pin_masks[from] != 0) {
                 targets &= pin_masks[from];
+            }
+            if (tactical_only) {
+                targets &= opp_occ;
             }
             add_move_targets(out, &legal_count, from, PIECE_BISHOP, targets, opp_occ);
         }
@@ -883,6 +889,9 @@ static int generate_legal_moves_mutable(GameState *s, Move out[CHESS_MAX_MOVES])
             if (pin_masks[from] != 0) {
                 targets &= pin_masks[from];
             }
+            if (tactical_only) {
+                targets &= opp_occ;
+            }
             add_move_targets(out, &legal_count, from, PIECE_ROOK, targets, opp_occ);
         }
 
@@ -893,11 +902,17 @@ static int generate_legal_moves_mutable(GameState *s, Move out[CHESS_MAX_MOVES])
             if (pin_masks[from] != 0) {
                 targets &= pin_masks[from];
             }
+            if (tactical_only) {
+                targets &= opp_occ;
+            }
             add_move_targets(out, &legal_count, from, PIECE_QUEEN, targets, opp_occ);
         }
     }
 
     uint64_t king_targets = g_king_attacks[king_sq] & ~own_occ;
+    if (tactical_only) {
+        king_targets &= opp_occ;
+    }
     while (king_targets != 0) {
         int to = chess_pop_lsb(&king_targets);
         uint32_t flags = ((opp_occ & (1ULL << to)) != 0) ? MOVE_FLAG_CAPTURE : MOVE_FLAG_NONE;
@@ -905,7 +920,7 @@ static int generate_legal_moves_mutable(GameState *s, Move out[CHESS_MAX_MOVES])
         add_move_if_legal_after_apply(s, out, &legal_count, m, to);
     }
 
-    if (check_count == 0) {
+    if (check_count == 0 && !tactical_only) {
         if (side == PIECE_WHITE && king_sq == 4) {
             bool king_safe = !square_attacked(s, 4, PIECE_BLACK);
             if ((s->castling_rights & CASTLE_WHITE_KING) != 0 &&
@@ -938,6 +953,15 @@ static int generate_legal_moves_mutable(GameState *s, Move out[CHESS_MAX_MOVES])
     }
 
     return legal_count;
+}
+
+static int generate_legal_moves_mutable(GameState *s, Move out[CHESS_MAX_MOVES]) {
+    return generate_moves_impl(s, out, false);
+}
+
+int chess_generate_tactical_moves_mut(GameState *s, Move out[CHESS_MAX_MOVES]) {
+    ensure_engine_ready();
+    return generate_moves_impl(s, out, true);
 }
 
 void chess_init(GameState *s, const MatchConfig *cfg) {
