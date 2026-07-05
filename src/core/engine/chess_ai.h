@@ -21,6 +21,11 @@ typedef enum ChessAiBackend {
 
 typedef struct AiSearchConfig {
     int think_time_ms;
+    // Optional hard cap (>= think_time_ms). When set, think_time_ms acts as a
+    // soft target: iterations stop early once it is unlikely another depth can
+    // finish, and unstable searches may run past it up to the hard cap.
+    // 0 means hard == soft (strict movetime behavior).
+    int hard_time_ms;
     int max_depth;
     AiSearchInfoCallback info_callback;
     void *info_user_data;

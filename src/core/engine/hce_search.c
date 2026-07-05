@@ -1201,7 +1201,11 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     memset(&ctx, 0, sizeof(ctx));
     ctx.start_ms = now_ms();
     int think_ms = (override_ms > 0) ? override_ms : ((cfg != NULL && cfg->think_time_ms > 0) ? cfg->think_time_ms : 120);
-    ctx.hard_deadline_ms = ctx.start_ms + think_ms;
+    int hard_ms = think_ms;
+    if (override_ms <= 0 && cfg != NULL && cfg->hard_time_ms > think_ms) {
+        hard_ms = cfg->hard_time_ms;
+    }
+    ctx.hard_deadline_ms = ctx.start_ms + hard_ms;
     ctx.deadline_ms = ctx.hard_deadline_ms;
     ctx.max_depth = (override_depth > 0) ? override_depth : ((cfg != NULL && cfg->max_depth > 0) ? cfg->max_depth : 10);
     if (ctx.max_depth > HCE_MAX_DEPTH) {
@@ -1215,9 +1219,29 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     int prev_root_move_count = 0;
     memset(prev_root_moves, 0, sizeof(prev_root_moves));
 
+    bool score_unstable = false;
+    int last_iter_score = 0;
+    bool have_iter_score = false;
+
     for (int depth = 1; depth <= ctx.max_depth; ++depth) {
         if (should_stop(&ctx)) {
             break;
+        }
+        if (depth >= 2 && depth_reached >= 1) {
+            // Don't start an iteration that is unlikely to finish: each depth
+            // costs roughly as much as all previous ones combined. A falling
+            // score extends the soft budget toward the hard cap instead.
+            int64_t elapsed = now_ms() - ctx.start_ms;
+            int64_t soft_budget = think_ms;
+            if (score_unstable && hard_ms > think_ms) {
+                soft_budget = (int64_t)think_ms * 2;
+                if (soft_budget > hard_ms) {
+                    soft_budget = hard_ms;
+                }
+            }
+            if (elapsed * 100 >= soft_budget * 55) {
+                break;
+            }
         }
         Move iter_best = best_move;
         int score = 0;
@@ -1265,6 +1289,11 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
         best_move = iter_best;
         best_score = score;
         depth_reached = depth;
+        if (have_iter_score) {
+            score_unstable = (score <= last_iter_score - 60);
+        }
+        last_iter_score = score;
+        have_iter_score = true;
         memcpy(prev_root_moves, iter_root_moves, sizeof(prev_root_moves));
         prev_root_move_count = iter_root_move_count;
         if (cfg != NULL && cfg->info_callback != NULL) {

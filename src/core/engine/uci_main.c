@@ -365,6 +365,7 @@ static void handle_go(GameState *state, const char *line, const UciOptions *opt)
         }
     }
 
+    int hard_ms = 0;
     if (!saw_movetime) {
         int remaining = (state->side_to_move == PIECE_WHITE) ? wtime : btime;
         int inc = (state->side_to_move == PIECE_WHITE) ? winc : binc;
@@ -380,6 +381,18 @@ static void handle_go(GameState *state, const char *line, const UciOptions *opt)
                 budget = 5000;
             }
             think_ms = budget;
+
+            // With a real clock the budget is a soft target: allow unstable
+            // searches to run up to 2x, but never more than a safe slice of
+            // the remaining clock.
+            hard_ms = budget * 2;
+            int clock_cap = remaining / 6;
+            if (hard_ms > clock_cap) {
+                hard_ms = clock_cap;
+            }
+            if (hard_ms < think_ms) {
+                hard_ms = 0;
+            }
         }
     }
 
@@ -395,6 +408,7 @@ static void handle_go(GameState *state, const char *line, const UciOptions *opt)
 
     AiSearchConfig cfg = {
         .think_time_ms = think_ms,
+        .hard_time_ms = hard_ms,
         .max_depth = max_depth,
         .info_callback = uci_search_info_callback,
         .info_user_data = NULL,
