@@ -38,7 +38,6 @@ typedef struct HceSearchContext {
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
     Move pv_move[HCE_MAX_PLY];
-    GameState *null_scratch[HCE_MAX_PLY];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
 } HceSearchContext;
 
@@ -81,16 +80,6 @@ static void hce_lock(void) {
 
 static void hce_unlock(void) {
     atomic_flag_clear_explicit(&g_hce_lock, memory_order_release);
-}
-
-static void free_null_scratch(HceSearchContext *ctx) {
-    if (ctx == NULL) {
-        return;
-    }
-    for (int i = 0; i < HCE_MAX_PLY; ++i) {
-        free(ctx->null_scratch[i]);
-        ctx->null_scratch[i] = NULL;
-    }
 }
 
 static bool search_is_insufficient_material(const GameState *s) {
@@ -494,27 +483,42 @@ static bool has_non_pawn_material(const GameState *s, int side) {
             s->bb[side][PIECE_KNIGHT]) != 0;
 }
 
-static void apply_null_move(GameState *dst, const GameState *src) {
-    *dst = *src;
-    dst->side_to_move ^= 1;
-    dst->ep_square = CHESS_NO_SQUARE;
-    dst->halfmove_clock += 1;
-    dst->has_last_move = false;
-    dst->last_move = 0;
-    if (src->side_to_move == PIECE_BLACK) {
-        dst->fullmove_number += 1;
+typedef struct NullMoveUndo {
+    uint64_t hash;
+    int ep_square;
+    int halfmove_clock;
+    int fullmove_number;
+    Move last_move;
+    bool has_last_move;
+} NullMoveUndo;
+
+static void make_null_move(GameState *s, NullMoveUndo *u) {
+    u->hash = s->zobrist_hash;
+    u->ep_square = s->ep_square;
+    u->halfmove_clock = s->halfmove_clock;
+    u->fullmove_number = s->fullmove_number;
+    u->last_move = s->last_move;
+    u->has_last_move = s->has_last_move;
+
+    s->zobrist_hash ^= chess_hash_side_key() ^ chess_hash_ep_key(s->ep_square);
+    if (s->side_to_move == PIECE_BLACK) {
+        s->fullmove_number += 1;
     }
-    dst->zobrist_hash = chess_hash_full(dst);
+    s->side_to_move ^= 1;
+    s->ep_square = CHESS_NO_SQUARE;
+    s->halfmove_clock += 1;
+    s->has_last_move = false;
+    s->last_move = 0;
 }
 
-static GameState *null_scratch_for_ply(HceSearchContext *ctx, int ply) {
-    if (ctx == NULL || ply < 0 || ply >= HCE_MAX_PLY) {
-        return NULL;
-    }
-    if (ctx->null_scratch[ply] == NULL) {
-        ctx->null_scratch[ply] = (GameState *)malloc(sizeof(GameState));
-    }
-    return ctx->null_scratch[ply];
+static void undo_null_move(GameState *s, const NullMoveUndo *u) {
+    s->side_to_move ^= 1;
+    s->zobrist_hash = u->hash;
+    s->ep_square = u->ep_square;
+    s->halfmove_clock = u->halfmove_clock;
+    s->fullmove_number = u->fullmove_number;
+    s->last_move = u->last_move;
+    s->has_last_move = u->has_last_move;
 }
 
 static bool is_quiet_move(Move m) {
@@ -787,28 +791,27 @@ static int negamax(GameState *s,
         !in_check &&
         beta < HCE_MATE_THRESHOLD &&
         has_non_pawn_material(s, s->side_to_move)) {
-        GameState *null_state = null_scratch_for_ply(ctx, ply);
-        if (null_state != NULL) {
-            apply_null_move(null_state, s);
-            int reduction = (search_uses_nn_backend() ? 1 : 2) + depth / 4;
-            if (reduction > depth - 1) {
-                reduction = depth - 1;
+        int reduction = (search_uses_nn_backend() ? 1 : 2) + depth / 4;
+        if (reduction > depth - 1) {
+            reduction = depth - 1;
+        }
+        if (reduction > 0) {
+            ctx->nodes += 1;
+            NullMoveUndo null_undo;
+            make_null_move(s, &null_undo);
+            int score = -negamax(s,
+                                 depth - 1 - reduction,
+                                 -beta,
+                                 -beta + 1,
+                                 ply + 1,
+                                 ctx,
+                                 NULL);
+            undo_null_move(s, &null_undo);
+            if (ctx->timed_out) {
+                return alpha;
             }
-            if (reduction > 0) {
-                ctx->nodes += 1;
-                int score = -negamax(null_state,
-                                     depth - 1 - reduction,
-                                     -beta,
-                                     -beta + 1,
-                                     ply + 1,
-                                     ctx,
-                                     NULL);
-                if (ctx->timed_out) {
-                    return alpha;
-                }
-                if (score >= beta) {
-                    return beta;
-                }
+            if (score >= beta) {
+                return beta;
             }
         }
     }
@@ -1286,7 +1289,6 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     out->depth_reached = depth_reached;
     out->nodes = ctx.nodes;
     out->elapsed_ms = (int)(now_ms() - ctx.start_ms);
-    free_null_scratch(&ctx);
     return true;
 }
 

@@ -169,7 +169,7 @@ static uint64_t pawn_attacks_mask(int side, int sq) {
     return mask;
 }
 
-uint64_t hce_bishop_attacks(int sq, uint64_t occ) {
+static uint64_t bishop_attacks_slow(int sq, uint64_t occ) {
     int f = square_file(sq);
     int r = square_rank(sq);
     uint64_t attacks = 0;
@@ -206,7 +206,7 @@ uint64_t hce_bishop_attacks(int sq, uint64_t occ) {
     return attacks;
 }
 
-uint64_t hce_rook_attacks(int sq, uint64_t occ) {
+static uint64_t rook_attacks_slow(int sq, uint64_t occ) {
     int f = square_file(sq);
     int r = square_rank(sq);
     uint64_t attacks = 0;
@@ -241,6 +241,120 @@ uint64_t hce_rook_attacks(int sq, uint64_t occ) {
     }
 
     return attacks;
+}
+
+// Fancy magic bitboards for slider attacks. Magics are found once at init by
+// random search and verified to map every relevant occupancy without harmful
+// collisions, so lookups are exact.
+typedef struct MagicEntry {
+    uint64_t mask;
+    uint64_t magic;
+    uint64_t *attacks;
+    int shift;
+} MagicEntry;
+
+static MagicEntry g_rook_magic[64];
+static MagicEntry g_bishop_magic[64];
+static uint64_t g_rook_attack_table[102400];
+static uint64_t g_bishop_attack_table[5248];
+
+static uint64_t slider_relevant_mask(int sq, bool rook) {
+    int f = square_file(sq);
+    int r = square_rank(sq);
+    uint64_t mask = 0;
+    if (rook) {
+        for (int nf = f + 1; nf <= 6; ++nf) mask |= 1ULL << make_square(nf, r);
+        for (int nf = f - 1; nf >= 1; --nf) mask |= 1ULL << make_square(nf, r);
+        for (int nr = r + 1; nr <= 6; ++nr) mask |= 1ULL << make_square(f, nr);
+        for (int nr = r - 1; nr >= 1; --nr) mask |= 1ULL << make_square(f, nr);
+    } else {
+        for (int nf = f + 1, nr = r + 1; nf <= 6 && nr <= 6; ++nf, ++nr) mask |= 1ULL << make_square(nf, nr);
+        for (int nf = f - 1, nr = r + 1; nf >= 1 && nr <= 6; --nf, ++nr) mask |= 1ULL << make_square(nf, nr);
+        for (int nf = f + 1, nr = r - 1; nf <= 6 && nr >= 1; ++nf, --nr) mask |= 1ULL << make_square(nf, nr);
+        for (int nf = f - 1, nr = r - 1; nf >= 1 && nr >= 1; --nf, --nr) mask |= 1ULL << make_square(nf, nr);
+    }
+    return mask;
+}
+
+static uint64_t magic_rand_state = 0x9E3779B97F4A7C15ULL;
+
+static uint64_t magic_rand64(void) {
+    magic_rand_state ^= magic_rand_state >> 12;
+    magic_rand_state ^= magic_rand_state << 25;
+    magic_rand_state ^= magic_rand_state >> 27;
+    return magic_rand_state * 0x2545F4914F6CDD1DULL;
+}
+
+static void init_magic_square(int sq, bool rook, MagicEntry *entry, uint64_t *table_slot) {
+    uint64_t mask = slider_relevant_mask(sq, rook);
+    int bits = chess_count_bits(mask);
+    int table_size = 1 << bits;
+    uint64_t occs[4096];
+    uint64_t refs[4096];
+
+    int n = 0;
+    uint64_t subset = 0;
+    do {
+        occs[n] = subset;
+        refs[n] = rook ? rook_attacks_slow(sq, subset) : bishop_attacks_slow(sq, subset);
+        ++n;
+        subset = (subset - mask) & mask;
+    } while (subset != 0);
+
+    entry->mask = mask;
+    entry->shift = 64 - bits;
+    entry->attacks = table_slot;
+
+    for (;;) {
+        uint64_t magic = magic_rand64() & magic_rand64() & magic_rand64();
+        if (chess_count_bits((mask * magic) >> 56) < 6) {
+            continue;
+        }
+        for (int i = 0; i < table_size; ++i) {
+            table_slot[i] = 0;
+        }
+        bool ok = true;
+        for (int i = 0; i < n; ++i) {
+            uint64_t idx = (occs[i] * magic) >> entry->shift;
+            if (table_slot[idx] == 0) {
+                table_slot[idx] = refs[i];
+            } else if (table_slot[idx] != refs[i]) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            entry->magic = magic;
+            return;
+        }
+    }
+}
+
+static void init_magics(void) {
+    uint64_t *rook_slot = g_rook_attack_table;
+    uint64_t *bishop_slot = g_bishop_attack_table;
+    for (int sq = 0; sq < 64; ++sq) {
+        init_magic_square(sq, true, &g_rook_magic[sq], rook_slot);
+        rook_slot += 1 << chess_count_bits(g_rook_magic[sq].mask);
+        init_magic_square(sq, false, &g_bishop_magic[sq], bishop_slot);
+        bishop_slot += 1 << chess_count_bits(g_bishop_magic[sq].mask);
+    }
+}
+
+uint64_t hce_bishop_attacks(int sq, uint64_t occ) {
+    if (!g_hce_tables_ready) {
+        hce_init_tables();
+    }
+    const MagicEntry *e = &g_bishop_magic[sq];
+    return e->attacks[((occ & e->mask) * e->magic) >> e->shift];
+}
+
+uint64_t hce_rook_attacks(int sq, uint64_t occ) {
+    if (!g_hce_tables_ready) {
+        hce_init_tables();
+    }
+    const MagicEntry *e = &g_rook_magic[sq];
+    return e->attacks[((occ & e->mask) * e->magic) >> e->shift];
 }
 
 void hce_init_tables(void) {
@@ -290,6 +404,8 @@ void hce_init_tables(void) {
         }
     }
 
+    init_magics();
+
     g_hce_tables_ready = true;
 }
 
@@ -338,7 +454,45 @@ static bool is_doubled_pawn(const GameState *s, int side, int sq) {
 }
 
 static bool square_supported_by_pawn(const GameState *s, int side, int sq) {
-    return (hce_attackers_to_square(s, sq, side) & s->bb[side][PIECE_PAWN]) != 0;
+    // A pawn of `side` defends sq iff sq is a pawn-attack target from the
+    // opposite direction.
+    return (s->bb[side][PIECE_PAWN] & g_pawn_attacks[side ^ 1][sq]) != 0;
+}
+
+// Union of all squares attacked by `side`, with and without the king's
+// attacks. Computed once per eval_side call and reused by the tactical
+// penalty terms so they only pay for full attacker sets on attacked squares.
+typedef struct AttackUnions {
+    uint64_t all[PIECE_COLOR_COUNT];
+    uint64_t non_king[PIECE_COLOR_COUNT];
+} AttackUnions;
+
+static void compute_attack_unions(const GameState *s, AttackUnions *out) {
+    for (int side = PIECE_WHITE; side <= PIECE_BLACK; ++side) {
+        uint64_t a = 0;
+        uint64_t pawns = s->bb[side][PIECE_PAWN];
+        while (pawns != 0) {
+            a |= g_pawn_attacks[side][chess_pop_lsb(&pawns)];
+        }
+        uint64_t knights = s->bb[side][PIECE_KNIGHT];
+        while (knights != 0) {
+            a |= g_knight_attacks[chess_pop_lsb(&knights)];
+        }
+        uint64_t bishop_like = s->bb[side][PIECE_BISHOP] | s->bb[side][PIECE_QUEEN];
+        while (bishop_like != 0) {
+            a |= hce_bishop_attacks(chess_pop_lsb(&bishop_like), s->occ_all);
+        }
+        uint64_t rook_like = s->bb[side][PIECE_ROOK] | s->bb[side][PIECE_QUEEN];
+        while (rook_like != 0) {
+            a |= hce_rook_attacks(chess_pop_lsb(&rook_like), s->occ_all);
+        }
+        out->non_king[side] = a;
+        uint64_t king = s->bb[side][PIECE_KING];
+        while (king != 0) {
+            a |= g_king_attacks[chess_pop_lsb(&king)];
+        }
+        out->all[side] = a;
+    }
 }
 
 static bool is_true_outpost_square(int side, int sq) {
@@ -432,14 +586,14 @@ static int king_attack_units(const GameState *s, int attacker_side, int king_sq)
         return 0;
     }
 
-    uint64_t zone = hce_king_attacks(king_sq) | (1ULL << king_sq);
+    uint64_t zone = g_king_attacks[king_sq] | (1ULL << king_sq);
     uint64_t occ = s->occ_all;
     int units = 0;
 
     uint64_t pawns = s->bb[attacker_side][PIECE_PAWN];
     while (pawns != 0) {
         int sq = chess_pop_lsb(&pawns);
-        if ((hce_pawn_attacks(attacker_side, sq) & zone) != 0) {
+        if ((g_pawn_attacks[attacker_side][sq] & zone) != 0) {
             units += 1;
         }
     }
@@ -447,7 +601,7 @@ static int king_attack_units(const GameState *s, int attacker_side, int king_sq)
     uint64_t knights = s->bb[attacker_side][PIECE_KNIGHT];
     while (knights != 0) {
         int sq = chess_pop_lsb(&knights);
-        if ((hce_knight_attacks(sq) & zone) != 0) {
+        if ((g_knight_attacks[sq] & zone) != 0) {
             units += 2;
         }
     }
@@ -591,12 +745,12 @@ static bool is_connected_passed_pawn(const GameState *s, int side, int sq) {
     return false;
 }
 
-static int hanging_piece_penalty(const GameState *s, int side) {
+static int hanging_piece_penalty(const GameState *s, int side, const AttackUnions *atk) {
     int penalty = 0;
     static const int scan_order[] = {PIECE_QUEEN, PIECE_ROOK, PIECE_BISHOP, PIECE_KNIGHT};
     for (size_t i = 0; i < sizeof(scan_order) / sizeof(scan_order[0]); ++i) {
         int piece = scan_order[i];
-        uint64_t bb = s->bb[side][piece];
+        uint64_t bb = s->bb[side][piece] & atk->all[side ^ 1];
         while (bb != 0) {
             int sq = chess_pop_lsb(&bb);
             uint64_t attackers = hce_attackers_to_square(s, sq, side ^ 1);
@@ -633,14 +787,14 @@ static int hanging_piece_penalty(const GameState *s, int side) {
     return penalty;
 }
 
-static int queen_trap_penalty(const GameState *s, int side) {
+static int queen_trap_penalty(const GameState *s, int side, const AttackUnions *atk) {
     if (s == NULL) {
         return 0;
     }
 
     int enemy = side ^ 1;
     int penalty = 0;
-    uint64_t queens = s->bb[side][PIECE_QUEEN];
+    uint64_t queens = s->bb[side][PIECE_QUEEN] & atk->all[enemy];
     while (queens != 0) {
         int sq = chess_pop_lsb(&queens);
         uint64_t attackers = hce_attackers_to_square(s, sq, enemy);
@@ -652,14 +806,7 @@ static int queen_trap_penalty(const GameState *s, int side) {
         uint64_t mobility = (hce_rook_attacks(sq, s->occ_all) |
                              hce_bishop_attacks(sq, s->occ_all)) &
                             ~s->occ[side];
-        int safe_escapes = 0;
-        while (mobility != 0) {
-            int to = chess_pop_lsb(&mobility);
-            uint64_t enemy_attacks = hce_attackers_to_square(s, to, enemy);
-            if ((enemy_attacks & ~s->bb[enemy][PIECE_KING]) == 0) {
-                safe_escapes += 1;
-            }
-        }
+        int safe_escapes = chess_count_bits(mobility & ~atk->non_king[enemy]);
 
         int trap = 0;
         if (safe_escapes <= 1) {
@@ -744,7 +891,11 @@ static inline int eval_term_blend(EvalTermPair term, int phase) {
     return (term.mg * phase + term.eg * (24 - phase)) / 24;
 }
 
-static int eval_side(const GameState *s, int side, int phase, ChessEvalSideBreakdown *out_breakdown) {
+static int eval_side(const GameState *s,
+                     int side,
+                     int phase,
+                     const AttackUnions *attack_unions,
+                     ChessEvalSideBreakdown *out_breakdown) {
     EvalSideTerms terms;
     memset(&terms, 0, sizeof(terms));
     int enemy = side ^ 1;
@@ -793,7 +944,7 @@ static int eval_side(const GameState *s, int side, int phase, ChessEvalSideBreak
                         }
                         int front_sq = sq + ((side == PIECE_WHITE) ? 8 : -8);
                         if (front_sq >= 0 && front_sq < 64) {
-                            if ((hce_attackers_to_square(s, front_sq, side) & s->bb[side][PIECE_PAWN]) != 0) {
+                            if (square_supported_by_pawn(s, side, front_sq)) {
                                 passer_mg += 4;
                                 passer_eg += 8;
                             }
@@ -817,8 +968,8 @@ static int eval_side(const GameState *s, int side, int phase, ChessEvalSideBreak
                         eval_term_add(&terms.outposts, 42, 22);
                     }
                     eval_term_add(&terms.mobility,
-                                  chess_count_bits(hce_knight_attacks(sq) & ~s->occ[side]) * 3,
-                                  chess_count_bits(hce_knight_attacks(sq) & ~s->occ[side]) * 2);
+                                  chess_count_bits(g_knight_attacks[sq] & ~s->occ[side]) * 3,
+                                  chess_count_bits(g_knight_attacks[sq] & ~s->occ[side]) * 2);
                     break;
                 case PIECE_BISHOP:
                     eval_term_add(&terms.piece_square, k_bishop_pst[view], k_bishop_pst[view] / 2);
@@ -869,8 +1020,8 @@ static int eval_side(const GameState *s, int side, int phase, ChessEvalSideBreak
     }
 
     int king_danger = king_safety_penalty(s, side);
-    int hanging = hanging_piece_penalty(s, side);
-    int queen_trap = queen_trap_penalty(s, side);
+    int hanging = hanging_piece_penalty(s, side, attack_unions);
+    int queen_trap = queen_trap_penalty(s, side, attack_unions);
     eval_term_add(&terms.king_safety_penalty, -king_danger, -(king_danger / 4));
     eval_term_add(&terms.hanging_penalty, -hanging, -hanging);
     eval_term_add(&terms.queen_trap_penalty, -queen_trap, -(queen_trap / 2));
@@ -924,8 +1075,10 @@ int hce_eval_cp_stm(const GameState *s) {
     hce_init_tables();
 
     int phase = phase_value(s);
-    int white = eval_side(s, PIECE_WHITE, phase, NULL);
-    int black = eval_side(s, PIECE_BLACK, phase, NULL);
+    AttackUnions attack_unions;
+    compute_attack_unions(s, &attack_unions);
+    int white = eval_side(s, PIECE_WHITE, phase, &attack_unions, NULL);
+    int black = eval_side(s, PIECE_BLACK, phase, &attack_unions, NULL);
     int cp_white = white - black;
     int cp_stm = (s->side_to_move == PIECE_WHITE) ? cp_white : -cp_white;
     // Tempo bonus: small advantage for having the move
@@ -945,8 +1098,10 @@ bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out) {
     hce_init_tables();
     memset(out, 0, sizeof(*out));
     out->phase = phase_value(s);
-    out->white.total = eval_side(s, PIECE_WHITE, out->phase, &out->white);
-    out->black.total = eval_side(s, PIECE_BLACK, out->phase, &out->black);
+    AttackUnions attack_unions;
+    compute_attack_unions(s, &attack_unions);
+    out->white.total = eval_side(s, PIECE_WHITE, out->phase, &attack_unions, &out->white);
+    out->black.total = eval_side(s, PIECE_BLACK, out->phase, &attack_unions, &out->black);
     out->score_cp_white = out->white.total - out->black.total;
     out->score_cp_stm = (s->side_to_move == PIECE_WHITE) ? out->score_cp_white : -out->score_cp_white;
     out->score_cp_stm += 12;
