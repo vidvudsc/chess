@@ -1,5 +1,23 @@
 # HCE Experiments
 
+## 2026-07-05: Search Speed Pack + A/C/D (B reverted)
+Status: kept (B reverted).
+- Speed (node-identical, verified vs baseline binary at fixed depth): magic
+  bitboard sliders, in-place null move with incremental hash, single-pass eval
+  attack unions, classic eval cache, lazy interior static eval.
+  NPS 565K -> 1.22M middlegame, 2.5x on kiwipete.
+- A qsearch tactical movegen: +17.4 Elo vs speed base, CI95 [-29.7, +65.1],
+  P=76.6% (60g). Kept. `current/chain_A_vs_speedbase_60g.json`
+- B fail-soft: -34.9 Elo vs A, CI95 [-81.1, +10.2], P=6.5% (60g). Reverted
+  in dba10ed. `current/chain_B_vs_A_60g.json`
+- C TT 1M entries + generation aging: +11.6 Elo vs B, CI95 [-24.5, +48.0],
+  P=73.5% (60g). Kept. `current/chain_C_vs_B_60g.json`
+- D soft/hard time split + fail-low extension: dormant under fixed movetime,
+  still needs a clock-based (wtime/btime) match or live Lichess validation.
+- Final stack vs pre-session baseline: 35.5/60, +64.4 Elo,
+  CI95 [+19.4, +111.7], P=99.8%. `current/final_stack_vs_baseline_60g.json`
+- Test lab gained --concurrency (parallel games, ~6x faster matches).
+
 This is the lightweight ledger for HCE changes. Each search/eval idea should
 name the hypothesis, the exact files touched, the validation commands, and the
 fallback path.
