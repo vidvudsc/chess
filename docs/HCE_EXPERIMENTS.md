@@ -1,5 +1,32 @@
 # HCE Experiments
 
+## 2026-07-06: HCE Branch Baseline Anchor
+Status: baseline only; no engine changes.
+
+Pinned current best HCE branch commit:
+`80b2fff0c4cab2582e6786f1e733449656fe05bf`.
+
+Snapshot binary:
+`current/engine_snapshots/hce_best_80b2fff_20260706_chess_uci`
+(`sha256=92ebd8ca2f1314a419cffc3107332d2d9a073333281e6dad87c9867cf6b1fe9c`).
+
+NPS reference:
+- Command shape: UCI `go depth 9` on the first five
+  `data/positions/lichess_equal_positions.fen` middlegame positions.
+- Report: `current/baselines/hce_best_80b2fff_nps_depth9_20260706.json`
+- NPS values: 1,436,042; 1,446,244; 1,378,394; 1,336,608; 1,334,169.
+- Mean NPS: 1,386,291. Median NPS: 1,378,394.
+
+60-game sanity baseline:
+- Match: current `bin/chess_uci` vs the snapshot binary, 30 positions with
+  paired colors, `120ms/move`, concurrency 6, no book.
+- Report: `current/baselines/hce_best_80b2fff_self_snapshot_60g_20260706.json`
+- Result: HCE 29.0/60 vs snapshot 31.0/60 (`-11.6` Elo),
+  CI95 `[-77.5, +53.5]`, `P(better)=36.3%`.
+- Interpretation: same-code timed-search noise floor, not a regression signal.
+  Future 60-game HCE experiments should clear this noise band or be rerun at
+  120+ games before keeping behavior changes.
+
 ## 2026-07-06: Quick Wins — 2-Fold Repetition Scoring
 Status: kept and shipped.
 - Removed dead search plumbing (verification_plies, pv_move); node-identical.
