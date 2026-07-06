@@ -223,6 +223,13 @@ static void apply_moves_uci(GameState *state, char *moves) {
     char *cursor = moves;
     char *tok = NULL;
     while ((tok = next_token(&cursor)) != NULL) {
+        // Adjudication (e.g. our stricter insufficient-material rule) is the
+        // GUI's job, not ours: the internal engine may consider a position
+        // drawn (KN vs KN) that Lichess keeps playing. Refusing history moves
+        // here desyncs the board and produces illegal bestmoves.
+        if (state->result != GAME_RESULT_ONGOING) {
+            chess_set_result(state, GAME_RESULT_ONGOING);
+        }
         Move mv;
         if (!chess_move_from_uci(state, tok, &mv) || !chess_make_move(state, mv)) {
             printf("info string invalid move in position command: %s\n", tok);
