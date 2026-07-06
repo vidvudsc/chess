@@ -1,5 +1,15 @@
 # HCE Experiments
 
+## 2026-07-06: Quick Wins — 2-Fold Repetition Scoring
+Status: kept and shipped.
+- Removed dead search plumbing (verification_plies, pv_move); node-identical.
+- Repetition rework: score the FIRST repetition as a draw inside the search
+  and scan only same-side history entries (stride 2). Match vs parent commit:
+  70.5/120, +61.4 Elo, CI95 [+20.8, +103.8], P=99.9%
+  (`current/repetition_2fold_120g.json`). Biggest single validated gain so
+  far; old 3-fold-in-search let the engine shuffle into repetition draws from
+  winning positions (seen as heavy THREEFOLD draw rates in earlier matches).
+
 ## 2026-07-06: Ablation Matrix + Consolidation
 Status: weak trims kept and shipped; king safety kept intact; D validated.
 - Kept after removal clearly lost (60g each): tactical eval patches (-58.5),
