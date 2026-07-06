@@ -16,6 +16,10 @@ NPS reference:
 - Report: `current/baselines/hce_best_80b2fff_nps_depth9_20260706.json`
 - NPS values: 1,436,042; 1,446,244; 1,378,394; 1,336,608; 1,334,169.
 - Mean NPS: 1,386,291. Median NPS: 1,378,394.
+- Rerun after suspected local CPU contention:
+  `current/baselines/hce_best_80b2fff_nps_depth9_20260706_rerun2.json`
+  mean 1,328,248 / median 1,313,954. Keep the higher first run as the better
+  speed reference, and treat roughly 4-5% NPS swing as normal desktop noise.
 
 60-game sanity baseline:
 - Match: current `bin/chess_uci` vs the snapshot binary, 30 positions with
@@ -23,6 +27,10 @@ NPS reference:
 - Report: `current/baselines/hce_best_80b2fff_self_snapshot_60g_20260706.json`
 - Result: HCE 29.0/60 vs snapshot 31.0/60 (`-11.6` Elo),
   CI95 `[-77.5, +53.5]`, `P(better)=36.3%`.
+- Rerun after suspected local CPU contention:
+  `current/baselines/hce_best_80b2fff_self_snapshot_60g_20260706_rerun2.json`
+  scored exactly HCE 30.0/60 vs snapshot 30.0/60 (`0.0` Elo),
+  CI95 `[-65.5, +65.5]`, `P(better)=50.0%`.
 - Interpretation: same-code timed-search noise floor, not a regression signal.
   Future 60-game HCE experiments should clear this noise band or be rerun at
   120+ games before keeping behavior changes.
