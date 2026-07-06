@@ -35,10 +35,8 @@ typedef struct HceSearchContext {
     bool timed_out;
     uint64_t nodes;
     int max_depth;
-    int verification_plies;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
-    Move pv_move[HCE_MAX_PLY];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
 } HceSearchContext;
 
@@ -284,10 +282,6 @@ static int search_move_extension(const GameState *s_after_move, Move m, int dept
         return 1;
     }
     return 0;
-}
-
-static bool search_in_verification(const HceSearchContext *ctx, int ply) {
-    return ctx != NULL && ctx->verification_plies > ply;
 }
 
 static int qsearch_move_gain_cp(const GameState *s, Move m) {
@@ -744,15 +738,14 @@ static int negamax(GameState *s,
 
     bool in_check = chess_in_check(s, s->side_to_move);
 
-    if (!search_in_verification(ctx, ply) && !in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
+    if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
         int margin = search_uses_nn_backend() ? (110 * depth) : (90 * depth);
         if (search_eval_cp_stm(s, ctx, ply) >= beta + margin) {
             return beta;
         }
     }
 
-    if (!search_in_verification(ctx, ply) &&
-        ply > 0 &&
+    if (ply > 0 &&
         depth >= 3 &&
         !in_check &&
         beta < HCE_MATE_THRESHOLD &&
@@ -818,8 +811,7 @@ static int negamax(GameState *s,
             score = -negamax(s, next_depth, -beta, -alpha, ply + 1, ctx, NULL);
         } else {
             int reduction = 0;
-            if (!search_in_verification(ctx, ply) &&
-                !in_check &&
+            if (!in_check &&
                 quiet &&
                 depth >= 3 &&
                 searched >= 2) {
@@ -873,9 +865,6 @@ static int negamax(GameState *s,
         }
         if (score > alpha) {
             alpha = score;
-            if (ply < HCE_MAX_PLY) {
-                ctx->pv_move[ply] = m;
-            }
             if (alpha >= beta) {
                 update_killer(ctx, ply, m);
                 update_history(ctx, side, m, depth);
