@@ -663,11 +663,9 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
 
     bool in_check = chess_in_check(s, s->side_to_move);
     int stand_pat = search_eval_cp_stm(s, ctx, ply);
-    int best = -HCE_INF;
     if (!in_check) {
-        best = stand_pat;
         if (stand_pat >= beta) {
-            return stand_pat;
+            return beta;
         }
         if (stand_pat > alpha) {
             alpha = stand_pat;
@@ -684,7 +682,7 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
     } else {
         tactical_n = chess_generate_tactical_moves_mut(s, tactical_moves);
         if (tactical_n <= 0) {
-            return best;
+            return alpha;
         }
     }
     int tactical_scores[CHESS_MAX_MOVES];
@@ -716,20 +714,17 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
         int score = -quiescence(s, -beta, -alpha, ply + 1, ctx);
         chess_undo_move(s);
         if (ctx->timed_out) {
-            return best > alpha ? best : alpha;
-        }
-        if (score > best) {
-            best = score;
+            return alpha;
         }
         if (score >= beta) {
-            return score;
+            return beta;
         }
         if (score > alpha) {
             alpha = score;
         }
     }
 
-    return best > -HCE_INF ? best : alpha;
+    return alpha;
 }
 
 static int negamax(GameState *s,
@@ -913,11 +908,11 @@ static int negamax(GameState *s,
                 if (has_non_pawn_material(s, side)) {
                     penalize_quiet_history(ctx, side, failed_quiets, failed_quiet_count, depth);
                 }
-                tt_store(s->zobrist_hash, depth, ply, best_score, HCE_TT_LOWER, m);
+                tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
                 if (best_move_out != NULL) {
                     *best_move_out = m;
                 }
-                return best_score;
+                return beta;
             }
         }
         if (quiet && failed_quiet_count < CHESS_MAX_MOVES) {
@@ -1024,7 +1019,7 @@ static int search_root(GameState *root,
             if (alpha >= beta) {
                 update_killer(ctx, 0, m);
                 update_history(ctx, side, m, depth);
-                tt_store(root->zobrist_hash, depth, 0, best_score, HCE_TT_LOWER, m);
+                tt_store(root->zobrist_hash, depth, 0, beta, HCE_TT_LOWER, m);
                 if (best_move_out != NULL) {
                     *best_move_out = m;
                 }
