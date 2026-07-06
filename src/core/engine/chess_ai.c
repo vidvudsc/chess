@@ -27,6 +27,10 @@ static void nn_eval_cache_clear(void) {
 // so transposed/re-visited nodes can reuse the score.
 static NnEvalCacheEntry g_hce_eval_cache[NN_EVAL_CACHE_SIZE];
 
+void chess_ai_warmup(void) {
+    hce_init_tables();
+}
+
 int engine_eval_cp_stm(const GameState *state) {
     if (state == NULL) {
         return 0;

@@ -501,6 +501,7 @@ int main(void) {
     opt.nn_model_path[0] = '\0';
 
     reset_start_position(&state);
+    chess_ai_warmup();
 
     char line[2048];
     while (fgets(line, sizeof(line), stdin) != NULL) {

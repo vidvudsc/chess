@@ -89,6 +89,11 @@ typedef struct ChessEngineResponse {
     int elapsed_ms;
 } ChessEngineResponse;
 
+// One-time table setup (magic bitboards etc.). Called lazily by the search,
+// but callers with time budgets should invoke it at startup so the cost never
+// lands inside a clocked move.
+void chess_ai_warmup(void);
+
 int chess_ai_eval_cp(const GameState *state);
 int chess_ai_eval_fast_cp(const GameState *state);
 bool chess_ai_eval_breakdown(const GameState *state, ChessEvalBreakdown *out);
