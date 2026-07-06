@@ -1,5 +1,35 @@
 # HCE Experiments
 
+## 2026-07-06: Tactical Patch Split Ablation
+Status: both terms kept.
+
+Hypothesis: the combined tactical patches (hanging-piece penalty and queen-trap
+penalty) previously tested as useful, but one subterm might be noisy or dead
+weight. Test each subterm independently.
+
+Variants:
+- `hce-queen-trap-off` (`291edb5`): `queen_trap = 0` in `eval_side`.
+- `hce-hanging-off` (`7f55cb8`): `hanging = 0` in `eval_side`.
+
+Validation:
+- Queen-trap-off 60g:
+  `current/baselines/ablate_queen_trap_off_60g_20260706.json`
+  scored 29.0/60 vs current (`-11.6` Elo), CI95 `[-81.7, +57.5]`,
+  `P(better)=37.0%`. This was within the +/-15 Elo gray zone, so it was rerun.
+- Queen-trap-off 120g:
+  `current/baselines/ablate_queen_trap_off_120g_20260706.json`
+  scored 54.0/120 vs current (`-34.9` Elo), CI95 `[-84.3, +13.2]`,
+  `P(better)=7.8%`. Keep queen-trap penalty.
+- Hanging-off 60g:
+  `current/baselines/ablate_hanging_off_60g_20260706.json`
+  scored 27.5/60 vs current (`-29.0` Elo), CI95 `[-96.7, +36.5]`,
+  `P(better)=19.3%`. Keep hanging-piece penalty.
+
+Conclusion: neither tactical subterm is safe to delete at current strength.
+The combined earlier result was not hiding a clearly removable half; both terms
+appear to contribute enough tactical guidance to keep despite their static-eval
+ugliness.
+
 ## 2026-07-06: HCE Branch Baseline Anchor
 Status: baseline only; no engine changes.
 
