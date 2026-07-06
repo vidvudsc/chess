@@ -362,8 +362,13 @@ def play_one_game(game_index: int,
                   start_fen: str,
                   think_ms: int,
                   max_depth: int,
-                  max_plies: int) -> GameRecord:
+                  max_plies: int,
+                  clock_initial_s: float = 0.0,
+                  clock_inc_s: float = 0.0) -> GameRecord:
     board = chess.Board(start_fen)
+    use_clock = clock_initial_s > 0.0
+    wtime_s = clock_initial_s
+    btime_s = clock_initial_s
     move_limit = chess.engine.Limit(time=max(0.001, think_ms / 1000.0))
     if max_depth > 0:
         move_limit = chess.engine.Limit(time=max(0.001, think_ms / 1000.0), depth=max_depth)
@@ -379,6 +384,13 @@ def play_one_game(game_index: int,
         actor_name = white_name if board.turn == chess.WHITE else black_name
         actor_engine = white_engine if board.turn == chess.WHITE else black_engine
         actor_key = "white" if board.turn == chess.WHITE else "black"
+        if use_clock:
+            move_limit = chess.engine.Limit(
+                white_clock=max(0.001, wtime_s),
+                black_clock=max(0.001, btime_s),
+                white_inc=clock_inc_s,
+                black_inc=clock_inc_s,
+            )
         started = time.perf_counter()
         try:
             result = actor_engine.play(board, move_limit)
@@ -416,7 +428,34 @@ def play_one_game(game_index: int,
                 moves_uci=moves_uci,
                 elapsed_ms=elapsed_ms,
             )
-        elapsed_ms[actor_key] += int((time.perf_counter() - started) * 1000.0)
+        spent_s = time.perf_counter() - started
+        elapsed_ms[actor_key] += int(spent_s * 1000.0)
+
+        if use_clock:
+            if actor_key == "white":
+                wtime_s -= spent_s
+                flagged = wtime_s <= 0.0
+                wtime_s += clock_inc_s
+            else:
+                btime_s -= spent_s
+                flagged = btime_s <= 0.0
+                btime_s += clock_inc_s
+            if flagged:
+                winner = "black" if actor_key == "white" else "white"
+                result_text = "0-1" if winner == "black" else "1-0"
+                return GameRecord(
+                    index=game_index,
+                    round_name=round_name,
+                    white=white_name,
+                    black=black_name,
+                    start_fen=start_fen,
+                    result=result_text,
+                    winner=winner,
+                    plies=len(board.move_stack),
+                    termination=f"flag_fall_by_{actor_name}",
+                    moves_uci=moves_uci,
+                    elapsed_ms=elapsed_ms,
+                )
 
         if result.move is None or result.move not in board.legal_moves:
             winner = "black" if board.turn == chess.WHITE else "white"
@@ -537,7 +576,9 @@ def run_lab(competitors: List[CompetitorBuild],
             seed: int,
             baseline_name: Optional[str],
             restart_each_game: bool,
-            concurrency: int = 1) -> Dict[str, object]:
+            concurrency: int = 1,
+            clock_initial_s: float = 0.0,
+            clock_inc_s: float = 0.0) -> Dict[str, object]:
     engines: Dict[str, chess.engine.SimpleEngine] = {}
     thread_state = threading.local()
     all_engines: List[chess.engine.SimpleEngine] = []
@@ -596,6 +637,8 @@ def run_lab(competitors: List[CompetitorBuild],
                         think_ms=think_ms,
                         max_depth=max_depth,
                         max_plies=max_plies,
+                        clock_initial_s=clock_initial_s,
+                        clock_inc_s=clock_inc_s,
                     )
                 finally:
                     for engine in (white_engine, black_engine):
@@ -616,6 +659,8 @@ def run_lab(competitors: List[CompetitorBuild],
                 think_ms=think_ms,
                 max_depth=max_depth,
                 max_plies=max_plies,
+                clock_initial_s=clock_initial_s,
+                clock_inc_s=clock_inc_s,
             )
 
         for round_name in dict.fromkeys(item.round_name for item in schedule):
@@ -755,6 +800,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--book-file", default="", help="Book file to pass to engines. Empty disables it.")
     parser.add_argument("--seed", type=int, default=20260305, help="PRNG seed for position order.")
     parser.add_argument("--out", default="", help="Optional JSON output path.")
+    parser.add_argument("--clock", default="",
+                        help="Play with real clocks instead of fixed movetime, e.g. 60+0.5 "
+                             "(initial seconds + increment seconds). Engines receive wtime/btime "
+                             "and flag falls lose the game.")
     parser.add_argument("--concurrency", type=int, default=1,
                         help="Play this many games in parallel (each worker uses its own engine processes).")
     parser.add_argument("--restart-each-game", action="store_true",
@@ -810,6 +859,19 @@ def main() -> int:
     positions_count = max(0, args.positions_count)
     if positions_count == 0 and len(competitors) == 2:
         positions_count = len(positions)
+
+    clock_initial_s = 0.0
+    clock_inc_s = 0.0
+    if args.clock:
+        clock_parts = args.clock.split("+")
+        try:
+            clock_initial_s = float(clock_parts[0])
+            clock_inc_s = float(clock_parts[1]) if len(clock_parts) > 1 else 0.0
+        except ValueError as exc:
+            raise SystemExit(f"--clock expects INITIAL+INC seconds, e.g. 60+0.5: {exc}")
+        if clock_initial_s <= 0.0:
+            raise SystemExit("--clock initial time must be positive")
+
     report = run_lab(
         competitors=competitors,
         positions=positions,
@@ -823,6 +885,9 @@ def main() -> int:
         seed=args.seed,
         baseline_name=baseline_name,
         restart_each_game=bool(args.restart_each_game),
+        concurrency=max(1, args.concurrency),
+        clock_initial_s=clock_initial_s,
+        clock_inc_s=clock_inc_s,
     )
     report["positions_file"] = str(positions_path)
 
