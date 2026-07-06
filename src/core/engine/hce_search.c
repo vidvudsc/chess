@@ -42,29 +42,6 @@ typedef struct HceSearchContext {
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
 } HceSearchContext;
 
-typedef struct HceRootMoveInfo {
-    Move move;
-    int score;
-    bool searched;
-} HceRootMoveInfo;
-
-static int previous_root_order_bonus(const HceRootMoveInfo *prev_moves,
-                                     int prev_count,
-                                     Move move) {
-    if (prev_moves == NULL || prev_count <= 0) {
-        return 0;
-    }
-    for (int i = 0; i < prev_count; ++i) {
-        if (!prev_moves[i].searched || prev_moves[i].move != move) {
-            continue;
-        }
-        // Keep root ordering stable across iterative deepening so low-time
-        // searches spend nodes first on the best moves from the previous pass.
-        return 4000000 + prev_moves[i].score;
-    }
-    return 0;
-}
-
 static HceTtEntry g_hce_tt[HCE_TT_SIZE];
 static uint8_t g_hce_tt_generation = 0;
 static atomic_flag g_hce_lock = ATOMIC_FLAG_INIT;
@@ -296,7 +273,7 @@ static int captured_piece_for_move(const GameState *s, Move m) {
     return s->sq_piece[target_sq];
 }
 
-static int search_move_extension(const GameState *s_after_move, Move m, int depth, bool recapture) {
+static int search_move_extension(const GameState *s_after_move, Move m, int depth) {
     if (depth <= 2) {
         return 0;
     }
@@ -304,9 +281,6 @@ static int search_move_extension(const GameState *s_after_move, Move m, int dept
         return 1;
     }
     if (move_has_flag(m, MOVE_FLAG_PROMOTION)) {
-        return 1;
-    }
-    if (recapture) {
         return 1;
     }
     return 0;
@@ -836,7 +810,7 @@ static int negamax(GameState *s,
         }
         ctx->nodes += 1;
 
-        int extension = search_move_extension(s, m, depth, recapture);
+        int extension = search_move_extension(s, m, depth);
 
         int score;
         int next_depth = depth - 1 + extension;
@@ -944,11 +918,7 @@ static int search_root(GameState *root,
                        int alpha,
                        int beta,
                        HceSearchContext *ctx,
-                       Move *best_move_out,
-                       const HceRootMoveInfo *prev_root_moves,
-                       int prev_root_move_count,
-                       HceRootMoveInfo root_moves[CHESS_MAX_MOVES],
-                       int *root_move_count_out) {
+                       Move *best_move_out) {
     Move tt_move = 0;
     int tt_score = 0;
     Move moves[CHESS_MAX_MOVES];
@@ -959,9 +929,6 @@ static int search_root(GameState *root,
     int side = root->side_to_move;
     int searched = 0;
 
-    if (root_move_count_out != NULL) {
-        *root_move_count_out = 0;
-    }
     if (n <= 0) {
         if (best_move_out != NULL) {
             *best_move_out = 0;
@@ -972,14 +939,10 @@ static int search_root(GameState *root,
     (void)tt_probe(root->zobrist_hash, depth, 0, alpha, beta, &tt_move, &tt_score);
     int root_scores[CHESS_MAX_MOVES];
     score_moves(root, root_scores, moves, n, tt_move, ctx, 0);
-    for (int i = 0; i < n; ++i) {
-        root_scores[i] += previous_root_order_bonus(prev_root_moves, prev_root_move_count, moves[i]);
-    }
 
     for (int i = 0; i < n; ++i) {
         Move m = pick_next_move(moves, root_scores, i, n);
         GameState child = *root;
-        bool recapture = is_recapture_move(root, m);
         int score = -HCE_INF;
 
         if (!chess_make_move_trusted(&child, m)) {
@@ -987,7 +950,7 @@ static int search_root(GameState *root,
         }
         ctx->nodes += 1;
 
-        int extension = search_move_extension(&child, m, depth, recapture);
+        int extension = search_move_extension(&child, m, depth);
         int next_depth = depth - 1 + extension;
 
         if (searched == 0) {
@@ -1003,11 +966,6 @@ static int search_root(GameState *root,
             break;
         }
 
-        if (root_moves != NULL && searched < CHESS_MAX_MOVES) {
-            root_moves[searched].move = m;
-            root_moves[searched].score = score;
-            root_moves[searched].searched = true;
-        }
         searched += 1;
 
         if (score > best_score) {
@@ -1022,9 +980,6 @@ static int search_root(GameState *root,
                 tt_store(root->zobrist_hash, depth, 0, beta, HCE_TT_LOWER, m);
                 if (best_move_out != NULL) {
                     *best_move_out = m;
-                }
-                if (root_move_count_out != NULL) {
-                    *root_move_count_out = searched;
                 }
                 return beta;
             }
@@ -1046,9 +1001,6 @@ static int search_root(GameState *root,
     }
     if (best_move_out != NULL) {
         *best_move_out = best_move;
-    }
-    if (root_move_count_out != NULL) {
-        *root_move_count_out = searched;
     }
     return best_score;
 }
@@ -1209,11 +1161,6 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     Move best_move = legal[0];
     int best_score = -HCE_INF;
     int depth_reached = 0;
-    HceRootMoveInfo prev_root_moves[CHESS_MAX_MOVES];
-    HceRootMoveInfo iter_root_moves[CHESS_MAX_MOVES];
-    int prev_root_move_count = 0;
-    memset(prev_root_moves, 0, sizeof(prev_root_moves));
-
     bool score_unstable = false;
     int last_iter_score = 0;
     bool have_iter_score = false;
@@ -1240,7 +1187,6 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
         }
         Move iter_best = best_move;
         int score = 0;
-        int iter_root_move_count = 0;
         int window = search_uses_nn_backend() ? (32 + depth * 8) : (24 + depth * 6);
         int alpha = -HCE_INF;
         int beta = HCE_INF;
@@ -1251,18 +1197,7 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
 
         for (;;) {
             GameState iter = root;
-            memset(iter_root_moves, 0, sizeof(iter_root_moves));
-            iter_root_move_count = 0;
-            score = search_root(&iter,
-                                depth,
-                                alpha,
-                                beta,
-                                &ctx,
-                                &iter_best,
-                                prev_root_moves,
-                                prev_root_move_count,
-                                iter_root_moves,
-                                &iter_root_move_count);
+            score = search_root(&iter, depth, alpha, beta, &ctx, &iter_best);
             if (ctx.timed_out) {
                 break;
             }
@@ -1289,8 +1224,6 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
         }
         last_iter_score = score;
         have_iter_score = true;
-        memcpy(prev_root_moves, iter_root_moves, sizeof(prev_root_moves));
-        prev_root_move_count = iter_root_move_count;
         if (cfg != NULL && cfg->info_callback != NULL) {
             cfg->info_callback(depth_reached,
                                best_score,

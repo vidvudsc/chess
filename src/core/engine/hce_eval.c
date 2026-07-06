@@ -494,38 +494,6 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
     }
 }
 
-static bool is_true_outpost_square(int side, int sq) {
-    int rank = square_rank(sq);
-    if (side == PIECE_WHITE) {
-        return rank >= 4;
-    }
-    return rank <= 3;
-}
-
-static bool enemy_pawn_can_challenge_square(const GameState *s, int side, int sq) {
-    if (s == NULL) {
-        return false;
-    }
-
-    int enemy = side ^ 1;
-    int file = square_file(sq);
-    int rank = square_rank(sq);
-    uint64_t candidate_files = g_neighbor_file_masks[file];
-    uint64_t candidate_ranks = 0;
-
-    if (side == PIECE_WHITE) {
-        for (int r = rank + 1; r < 8; ++r) {
-            candidate_ranks |= 0xFFULL << (r * 8);
-        }
-    } else {
-        for (int r = 0; r < rank; ++r) {
-            candidate_ranks |= 0xFFULL << (r * 8);
-        }
-    }
-
-    return (s->bb[enemy][PIECE_PAWN] & candidate_files & candidate_ranks) != 0;
-}
-
 static int king_shield_penalty(const GameState *s, int side) {
     int king_sq = chess_find_king_square(s, side);
     if (king_sq < 0) {
@@ -698,50 +666,6 @@ static int king_safety_penalty(const GameState *s, int side) {
     }
 
     return penalty;
-}
-
-static int bishop_quality_adjustment(const GameState *s, int side, int sq) {
-    bool light = is_light_square(sq);
-    int same_color_pawns = 0;
-    int blocked_same_color_pawns = 0;
-    uint64_t pawns = s->bb[side][PIECE_PAWN];
-
-    while (pawns != 0) {
-        int psq = chess_pop_lsb(&pawns);
-        if (is_light_square(psq) != light) {
-            continue;
-        }
-        same_color_pawns += 1;
-        int step = (side == PIECE_WHITE) ? 8 : -8;
-        int front_sq = psq + step;
-        if (front_sq >= 0 && front_sq < 64 && (s->occ_all & (1ULL << front_sq)) != 0) {
-            blocked_same_color_pawns += 1;
-        }
-    }
-
-    return -same_color_pawns * 6 - blocked_same_color_pawns * 3;
-}
-
-static bool is_connected_passed_pawn(const GameState *s, int side, int sq) {
-    int file = square_file(sq);
-    int rank = square_rank(sq);
-    for (int df = -1; df <= 1; df += 2) {
-        int nf = file + df;
-        if (nf < 0 || nf > 7) {
-            continue;
-        }
-        for (int dr = -1; dr <= 1; ++dr) {
-            int nr = rank + dr;
-            if (nr < 0 || nr > 7) {
-                continue;
-            }
-            int nsq = make_square(nf, nr);
-            if ((s->bb[side][PIECE_PAWN] & (1ULL << nsq)) != 0 && is_passed_pawn(s, side, nsq)) {
-                return true;
-            }
-        }
-    }
-    return false;
 }
 
 static int hanging_piece_penalty(const GameState *s, int side, const AttackUnions *atk) {
@@ -932,10 +856,6 @@ static int eval_side(const GameState *s,
                         int advance = (side == PIECE_WHITE) ? square_rank(sq) : (7 - square_rank(sq));
                         int passer_mg = 18 + advance * 5;
                         int passer_eg = 28 + advance * 8;
-                        if (is_connected_passed_pawn(s, side, sq)) {
-                            passer_mg += 8 + advance * 2;
-                            passer_eg += 18 + advance * 4;
-                        }
                         if (enemy_pawn_max_file >= 0 &&
                             (file <= enemy_pawn_min_file - 3 || file >= enemy_pawn_max_file + 3)) {
                             passer_mg += 10;
@@ -961,11 +881,6 @@ static int eval_side(const GameState *s,
                     break;
                 case PIECE_KNIGHT:
                     eval_term_add(&terms.piece_square, k_knight_pst[view], k_knight_pst[view] / 2);
-                    if (is_true_outpost_square(side, sq) &&
-                        square_supported_by_pawn(s, side, sq) &&
-                        !enemy_pawn_can_challenge_square(s, side, sq)) {
-                        eval_term_add(&terms.outposts, 42, 22);
-                    }
                     eval_term_add(&terms.mobility,
                                   chess_count_bits(g_knight_attacks[sq] & ~s->occ[side]) * 3,
                                   chess_count_bits(g_knight_attacks[sq] & ~s->occ[side]) * 2);
@@ -975,10 +890,6 @@ static int eval_side(const GameState *s,
                     eval_term_add(&terms.mobility,
                                   chess_count_bits(hce_bishop_attacks(sq, s->occ_all) & ~s->occ[side]) * 2,
                                   chess_count_bits(hce_bishop_attacks(sq, s->occ_all) & ~s->occ[side]) * 3);
-                    {
-                        int bishop_quality = bishop_quality_adjustment(s, side, sq);
-                        eval_term_add(&terms.bishop_quality, bishop_quality, bishop_quality / 2);
-                    }
                     break;
                 case PIECE_ROOK: {
                     eval_term_add(&terms.piece_square, k_rook_pst[view], k_rook_pst[view] / 2);

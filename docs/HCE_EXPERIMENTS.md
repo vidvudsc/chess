@@ -1,5 +1,23 @@
 # HCE Experiments
 
+## 2026-07-06: Ablation Matrix + Consolidation
+Status: weak trims kept and shipped; king safety kept intact; D validated.
+- Kept after removal clearly lost (60g each): tactical eval patches (-58.5),
+  reverse futility (-52.5), time management D under clocks (-40.7, P=3.3%,
+  first clock-mode validation via new test_lab --clock).
+- King-safety split looked removable per-term (shield +5.8, file pressure
+  +34.9, attack units +23.2/0.0 rerun) but combined removal LOST at 120g:
+  -31.9 Elo, P=3.8% (`current/consolidate_king_safety_120g.json`).
+  Overlapping terms cover for each other; king safety stays whole.
+- Weak trims combined WON at 120g: removing recapture extension, root-order
+  bonus, and positional extras (outposts, bishop quality, connected-passer)
+  scored 66/120, +34.9 Elo, CI95 [+2.1, +68.2], P=98.2%
+  (`current/consolidate_weak_trims_120g.json`). Shipped as clean deletions;
+  cleanup binary verified node-identical to the tested variant.
+- Also fixed live-bot bug found during ablation: UCI position replay stopped
+  at internal insufficient-material adjudication (KN vs KN), desyncing the
+  board and emitting illegal bestmoves.
+
 ## 2026-07-05: Search Speed Pack + A/C/D (B reverted)
 Status: kept (B reverted).
 - Speed (node-identical, verified vs baseline binary at fixed depth): magic
