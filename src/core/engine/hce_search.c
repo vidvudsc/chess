@@ -72,23 +72,29 @@ static bool search_is_repetition_draw(const GameState *s) {
         return false;
     }
 
-    int repetitions = 0;
     uint64_t current = s->zobrist_hash;
     int begin = s->irreversible_ply;
     if (begin < 0) {
         begin = 0;
     }
-    for (int i = s->hash_history_count - 1; i >= begin; --i) {
-        if (s->hash_history[i] == current) {
-            ++repetitions;
-        }
+
+    // Virtual index of the current position; history may or may not have it
+    // appended depending on how the search state was built.
+    int cur_index = s->hash_history_count;
+    if (s->hash_history[cur_index - 1] == current) {
+        cur_index -= 1;
     }
 
-    // Be robust to search-only states that may not have appended the current hash.
-    if (s->hash_history[s->hash_history_count - 1] != current) {
-        ++repetitions;
+    // One prior occurrence scores as a draw inside the search: if the
+    // repetition is bad for us the search avoids it, if it is good we can
+    // force it. Same-side positions sit an even number of plies back, and the
+    // side-to-move zobrist key makes other parities unable to match anyway.
+    for (int i = cur_index - 2; i >= begin; i -= 2) {
+        if (s->hash_history[i] == current) {
+            return true;
+        }
     }
-    return repetitions >= 3;
+    return false;
 }
 
 int hce_score_search_draw_stm(const GameState *s) {
