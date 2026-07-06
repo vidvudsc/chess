@@ -931,6 +931,7 @@ static int eval_side(const GameState *s,
 
     int king_danger = king_safety_penalty(s, side);
     int hanging = hanging_piece_penalty(s, side, attack_unions);
+    hanging = 0;
     int queen_trap = queen_trap_penalty(s, side, attack_unions);
     eval_term_add(&terms.king_safety_penalty, -king_danger, -(king_danger / 4));
     eval_term_add(&terms.hanging_penalty, -hanging, -hanging);
