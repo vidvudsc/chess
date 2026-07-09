@@ -1,5 +1,31 @@
 # HCE Experiments
 
+## 2026-07-08: Rook File Bonus Ablation
+Status: rejected for removal; rook-file bonuses kept.
+
+Hypothesis: rook open/semi-open file bonuses might overlap with mobility and
+overvalue file occupation without actual penetration. Disable only
+`terms.rook_files`, keeping rook PST and mobility intact.
+
+Variant:
+- `hce-rook-files-off` (`b96703d`): set `terms.rook_files.mg/eg = 0` in
+  `eval_side` before blending.
+
+Validation:
+- Build: `make uci` passed, with only the existing unused `is_light_square`
+  warning.
+- 60-game match vs current HCE:
+  `current/baselines/ablate_rook_files_off_60g_20260708.json`
+  scored 30.0/60 (`0.0` Elo), CI95 `[-63.4, +63.4]`,
+  `P(better)=50.0%`. This was in the +/-15 Elo gray zone, so it was rerun.
+- 120-game match vs current HCE:
+  `current/baselines/ablate_rook_files_off_120g_20260708.json`
+  scored 55.0/120 (`-29.0` Elo), CI95 `[-74.6, +15.6]`,
+  `P(better)=10.1%`.
+
+Conclusion: keep rook-file bonuses. The neutral 60-game result was noise; the
+larger run says removal is likely harmful.
+
 ## 2026-07-08: Bishop Pair Bonus Ablation
 Status: removed and merged (`5722a80`, cleaned in `751d59e`).
 
