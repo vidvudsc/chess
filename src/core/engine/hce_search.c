@@ -684,8 +684,9 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
     }
 
     bool in_check = chess_in_check(s, s->side_to_move);
-    int stand_pat = search_eval_cp_stm(s, ctx, ply);
+    int stand_pat = 0;
     if (!in_check) {
+        stand_pat = search_eval_cp_stm(s, ctx, ply);
         if (stand_pat >= beta) {
             return beta;
         }
