@@ -6,6 +6,7 @@
 #include "chess_ai.h"
 #include "chess_io.h"
 #include "chess_rules.h"
+#include "hce_internal.h"
 
 typedef struct UciOptions {
     int think_time_ms;
@@ -542,6 +543,73 @@ static void print_uci_intro(const UciOptions *opt) {
     fflush(stdout);
 }
 
+// Texel feature dump: reads "<fen>;<label>" lines from infile and writes, per
+// position, "<label> <phase> <eval_true>" followed by white's then black's
+// feature block (5 material counts q/n/b/r/p, isolated, doubled, 4 mobility
+// counts n/b/r/q, rook_open, rook_semi, residual_mg, residual_eg). Lets the
+// tuner reconstruct and optimize the linear eval weights offline.
+static int run_tune_dump(const char *infile, const char *outfile) {
+    FILE *fin = fopen(infile, "r");
+    if (fin == NULL) {
+        printf("info string tunedump: cannot open %s\n", infile);
+        return 1;
+    }
+    FILE *fout = fopen(outfile, "w");
+    if (fout == NULL) {
+        fclose(fin);
+        printf("info string tunedump: cannot open %s\n", outfile);
+        return 1;
+    }
+
+    MatchConfig cfg = {
+        .clock_enabled = false,
+        .initial_ms = 0,
+        .increment_ms = 0,
+        .white_kind = PLAYER_LOCAL_HUMAN,
+        .black_kind = PLAYER_LOCAL_HUMAN,
+    };
+    GameState st;
+    chess_init(&st, &cfg);
+
+    char line[512];
+    long ok = 0, bad = 0;
+    while (fgets(line, sizeof(line), fin) != NULL) {
+        char *semi = strchr(line, ';');
+        if (semi == NULL) {
+            continue;
+        }
+        *semi = '\0';
+        double label = atof(semi + 1);
+        char err[160];
+        if (!chess_load_fen(&st, line, err, sizeof(err))) {
+            bad += 1;
+            continue;
+        }
+        HceTuneFeatures w, b;
+        int phase = 0;
+        int eval_true = hce_eval_tune_features(&st, &w, &b, &phase);
+        fprintf(fout,
+                "%.1f %d %d "
+                "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d "
+                "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+                label, phase, eval_true,
+                w.mat[PIECE_QUEEN], w.mat[PIECE_KNIGHT], w.mat[PIECE_BISHOP],
+                w.mat[PIECE_ROOK], w.mat[PIECE_PAWN], w.isolated, w.doubled,
+                w.mob_n, w.mob_b, w.mob_r, w.mob_q, w.rook_open, w.rook_semi,
+                w.residual_mg, w.residual_eg,
+                b.mat[PIECE_QUEEN], b.mat[PIECE_KNIGHT], b.mat[PIECE_BISHOP],
+                b.mat[PIECE_ROOK], b.mat[PIECE_PAWN], b.isolated, b.doubled,
+                b.mob_n, b.mob_b, b.mob_r, b.mob_q, b.rook_open, b.rook_semi,
+                b.residual_mg, b.residual_eg);
+        ok += 1;
+    }
+    fclose(fin);
+    fclose(fout);
+    printf("info string tunedump: wrote %ld positions (%ld bad FEN)\n", ok, bad);
+    fflush(stdout);
+    return 0;
+}
+
 int main(void) {
     GameState state;
     UciOptions opt;
@@ -595,6 +663,17 @@ int main(void) {
             chess_export_fen(&state, fen, sizeof(fen));
             printf("info string fen %s\n", fen);
             fflush(stdout);
+            continue;
+        }
+        if (starts_with(line, "tunedump ")) {
+            char inpath[256] = {0};
+            char outpath[256] = {0};
+            if (sscanf(line + 9, "%255s %255s", inpath, outpath) == 2) {
+                run_tune_dump(inpath, outpath);
+            } else {
+                printf("info string usage: tunedump <infile> <outfile>\n");
+                fflush(stdout);
+            }
             continue;
         }
         if (strcmp(line, "quit") == 0) {

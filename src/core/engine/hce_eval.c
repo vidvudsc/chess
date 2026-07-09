@@ -811,7 +811,8 @@ static int eval_side(const GameState *s,
                      int side,
                      int phase,
                      const AttackUnions *attack_unions,
-                     ChessEvalSideBreakdown *out_breakdown) {
+                     ChessEvalSideBreakdown *out_breakdown,
+                     HceTuneFeatures *feat) {
     EvalSideTerms terms;
     memset(&terms, 0, sizeof(terms));
     int enemy = side ^ 1;
@@ -835,14 +836,23 @@ static int eval_side(const GameState *s,
             int sq = chess_pop_lsb(&bb);
             int view = (side == PIECE_WHITE) ? sq : mirror_sq(sq);
             eval_term_add(&terms.material, hce_piece_value[piece], hce_piece_value[piece]);
+            if (feat != NULL) {
+                feat->mat[piece] += 1;
+            }
             switch (piece) {
                 case PIECE_PAWN:
                     eval_term_add(&terms.piece_square, k_pawn_pst[view], k_pawn_pst[view] / 2);
                     if (is_isolated_pawn(s, side, sq)) {
                         eval_term_add(&terms.pawn_structure, -10, -15);
+                        if (feat != NULL) {
+                            feat->isolated += 1;
+                        }
                     }
                     if (is_doubled_pawn(s, side, sq)) {
                         eval_term_add(&terms.pawn_structure, -12, -15);
+                        if (feat != NULL) {
+                            feat->doubled += 1;
+                        }
                     }
                     if (is_passed_pawn(s, side, sq)) {
                         int file = square_file(sq);
@@ -872,18 +882,24 @@ static int eval_side(const GameState *s,
                         eval_term_add(&terms.passed_pawns, passer_mg, passer_eg);
                     }
                     break;
-                case PIECE_KNIGHT:
+                case PIECE_KNIGHT: {
                     eval_term_add(&terms.piece_square, k_knight_pst[view], k_knight_pst[view] / 2);
-                    eval_term_add(&terms.mobility,
-                                  chess_count_bits(g_knight_attacks[sq] & ~s->occ[side]) * 3,
-                                  chess_count_bits(g_knight_attacks[sq] & ~s->occ[side]) * 2);
+                    int knight_mob = chess_count_bits(g_knight_attacks[sq] & ~s->occ[side]);
+                    eval_term_add(&terms.mobility, knight_mob * 3, knight_mob * 2);
+                    if (feat != NULL) {
+                        feat->mob_n += knight_mob;
+                    }
                     break;
-                case PIECE_BISHOP:
+                }
+                case PIECE_BISHOP: {
                     eval_term_add(&terms.piece_square, k_bishop_pst[view], k_bishop_pst[view] / 2);
-                    eval_term_add(&terms.mobility,
-                                  chess_count_bits(hce_bishop_attacks(sq, s->occ_all) & ~s->occ[side]) * 2,
-                                  chess_count_bits(hce_bishop_attacks(sq, s->occ_all) & ~s->occ[side]) * 3);
+                    int bishop_mob = chess_count_bits(hce_bishop_attacks(sq, s->occ_all) & ~s->occ[side]);
+                    eval_term_add(&terms.mobility, bishop_mob * 2, bishop_mob * 3);
+                    if (feat != NULL) {
+                        feat->mob_b += bishop_mob;
+                    }
                     break;
+                }
                 case PIECE_ROOK: {
                     eval_term_add(&terms.piece_square, k_rook_pst[view], k_rook_pst[view] / 2);
                     int file = square_file(sq);
@@ -891,12 +907,21 @@ static int eval_side(const GameState *s,
                     bool enemy_pawn = (g_file_masks[file] & s->bb[enemy][PIECE_PAWN]) != 0;
                     if (!own_pawn && !enemy_pawn) {
                         eval_term_add(&terms.rook_files, 18, 12);
+                        if (feat != NULL) {
+                            feat->rook_open += 1;
+                        }
                     } else if (!own_pawn) {
                         eval_term_add(&terms.rook_files, 10, 6);
+                        if (feat != NULL) {
+                            feat->rook_semi += 1;
+                        }
                     }
                     {
                         int rook_mob = chess_count_bits(hce_rook_attacks(sq, s->occ_all) & ~s->occ[side]);
                         eval_term_add(&terms.mobility, rook_mob, rook_mob * 2);
+                        if (feat != NULL) {
+                            feat->mob_r += rook_mob;
+                        }
                     }
                     break;
                 }
@@ -907,6 +932,9 @@ static int eval_side(const GameState *s,
                                                           hce_bishop_attacks(sq, s->occ_all)) &
                                                          ~s->occ[side]);
                         eval_term_add(&terms.mobility, queen_mob, queen_mob);
+                        if (feat != NULL) {
+                            feat->mob_q += queen_mob;
+                        }
                     }
                     break;
                 case PIECE_KING:
@@ -955,6 +983,18 @@ static int eval_side(const GameState *s,
                    terms.king_safety_penalty.eg +
                    terms.hanging_penalty.eg +
                    terms.queen_trap_penalty.eg;
+    if (feat != NULL) {
+        // Residual = everything not linearly reconstructed from the captured
+        // counts (material, pawn_structure, rook_files, mobility). Keep it in
+        // pre-blend mg/eg form so the Python side can sum then blend once,
+        // matching the engine's single integer division exactly.
+        int tuned_mg = terms.material.mg + terms.pawn_structure.mg +
+                       terms.rook_files.mg + terms.mobility.mg;
+        int tuned_eg = terms.material.eg + terms.pawn_structure.eg +
+                       terms.rook_files.eg + terms.mobility.eg;
+        feat->residual_mg = total_mg - tuned_mg;
+        feat->residual_eg = total_eg - tuned_eg;
+    }
     return (total_mg * phase + total_eg * (24 - phase)) / 24;
 }
 
@@ -967,11 +1007,35 @@ int hce_eval_cp_stm(const GameState *s) {
     int phase = phase_value(s);
     AttackUnions attack_unions;
     compute_attack_unions(s, &attack_unions);
-    int white = eval_side(s, PIECE_WHITE, phase, &attack_unions, NULL);
-    int black = eval_side(s, PIECE_BLACK, phase, &attack_unions, NULL);
+    int white = eval_side(s, PIECE_WHITE, phase, &attack_unions, NULL, NULL);
+    int black = eval_side(s, PIECE_BLACK, phase, &attack_unions, NULL, NULL);
     int cp_white = white - black;
     int cp_stm = (s->side_to_move == PIECE_WHITE) ? cp_white : -cp_white;
     // Tempo bonus: small advantage for having the move
+    cp_stm += 12;
+    return cp_stm;
+}
+
+int hce_eval_tune_features(const GameState *s,
+                           HceTuneFeatures *white_out,
+                           HceTuneFeatures *black_out,
+                           int *phase_out) {
+    if (s == NULL || white_out == NULL || black_out == NULL) {
+        return 0;
+    }
+    hce_init_tables();
+    memset(white_out, 0, sizeof(*white_out));
+    memset(black_out, 0, sizeof(*black_out));
+    int phase = phase_value(s);
+    if (phase_out != NULL) {
+        *phase_out = phase;
+    }
+    AttackUnions attack_unions;
+    compute_attack_unions(s, &attack_unions);
+    int white = eval_side(s, PIECE_WHITE, phase, &attack_unions, NULL, white_out);
+    int black = eval_side(s, PIECE_BLACK, phase, &attack_unions, NULL, black_out);
+    int cp_white = white - black;
+    int cp_stm = (s->side_to_move == PIECE_WHITE) ? cp_white : -cp_white;
     cp_stm += 12;
     return cp_stm;
 }
@@ -990,8 +1054,8 @@ bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out) {
     out->phase = phase_value(s);
     AttackUnions attack_unions;
     compute_attack_unions(s, &attack_unions);
-    out->white.total = eval_side(s, PIECE_WHITE, out->phase, &attack_unions, &out->white);
-    out->black.total = eval_side(s, PIECE_BLACK, out->phase, &attack_unions, &out->black);
+    out->white.total = eval_side(s, PIECE_WHITE, out->phase, &attack_unions, &out->white, NULL);
+    out->black.total = eval_side(s, PIECE_BLACK, out->phase, &attack_unions, &out->black, NULL);
     out->score_cp_white = out->white.total - out->black.total;
     out->score_cp_stm = (s->side_to_move == PIECE_WHITE) ? out->score_cp_white : -out->score_cp_white;
     out->score_cp_stm += 12;

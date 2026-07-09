@@ -29,6 +29,27 @@ uint64_t hce_attackers_to_square(const GameState *s, int sq, int side);
 int hce_eval_cp_stm(const GameState *s);
 int hce_experimental_eval_cp_stm(const GameState *s);
 bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out);
+
+// Texel-tuning support: the linear decomposition of one side's eval into raw
+// feature counts plus a residual (the non-tuned mg/eg sums). Reconstructing
+// total_mg = sum(weight*count) + residual_mg (and likewise eg), then blending
+// by phase once, reproduces eval_side exactly. See scripts/texel_tune.py.
+typedef struct HceTuneFeatures {
+    int mat[PIECE_TYPE_COUNT];  // piece counts (value adds to both mg and eg)
+    int isolated;               // isolated pawns
+    int doubled;                // pawns on a doubled file
+    int mob_n, mob_b, mob_r, mob_q;  // raw mobility square counts by piece
+    int rook_open, rook_semi;   // rooks on open / half-open files
+    int residual_mg;            // summed mg of all non-tuned terms
+    int residual_eg;            // summed eg of all non-tuned terms
+} HceTuneFeatures;
+
+// Fills white/black feature structs and returns eval_cp_stm (incl. tempo) so a
+// caller can verify the linear reconstruction against the real eval.
+int hce_eval_tune_features(const GameState *s,
+                           HceTuneFeatures *white_out,
+                           HceTuneFeatures *black_out,
+                           int *phase_out);
 int engine_eval_cp_stm(const GameState *s);
 int hce_score_search_draw_stm(const GameState *s);
 bool hce_pick_opening_move(const GameState *s, Move *out_move);
