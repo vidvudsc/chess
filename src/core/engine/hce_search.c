@@ -88,6 +88,47 @@ static int lmr_base_from_table(int depth, int move_number) {
     return g_lmr_table[d][m];
 }
 
+// 1-ply continuation history: for the quiet reply to the opponent's previous
+// move, learn (with the same depth^2 bonus/malus scheme as the butterfly
+// history) which replies actually cause cutoffs and fold that into move
+// ordering. Keyed by [prev moved piece][prev to][cur moved piece][cur to],
+// color-agnostic. Cleared at the start of each search. Static rather than in
+// HceSearchContext because it is ~2.3MB and the context lives on the stack.
+static int g_cont_hist[PIECE_TYPE_COUNT][64][PIECE_TYPE_COUNT][64];
+
+static void cont_hist_update_delta(const GameState *s, Move move, int delta) {
+    if (s == NULL || !s->has_last_move || move_has_flag(move, MOVE_FLAG_CAPTURE)) {
+        return;
+    }
+    int pp = move_piece(s->last_move);
+    int pt = move_to(s->last_move);
+    int cp = move_piece(move);
+    int ct = move_to(move);
+    if (pp < 0 || pp >= PIECE_TYPE_COUNT || cp < 0 || cp >= PIECE_TYPE_COUNT ||
+        pt < 0 || pt >= 64 || ct < 0 || ct >= 64) {
+        return;
+    }
+    int *h = &g_cont_hist[pp][pt][cp][ct];
+    *h += delta;
+    if (*h > 240000) {
+        *h = 240000;
+    } else if (*h < -240000) {
+        *h = -240000;
+    }
+}
+
+static int cont_hist_score(const GameState *s, Move move) {
+    if (s == NULL || !s->has_last_move) {
+        return 0;
+    }
+    int pp = move_piece(s->last_move);
+    int pt = move_to(s->last_move);
+    if (pp < 0 || pp >= PIECE_TYPE_COUNT || pt < 0 || pt >= 64) {
+        return 0;
+    }
+    return g_cont_hist[pp][pt][move_piece(move)][move_to(move)];
+}
+
 static void hce_lock(void) {
     while (atomic_flag_test_and_set_explicit(&g_hce_lock, memory_order_acquire)) {
     }
@@ -592,6 +633,7 @@ static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext
             }
         }
         score += ctx->history[s->side_to_move][move_from(m)][move_to(m)];
+        score += cont_hist_score(s, m);
     }
     if (move_has_flag(m, MOVE_FLAG_PROMOTION)) {
         score += 700000 + hce_piece_value[move_promo(m)] * 8;
@@ -681,6 +723,19 @@ static void penalize_quiet_history(HceSearchContext *ctx,
     }
     for (int i = 0; i < quiet_count; ++i) {
         history_update_delta(ctx, side, quiets[i], -malus);
+    }
+}
+
+static void cont_hist_penalize(const GameState *s,
+                               const Move quiets[CHESS_MAX_MOVES],
+                               int quiet_count,
+                               int depth) {
+    int malus = history_bonus(depth) / 2;
+    if (malus < 1) {
+        malus = 1;
+    }
+    for (int i = 0; i < quiet_count; ++i) {
+        cont_hist_update_delta(s, quiets[i], -malus);
     }
 }
 
@@ -939,8 +994,10 @@ static int negamax(GameState *s,
             if (alpha >= beta) {
                 update_killer(ctx, ply, m);
                 update_history(ctx, side, m, depth);
+                cont_hist_update_delta(s, m, history_bonus(depth));
                 if (has_non_pawn_material(s, side)) {
                     penalize_quiet_history(ctx, side, failed_quiets, failed_quiet_count, depth);
+                    cont_hist_penalize(s, failed_quiets, failed_quiet_count, depth);
                 }
                 tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
                 if (best_move_out != NULL) {
@@ -1042,6 +1099,7 @@ static int search_root(GameState *root,
             if (alpha >= beta) {
                 update_killer(ctx, 0, m);
                 update_history(ctx, side, m, depth);
+                cont_hist_update_delta(root, m, history_bonus(depth));
                 tt_store(root_hash, depth, 0, beta, HCE_TT_LOWER, m);
                 if (best_move_out != NULL) {
                     *best_move_out = m;
@@ -1211,6 +1269,7 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
 
     HceSearchContext ctx;
     memset(&ctx, 0, sizeof(ctx));
+    memset(g_cont_hist, 0, sizeof(g_cont_hist));
     ctx.start_ms = now_ms();
     int think_ms = (override_ms > 0) ? override_ms : ((cfg != NULL && cfg->think_time_ms > 0) ? cfg->think_time_ms : 120);
     int hard_ms = think_ms;
