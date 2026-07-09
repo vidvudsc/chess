@@ -3,6 +3,7 @@
 #include "nn_eval.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,6 +55,37 @@ static int64_t now_ms(void) {
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
     return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
+}
+
+// Log-based late-move-reduction base table, indexed by [depth][move number].
+// Replaces the old additive scheme (base + depth/move step bonuses) which
+// topped out around 2-3 plies; this grows the reduction smoothly with both
+// remaining depth and how late the move is, reaching 4-5 plies on deep, very
+// late quiets. Filled once at startup from r = 0.75 + ln(d)*ln(m)/2.25.
+static int g_lmr_table[64][64];
+static bool g_lmr_table_ready = false;
+
+static void init_lmr_table(void) {
+    if (g_lmr_table_ready) {
+        return;
+    }
+    for (int d = 0; d < 64; ++d) {
+        for (int m = 0; m < 64; ++m) {
+            if (d == 0 || m == 0) {
+                g_lmr_table[d][m] = 0;
+                continue;
+            }
+            double r = 0.75 + log((double)d) * log((double)m) / 2.25;
+            g_lmr_table[d][m] = (int)r;
+        }
+    }
+    g_lmr_table_ready = true;
+}
+
+static int lmr_base_from_table(int depth, int move_number) {
+    int d = depth < 0 ? 0 : (depth > 63 ? 63 : depth);
+    int m = move_number < 0 ? 0 : (move_number > 63 ? 63 : move_number);
+    return g_lmr_table[d][m];
 }
 
 static void hce_lock(void) {
@@ -253,27 +285,6 @@ static int ctx_null_depth_divisor(const HceSearchContext *ctx) {
         return ctx->null_depth_divisor;
     }
     return 4;
-}
-
-static int ctx_lmr_base_reduction(const HceSearchContext *ctx) {
-    if (ctx != NULL && ctx->lmr_base_reduction > 0) {
-        return ctx->lmr_base_reduction;
-    }
-    return 1;
-}
-
-static int ctx_lmr_depth_bonus_at(const HceSearchContext *ctx) {
-    if (ctx != NULL && ctx->lmr_depth_bonus_at > 0) {
-        return ctx->lmr_depth_bonus_at;
-    }
-    return 6;
-}
-
-static int ctx_lmr_move_bonus_at(const HceSearchContext *ctx) {
-    if (ctx != NULL && ctx->lmr_move_bonus_at > 0) {
-        return ctx->lmr_move_bonus_at;
-    }
-    return 6;
 }
 
 static int search_eval_cp_stm(const GameState *s, HceSearchContext *ctx, int ply) {
@@ -853,6 +864,17 @@ static int negamax(GameState *s,
         Move m = pick_next_move(moves, move_scores, i, n);
         bool quiet = is_quiet_move(m);
         bool recapture = is_recapture_move(s, m);
+        // Late move pruning: with moves ordered best-first, once enough quiet
+        // moves have been tried at shallow depth the remaining quiets almost
+        // never beat alpha. Skip them entirely. Guarded by having a real
+        // best_score already and never applied while in check or near mate.
+        if (!in_check &&
+            quiet &&
+            depth <= 8 &&
+            searched >= 3 + depth * depth &&
+            best_score > -HCE_MATE_THRESHOLD) {
+            continue;
+        }
         if (!chess_make_move_trusted(s, m)) {
             continue;
         }
@@ -870,13 +892,7 @@ static int negamax(GameState *s,
                 quiet &&
                 depth >= 3 &&
                 searched >= 2) {
-                reduction = ctx_lmr_base_reduction(ctx);
-                if (depth >= ctx_lmr_depth_bonus_at(ctx)) {
-                    reduction += 1;
-                }
-                if (searched >= ctx_lmr_move_bonus_at(ctx)) {
-                    reduction += 1;
-                }
+                reduction = lmr_base_from_table(depth, searched);
                 int hist = ctx->history[side][move_from(m)][move_to(m)];
                 if (hist > 12000) {
                     reduction -= 1;
@@ -1306,6 +1322,7 @@ bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchRe
     bool ok;
     hce_lock();
     hce_init_tables();
+    init_lmr_table();
     g_hce_tt_generation += 1;
     g_hce_tt_generation += 1;
     ok = run_search(state, cfg, out, 0, 0);
@@ -1326,6 +1343,7 @@ int hce_probe_deep_eval_cp_stm(const GameState *state) {
     AiSearchResult result;
     hce_lock();
     hce_init_tables();
+    init_lmr_table();
     bool ok = run_search(state, &cfg, &result, 4, 35);
     hce_unlock();
     if (ok && result.found_move && result.depth_reached > 0) {

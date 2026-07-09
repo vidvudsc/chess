@@ -1,5 +1,35 @@
 # HCE Experiments
 
+## 2026-07-09: Log-based LMR + Late Move Pruning
+Status: MERGED into `hce`.
+
+Hypothesis: the search under-prunes. The old LMR used an additive scheme
+(base + depth-step + move-step) that topped out around 2-3 plies, and there was
+no late-move pruning at all — every quiet move was searched at shallow depth.
+
+Changes (`src/core/engine/hce_search.c`):
+- Log-based LMR base table `r = 0.75 + ln(depth)*ln(move)/2.25`, precomputed
+  once, replacing the additive base + step bonuses (history/recapture
+  adjustments kept). Removed the now-dead `ctx_lmr_*` knob helpers.
+- Late move pruning in `negamax`: skip quiet moves once
+  `searched >= 3 + depth*depth` at `depth <= 8`, guarded by having a real
+  `best_score` and never while in check or near mate.
+
+Validation (fixed 120ms/move, lichess equal positions, seed 20260709):
+- Build clean, no warnings. `make test` unchanged (pre-existing `test_ai`
+  twofold-repetition failure present on clean `hce` too, unrelated).
+- Depth sanity (middlegame FEN, 2s): baseline d13 -> LMR d14 -> LMR+LMP d16.
+- LMR alone vs base: 120g `+2.9` Elo, CI95 `[-41.8, +47.7]`, P(better) 55.1%
+  (`current/lmr_vs_hce_120g.json`) — neutral. LMR is harmless substrate.
+- LMR+LMP vs base: 60g `+70.4` Elo, CI95 `[+1.2, +145.8]`, P 97.7%
+  (`current/lmp_vs_hce_60g.json`).
+- LMR+LMP vs base (confirm): 120g `+123.7` Elo, CI95 `[+74.6, +178.0]`,
+  P(better) 100.0%, 59-43-18 (`current/lmp_vs_hce_120g.json`). Decisive.
+
+Lesson: reshaping reductions (LMR) did nothing on its own here; the win came
+entirely from *pruning* late quiets (LMP). Depth converts to strength once the
+tree is actually narrowed.
+
 ## 2026-07-09: Capture History Ordering
 Status: rejected; not merged.
 
