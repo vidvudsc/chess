@@ -88,25 +88,25 @@ def patch_eval_c(path, vals):
         count=1,
     )
     text = re.sub(
-        r"eval_term_add\(&terms\.mobility, knight_mob \* \d+, knight_mob \* \d+\);",
+        r"eval_term_add\(&terms\.mobility, knight_mob \* -?\d+, knight_mob \* -?\d+\);",
         f"eval_term_add(&terms.mobility, knight_mob * {mob_n_mg}, knight_mob * {mob_n_eg});",
         text,
         count=1,
     )
     text = re.sub(
-        r"eval_term_add\(&terms\.mobility, bishop_mob \* \d+, bishop_mob \* \d+\);",
+        r"eval_term_add\(&terms\.mobility, bishop_mob \* -?\d+, bishop_mob \* -?\d+\);",
         f"eval_term_add(&terms.mobility, bishop_mob * {mob_b_mg}, bishop_mob * {mob_b_eg});",
         text,
         count=1,
     )
     text = re.sub(
-        r"eval_term_add\(&terms\.mobility, rook_mob \* \d+, rook_mob \* \d+\);",
+        r"eval_term_add\(&terms\.mobility, rook_mob \* -?\d+, rook_mob \* -?\d+\);",
         f"eval_term_add(&terms.mobility, rook_mob * {mob_r_mg}, rook_mob * {mob_r_eg});",
         text,
         count=1,
     )
     text = re.sub(
-        r"eval_term_add\(&terms\.mobility, queen_mob \* \d+, queen_mob \* \d+\);",
+        r"eval_term_add\(&terms\.mobility, queen_mob \* -?\d+, queen_mob \* -?\d+\);",
         f"eval_term_add(&terms.mobility, queen_mob * {mob_q_mg}, queen_mob * {mob_q_eg});",
         text,
         count=1,
