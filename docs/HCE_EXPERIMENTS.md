@@ -1,5 +1,57 @@
 # HCE Experiments
 
+## 2026-07-09: Corrected-label Texel retune with king PSTs
+Status: tuned weights rejected; tuning infrastructure fixes kept on
+`codex/hce-next` (`dcf1c39`, `2ac0b36`).
+
+Audit found that `scripts/texel_tune.py` converted the complete feature matrix
+to integers before extracting labels. Every draw label (`0.5`) therefore became
+a black-win label (`0.0`). It also found that the evaluation loop began at
+`PIECE_QUEEN`, making the king PST feature plane unreachable, and that the tune
+application script could not restore negative mobility weights.
+
+Infrastructure fixes:
+- Preserve floating-point result labels and verify their distribution.
+- Include king PST features and generated king tables in the tuning pipeline.
+- Select the best held-out validation checkpoint instead of always using the
+  final iteration; allow an exact prior tune to initialize a run.
+- Accept signed mobility weights when applying or restoring a tune.
+
+The corrected 25,694-position feature set reconstructed the current engine
+exactly (0 mismatches). Its best held-out loss improved from `0.103529` to
+`0.102882`, but match testing did not confirm playing strength:
+- 60g (seed 20260715): 34.0/60, +46.6 Elo, P(better)=89.8%.
+- 120g (seed 20260716): 62.5/120, +14.5 Elo, P(better)=73.5%.
+- 240g (seed 20260717): 114.5/240, -15.9 Elo, P(better)=16.3%.
+- Pooled: 211.0/420, approximately +1.7 Elo (neutral).
+
+Conclusion: restore the `2859044` weights. Keep the correctness and rollback
+fixes, but do not claim an Elo gain from the corrected retune. Future tuning
+should split validation by game rather than by sampled position to avoid
+positions from one game leaking across train and validation sets.
+
+## 2026-07-09: TT replacement hygiene
+Status: rejected; reverted.
+
+Protected deeper current-generation TT entries from shallow unrelated hash
+collisions and removed a duplicate generation increment. The position suite
+passed 6/6, and the 60-game screen looked excellent: 36.0/60, +70.4 Elo,
+P(better)=98.0% (`current/codex_tt_hygiene_60g.json`). A fresh 120-game
+confirmation reversed the result: 52.5/120, -43.7 Elo, P(better)=4.2%
+(`current/codex_tt_hygiene_120g.json`). Rejected in full.
+
+## 2026-07-09: Exact speed screens
+Status: rejected; reverted.
+
+Two node-identical optimizations were screened with interleaved fixed-depth
+benchmarks against the frozen `7f97628` binary:
+- Reusing HCE magic-bitboard slider attacks in `chess_rules.c`: median NPS
+  changed by -2.7%.
+- A 2 MiB exact pawn-evaluation cache: median NPS changed by -3.0%.
+
+Both preserved fixed-depth moves, scores, nodes, and PVs, but were slower on
+this engine and machine. Neither change was kept.
+
 ## 2026-07-09: Joint Texel tune of material, PSTs, and eval scalars
 Status: committed on `hce-kimi` (`2859044`); not yet merged to `hce`.
 
