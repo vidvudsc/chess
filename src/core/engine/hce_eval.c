@@ -4,10 +4,10 @@
 
 const int hce_piece_value[PIECE_TYPE_COUNT] = {
     0,
-    1235,
-    466,
-    409,
-    537,
+    1329,
+    499,
+    457,
+    617,
     100,
 };
 
@@ -29,80 +29,130 @@ static uint64_t g_neighbor_file_masks[8];
 static uint64_t g_passed_masks[PIECE_COLOR_COUNT][64];
 
 static const int k_pawn_pst[64] = {
-    0, 0, 0, 0, 0, 0, 0, 0,
-    50, 50, 50, 50, 50, 50, 50, 50,
-    10, 10, 20, 30, 30, 20, 10, 10,
-    5, 5, 10, 25, 25, 10, 5, 5,
-    0, 0, 0, 20, 20, 0, 0, 0,
-    5, -5, -10, 0, 0, -10, -5, 5,
-    5, 10, 10, -20, -20, 10, 10, 5,
-    0, 0, 0, 0, 0, 0, 0, 0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+      37,   39,   17,   50,   41,   45,   41,   39,
+      11,   10,   19,   28,   35,   19,   12,   11,
+       5,    6,   11,   28,   25,   12,    5,    5,
+       0,    0,    1,   21,   21,    1,    0,    0,
+       5,   -5,  -10,    0,    0,  -10,   -5,    5,
+       5,   10,   10,  -20,  -20,   10,   10,    5,
+       0,    0,    0,    0,    0,    0,    0,    0,
+};
+static const int k_pawn_pst_eg[64] = {
+       0,    0,    0,    0,    0,    0,    0,    0,
+      22,   23,   23,   25,   25,   24,   22,   24,
+       5,    5,    9,   15,   16,    9,    6,    5,
+       2,    3,    6,   12,   13,    6,    2,    2,
+       0,    1,    1,   10,   10,    1,    0,    0,
+       2,   -2,   -5,    0,    0,   -5,   -2,    2,
+       2,    5,    5,  -10,  -10,    5,    5,    2,
+       0,    0,    0,    0,    0,    0,    0,    0,
 };
 
 static const int k_knight_pst[64] = {
-    -50, -40, -30, -30, -30, -30, -40, -50,
-    -40, -20, 0, 5, 5, 0, -20, -40,
-    -30, 5, 10, 15, 15, 10, 5, -30,
-    -30, 0, 15, 20, 20, 15, 0, -30,
-    -30, 5, 15, 20, 20, 15, 5, -30,
-    -30, 0, 10, 15, 15, 10, 0, -30,
-    -40, -20, 0, 0, 0, 0, -20, -40,
-    -50, -40, -30, -30, -30, -30, -40, -50,
+     -50,  -31,  -30,  -30,  -30,  -30,  -44,  -50,
+     -40,  -20,    0,    6,    5,    0,  -20,  -40,
+     -31,    5,    9,   15,   15,   11,    5,  -32,
+     -30,    0,   15,   20,   20,   15,    0,  -29,
+     -30,    4,   15,   21,   20,   15,    5,  -30,
+     -30,    0,   10,   15,   15,   10,    0,  -30,
+     -40,  -20,    0,    0,    0,    0,  -20,  -40,
+     -50,  -40,  -30,  -30,  -30,  -30,  -40,  -50,
+};
+static const int k_knight_pst_eg[64] = {
+     -25,  -20,  -15,  -15,  -15,  -15,  -20,  -25,
+     -20,  -10,    0,    2,    2,    0,  -10,  -20,
+     -15,    2,    5,    7,    7,    5,    2,  -15,
+     -15,    0,    7,   10,   10,    7,    0,  -15,
+     -15,    2,    7,   10,   10,    7,    2,  -15,
+     -15,    0,    5,    7,    7,    5,    0,  -15,
+     -20,  -10,    0,    0,    0,    0,  -10,  -20,
+     -25,  -20,  -15,  -15,  -15,  -15,  -20,  -25,
 };
 
 static const int k_bishop_pst[64] = {
-    -20, -10, -10, -10, -10, -10, -10, -20,
-    -10, 5, 0, 0, 0, 0, 5, -10,
-    -10, 10, 10, 10, 10, 10, 10, -10,
-    -10, 0, 10, 10, 10, 10, 0, -10,
-    -10, 5, 5, 10, 10, 5, 5, -10,
-    -10, 0, 5, 10, 10, 5, 0, -10,
-    -10, 0, 0, 0, 0, 0, 0, -10,
-    -20, -10, -10, -10, -10, -10, -10, -20,
+     -20,  -10,   -8,  -10,  -10,  -11,  -10,  -20,
+     -10,    6,    0,   -1,    1,    0,    6,  -10,
+     -10,   10,   10,    9,    9,   10,   10,  -10,
+     -10,    0,   10,   10,   10,   10,    0,  -10,
+     -10,    4,    5,   10,   10,    5,    5,  -10,
+     -10,    0,    5,   10,   10,    5,    0,  -10,
+     -10,    0,    0,    0,    0,    0,    0,  -10,
+     -20,  -10,  -10,  -10,  -10,  -10,  -10,  -20,
+};
+static const int k_bishop_pst_eg[64] = {
+     -10,   -5,   -5,   -5,   -5,   -5,   -5,  -10,
+      -5,    2,    0,    0,    0,    0,    2,   -5,
+      -5,    5,    5,    5,    5,    5,    5,   -5,
+      -5,    0,    5,    5,    5,    5,    0,   -5,
+      -5,    2,    2,    5,    5,    2,    2,   -5,
+      -5,    0,    2,    5,    5,    2,    0,   -5,
+      -5,    0,    0,    0,    0,    0,    0,   -5,
+     -10,   -5,   -5,   -5,   -5,   -5,   -5,  -10,
 };
 
 static const int k_rook_pst[64] = {
-    0, 0, 0, 5, 5, 0, 0, 0,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    5, 10, 10, 10, 10, 10, 10, 5,
-    0, 0, 0, 0, 0, 0, 0, 0,
+       0,   -1,    0,    5,    4,    2,    0,   -1,
+      -5,    0,    0,    0,    0,    0,    0,   -5,
+      -5,    0,    0,    0,    0,    0,    0,   -5,
+      -5,    0,    0,    0,    0,    0,    0,   -5,
+      -5,    0,    0,    0,    0,    0,    0,   -5,
+      -5,    0,    0,    0,    0,    0,    0,   -5,
+       5,   10,   10,   10,   10,   10,   10,    5,
+       0,    0,    0,    0,    0,    0,    0,    0,
+};
+static const int k_rook_pst_eg[64] = {
+       0,    0,    0,    2,    2,    0,    0,    0,
+      -2,    0,    0,    0,    0,    0,    0,   -2,
+      -2,    0,    0,    0,    0,    0,    0,   -2,
+      -2,    0,    0,    0,    0,    0,    0,   -2,
+      -2,    0,    0,    0,    0,    0,    0,   -2,
+      -2,    0,    0,    0,    0,    0,    0,   -2,
+       2,    5,    5,    5,    5,    5,    5,    2,
+       0,    0,    0,    0,    0,    0,    0,    0,
 };
 
 static const int k_queen_pst[64] = {
-    -20, -10, -10, -5, -5, -10, -10, -20,
-    -10, 0, 0, 0, 0, 0, 0, -10,
-    -10, 0, 5, 5, 5, 5, 0, -10,
-    -5, 0, 5, 5, 5, 5, 0, -5,
-    0, 0, 5, 5, 5, 5, 0, -5,
-    -10, 5, 5, 5, 5, 5, 0, -10,
-    -10, 0, 5, 0, 0, 0, 0, -10,
-    -20, -10, -10, -5, -5, -10, -10, -20,
+     -20,  -10,  -10,   -5,   -5,  -10,  -10,  -20,
+     -10,    0,    0,    0,    0,    0,    0,  -10,
+     -10,    0,    5,    5,    4,    5,    0,  -10,
+      -5,    0,    5,    5,    5,    5,    0,   -5,
+       0,    0,    5,    5,    5,    5,    0,   -5,
+     -10,    5,    5,    5,    5,    5,    0,  -10,
+     -10,    0,    5,    0,    0,    0,    0,  -10,
+     -20,  -10,  -10,   -5,   -5,  -10,  -10,  -20,
+};
+static const int k_queen_pst_eg[64] = {
+     -10,   -5,   -5,   -2,   -2,   -5,   -5,  -10,
+      -5,    0,    0,    0,    0,    0,    0,   -5,
+      -5,    0,    2,    2,    2,    2,    0,   -5,
+      -2,    0,    2,    2,    2,    2,    0,   -2,
+       0,    0,    2,    2,    2,    2,    0,   -2,
+      -5,    2,    2,    2,    2,    2,    0,   -5,
+      -5,    0,    2,    0,    0,    0,    0,   -5,
+     -10,   -5,   -5,   -2,   -2,   -5,   -5,  -10,
 };
 
 static const int k_king_mid_pst[64] = {
-    -30, -40, -40, -50, -50, -40, -40, -30,
-    -30, -40, -40, -50, -50, -40, -40, -30,
-    -30, -40, -40, -50, -50, -40, -40, -30,
-    -30, -40, -40, -50, -50, -40, -40, -30,
-    -20, -30, -30, -40, -40, -30, -30, -20,
-    -10, -20, -20, -20, -20, -20, -20, -10,
-    20, 20, 0, 0, 0, 0, 20, 20,
-    20, 30, 10, 0, 0, 10, 30, 20,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
 };
 
 static const int k_king_end_pst[64] = {
-    -50, -40, -30, -20, -20, -30, -40, -50,
-    -30, -20, -10, 0, 0, -10, -20, -30,
-    -30, -10, 20, 30, 30, 20, -10, -30,
-    -30, -10, 30, 40, 40, 30, -10, -30,
-    -30, -10, 30, 40, 40, 30, -10, -30,
-    -30, -10, 20, 30, 30, 20, -10, -30,
-    -30, -30, 0, 0, 0, 0, -30, -30,
-    -50, -30, -30, -30, -30, -30, -30, -50,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0,
 };
 
 static inline int mirror_sq(int sq) {
@@ -838,20 +888,21 @@ static int eval_side(const GameState *s,
             eval_term_add(&terms.material, hce_piece_value[piece], hce_piece_value[piece]);
             if (feat != NULL) {
                 feat->mat[piece] += 1;
+                feat->pst[piece][view] += 1;
             }
             switch (piece) {
                 case PIECE_PAWN:
-                    eval_term_add(&terms.piece_square, k_pawn_pst[view], k_pawn_pst[view] / 2);
+                    eval_term_add(&terms.piece_square, k_pawn_pst[view], k_pawn_pst_eg[view]);
                     if (is_isolated_pawn(s, side, sq)) {
-                        eval_term_add(&terms.pawn_structure, -13, -16);
-                        if (feat != NULL) {
-                            feat->isolated += 1;
+                        eval_term_add(&terms.pawn_structure, -16, -16);
+                    if (feat != NULL) {
+                        feat->isolated += 1;
                         }
                     }
                     if (is_doubled_pawn(s, side, sq)) {
-                        eval_term_add(&terms.pawn_structure, -17, -15);
-                        if (feat != NULL) {
-                            feat->doubled += 1;
+                        eval_term_add(&terms.pawn_structure, -20, -15);
+                    if (feat != NULL) {
+                        feat->doubled += 1;
                         }
                     }
                     if (is_passed_pawn(s, side, sq)) {
@@ -883,25 +934,25 @@ static int eval_side(const GameState *s,
                     }
                     break;
                 case PIECE_KNIGHT: {
-                    eval_term_add(&terms.piece_square, k_knight_pst[view], k_knight_pst[view] / 2);
+                    eval_term_add(&terms.piece_square, k_knight_pst[view], k_knight_pst_eg[view]);
                     int knight_mob = chess_count_bits(g_knight_attacks[sq] & ~s->occ[side]);
-                    eval_term_add(&terms.mobility, knight_mob * 8, knight_mob * 4);
+                    eval_term_add(&terms.mobility, knight_mob * 6, knight_mob * 6);
                     if (feat != NULL) {
                         feat->mob_n += knight_mob;
                     }
                     break;
                 }
                 case PIECE_BISHOP: {
-                    eval_term_add(&terms.piece_square, k_bishop_pst[view], k_bishop_pst[view] / 2);
+                    eval_term_add(&terms.piece_square, k_bishop_pst[view], k_bishop_pst_eg[view]);
                     int bishop_mob = chess_count_bits(hce_bishop_attacks(sq, s->occ_all) & ~s->occ[side]);
-                    eval_term_add(&terms.mobility, bishop_mob * 9, bishop_mob * 4);
+                    eval_term_add(&terms.mobility, bishop_mob * 8, bishop_mob * 3);
                     if (feat != NULL) {
                         feat->mob_b += bishop_mob;
                     }
                     break;
                 }
                 case PIECE_ROOK: {
-                    eval_term_add(&terms.piece_square, k_rook_pst[view], k_rook_pst[view] / 2);
+                    eval_term_add(&terms.piece_square, k_rook_pst[view], k_rook_pst_eg[view]);
                     int file = square_file(sq);
                     bool own_pawn = (g_file_masks[file] & s->bb[side][PIECE_PAWN]) != 0;
                     bool enemy_pawn = (g_file_masks[file] & s->bb[enemy][PIECE_PAWN]) != 0;
@@ -918,7 +969,7 @@ static int eval_side(const GameState *s,
                     }
                     {
                         int rook_mob = chess_count_bits(hce_rook_attacks(sq, s->occ_all) & ~s->occ[side]);
-                        eval_term_add(&terms.mobility, rook_mob * 9, rook_mob * 6);
+                        eval_term_add(&terms.mobility, rook_mob * 8, rook_mob * 4);
                         if (feat != NULL) {
                             feat->mob_r += rook_mob;
                         }
@@ -926,12 +977,12 @@ static int eval_side(const GameState *s,
                     break;
                 }
                 case PIECE_QUEEN:
-                    eval_term_add(&terms.piece_square, k_queen_pst[view], k_queen_pst[view] / 2);
+                    eval_term_add(&terms.piece_square, k_queen_pst[view], k_queen_pst_eg[view]);
                     {
                         int queen_mob = chess_count_bits((hce_rook_attacks(sq, s->occ_all) |
                                                           hce_bishop_attacks(sq, s->occ_all)) &
                                                          ~s->occ[side]);
-                        eval_term_add(&terms.mobility, queen_mob * 9, queen_mob * 2);
+                        eval_term_add(&terms.mobility, queen_mob * 8, queen_mob * 0);
                         if (feat != NULL) {
                             feat->mob_q += queen_mob;
                         }
@@ -985,13 +1036,15 @@ static int eval_side(const GameState *s,
                    terms.queen_trap_penalty.eg;
     if (feat != NULL) {
         // Residual = everything not linearly reconstructed from the captured
-        // counts (material, pawn_structure, rook_files, mobility). Keep it in
-        // pre-blend mg/eg form so the Python side can sum then blend once,
-        // matching the engine's single integer division exactly.
-        int tuned_mg = terms.material.mg + terms.pawn_structure.mg +
-                       terms.rook_files.mg + terms.mobility.mg;
-        int tuned_eg = terms.material.eg + terms.pawn_structure.eg +
-                       terms.rook_files.eg + terms.mobility.eg;
+        // counts (material, piece squares, pawn_structure, rook_files, mobility).
+        // Keep it in pre-blend mg/eg form so the Python side can sum then blend
+        // once, matching the engine's single integer division exactly.
+        int tuned_mg = terms.material.mg + terms.piece_square.mg +
+                       terms.pawn_structure.mg + terms.rook_files.mg +
+                       terms.mobility.mg;
+        int tuned_eg = terms.material.eg + terms.piece_square.eg +
+                       terms.pawn_structure.eg + terms.rook_files.eg +
+                       terms.mobility.eg;
         feat->residual_mg = total_mg - tuned_mg;
         feat->residual_eg = total_eg - tuned_eg;
     }

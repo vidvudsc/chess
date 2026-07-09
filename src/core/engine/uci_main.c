@@ -544,10 +544,14 @@ static void print_uci_intro(const UciOptions *opt) {
 }
 
 // Texel feature dump: reads "<fen>;<label>" lines from infile and writes, per
-// position, "<label> <phase> <eval_true>" followed by white's then black's
-// feature block (5 material counts q/n/b/r/p, isolated, doubled, 4 mobility
-// counts n/b/r/q, rook_open, rook_semi, residual_mg, residual_eg). Lets the
-// tuner reconstruct and optimize the linear eval weights offline.
+// quiet position, "<label> <phase> <eval_true>" followed by white's then black's
+// feature block.  Each block is:
+//   5 material counts q/n/b/r/p, isolated, doubled, 4 mobility counts n/b/r/q,
+//   rook_open, rook_semi,
+//   6*64 piece-square counts (K,Q,B,N,R,P by square, king always zero),
+//   residual_mg, residual_eg.
+// Positions are kept only if |static_eval - qsearch_eval| < 50 cp so the label
+// reflects the static evaluation rather than a pending tactical sequence.
 static int run_tune_dump(const char *infile, const char *outfile) {
     FILE *fin = fopen(infile, "r");
     if (fin == NULL) {
@@ -572,7 +576,7 @@ static int run_tune_dump(const char *infile, const char *outfile) {
     chess_init(&st, &cfg);
 
     char line[512];
-    long ok = 0, bad = 0;
+    long ok = 0, bad = 0, noisy = 0;
     while (fgets(line, sizeof(line), fin) != NULL) {
         char *semi = strchr(line, ';');
         if (semi == NULL) {
@@ -588,24 +592,44 @@ static int run_tune_dump(const char *infile, const char *outfile) {
         HceTuneFeatures w, b;
         int phase = 0;
         int eval_true = hce_eval_tune_features(&st, &w, &b, &phase);
-        fprintf(fout,
-                "%.1f %d %d "
-                "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d "
-                "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
-                label, phase, eval_true,
+        int static_stm = eval_true - 12;
+        int qsearch_stm = hce_qsearch_eval_cp_stm(&st);
+        if (static_stm < qsearch_stm - 50 || static_stm > qsearch_stm + 50) {
+            noisy += 1;
+            continue;
+        }
+        fprintf(fout, "%.1f %d %d", label, phase, eval_true);
+        // White old scalar features.
+        fprintf(fout, " %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
                 w.mat[PIECE_QUEEN], w.mat[PIECE_KNIGHT], w.mat[PIECE_BISHOP],
                 w.mat[PIECE_ROOK], w.mat[PIECE_PAWN], w.isolated, w.doubled,
                 w.mob_n, w.mob_b, w.mob_r, w.mob_q, w.rook_open, w.rook_semi,
-                w.residual_mg, w.residual_eg,
+                w.residual_mg, w.residual_eg);
+        // White PST counts.
+        for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
+            for (int sq = 0; sq < 64; ++sq) {
+                fprintf(fout, " %d", w.pst[piece][sq]);
+            }
+        }
+        // Black old scalar features.
+        fprintf(fout, " %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
                 b.mat[PIECE_QUEEN], b.mat[PIECE_KNIGHT], b.mat[PIECE_BISHOP],
                 b.mat[PIECE_ROOK], b.mat[PIECE_PAWN], b.isolated, b.doubled,
                 b.mob_n, b.mob_b, b.mob_r, b.mob_q, b.rook_open, b.rook_semi,
                 b.residual_mg, b.residual_eg);
+        // Black PST counts.
+        for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
+            for (int sq = 0; sq < 64; ++sq) {
+                fprintf(fout, " %d", b.pst[piece][sq]);
+            }
+        }
+        fprintf(fout, "\n");
         ok += 1;
     }
     fclose(fin);
     fclose(fout);
-    printf("info string tunedump: wrote %ld positions (%ld bad FEN)\n", ok, bad);
+    printf("info string tunedump: wrote %ld positions (%ld bad FEN, %ld noisy skipped)\n",
+           ok, bad, noisy);
     fflush(stdout);
     return 0;
 }

@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Texel-tune the HCE linear eval weights from a feature dump.
+"""Texel-tune the HCE eval weights from a feature dump.
 
 Input: the file produced by `chess_uci`'s `tunedump` command, one line per
-position:
+quiet position:
 
-    <label> <phase> <eval_true> <white 15 feats> <black 15 feats>
+    <label> <phase> <eval_true> <white 399 feats> <black 399 feats>
 
-where each 15-feature block is:
+where each 399-feature block is:
     mat_q mat_n mat_b mat_r mat_p isolated doubled
-    mob_n mob_b mob_r mob_q rook_open rook_semi residual_mg residual_eg
+    mob_n mob_b mob_r mob_q rook_open rook_semi
+    pst[K,Q,B,N,R,P][64] flattened (king plane always zero)
+    residual_mg residual_eg
 
 The engine's per-side eval is  total = (mg*phase + eg*(24-phase)) / 24  with an
 integer truncation per side. Dropping that truncation makes white_total -
-black_total a *linear* function of the 21 tunable weights, so we fit them with
+black_total a *linear* function of the tunable weights, so we fit them with
 gradient descent through the Texel sigmoid against the game result.
 
 Steps: (1) verify the exact integer reconstruction matches eval_true, (2) fit
@@ -24,22 +26,135 @@ import sys
 
 import numpy as np
 
-# Weight layout (21 params). Material is phase-independent (adds to mg and eg).
-PARAM_NAMES = [
-    "mat_q", "mat_n", "mat_b", "mat_r", "mat_p",
-    "iso_mg", "iso_eg", "dbl_mg", "dbl_eg",
-    "mob_n_mg", "mob_n_eg", "mob_b_mg", "mob_b_eg",
-    "mob_r_mg", "mob_r_eg", "mob_q_mg", "mob_q_eg",
-    "rook_open_mg", "rook_open_eg", "rook_semi_mg", "rook_semi_eg",
-]
-DEFAULTS = np.array([
-    900, 320, 335, 500, 100,   # material q n b r p (knight 320, bishop 335)
-    -10, -15, -12, -15,        # isolated, doubled (mg, eg)
-    3, 2, 2, 3, 1, 2, 1, 1,    # mobility n,b,r,q (mg, eg)
-    18, 12, 10, 6,             # rook open, semi (mg, eg)
+# Number of scalar (material + positional) features and per-side layout.
+N_SCALAR = 21
+SIDE_OLD = 15
+PST_PIECES = 6
+PST_SQUARES = 64
+N_PST = PST_PIECES * PST_SQUARES
+N_PARAMS = N_SCALAR + 2 * N_PST  # 789
+
+# Current engine PST tables (from src/core/engine/hce_eval.c).
+K_PAWN_PST = np.array([
+     0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+     5,  5, 10, 25, 25, 10,  5,  5,
+     0,  0,  0, 20, 20,  0,  0,  0,
+     5, -5,-10,  0,  0,-10, -5,  5,
+     5, 10, 10,-20,-20, 10, 10,  5,
+     0,  0,  0,  0,  0,  0,  0,  0,
 ], dtype=np.float64)
 
-# Column indices within a 15-feature side block.
+K_KNIGHT_PST = np.array([
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50,
+], dtype=np.float64)
+
+K_BISHOP_PST = np.array([
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20,
+], dtype=np.float64)
+
+K_ROOK_PST = np.array([
+     0,  0,  0,  5,  5,  0,  0,  0,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+     5, 10, 10, 10, 10, 10, 10,  5,
+     0,  0,  0,  0,  0,  0,  0,  0,
+], dtype=np.float64)
+
+K_QUEEN_PST = np.array([
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+     -5,  0,  5,  5,  5,  5,  0, -5,
+      0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20,
+], dtype=np.float64)
+
+K_KING_MID_PST = np.array([
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+     20, 20,  0,  0,  0,  0, 20, 20,
+     20, 30, 10,  0,  0, 10, 30, 20,
+], dtype=np.float64)
+
+K_KING_END_PST = np.array([
+    -50,-40,-30,-20,-20,-30,-40,-50,
+    -30,-20,-10,  0,  0,-10,-20,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-30,  0,  0,  0,  0,-30,-30,
+    -50,-30,-30,-30,-30,-30,-30,-50,
+], dtype=np.float64)
+
+# Piece enum order: KING=0, QUEEN=1, BISHOP=2, KNIGHT=3, ROOK=4, PAWN=5.
+# The engine does not currently add a king PST in eval_side, so king defaults
+# stay at zero and the king PST plane in the feature dump is always zero.
+_PST_TABLES_MG = [
+    np.zeros(64, dtype=np.float64),   # KING (unused)
+    K_QUEEN_PST,
+    K_BISHOP_PST,
+    K_KNIGHT_PST,
+    K_ROOK_PST,
+    K_PAWN_PST,
+]
+# The engine uses mg = table, eg = table/2 (trunc toward zero) for non-king pieces.
+_PST_TABLES_EG = [
+    np.sign(t) * (np.abs(t) // 2) for t in _PST_TABLES_MG
+]
+_PST_DEFAULT_MG = np.concatenate(_PST_TABLES_MG)
+_PST_DEFAULT_EG = np.concatenate(_PST_TABLES_EG)
+
+PARAM_NAMES = (
+    ["mat_q", "mat_n", "mat_b", "mat_r", "mat_p",
+     "iso_mg", "iso_eg", "dbl_mg", "dbl_eg",
+     "mob_n_mg", "mob_n_eg", "mob_b_mg", "mob_b_eg",
+     "mob_r_mg", "mob_r_eg", "mob_q_mg", "mob_q_eg",
+     "rook_open_mg", "rook_open_eg", "rook_semi_mg", "rook_semi_eg"]
+    + [f"pst{p}_{s}_mg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
+    + [f"pst{p}_{s}_eg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
+)
+
+# Current engine scalar defaults (post 44dc6b5 texel tune).
+_SCALAR_DEFAULTS = np.array([
+    1235, 409, 466, 537, 100,   # material q n b r p (knight=409, bishop=466)
+    -13, -16, -17, -15,         # isolated, doubled (mg, eg)
+    8, 4, 9, 4, 9, 6, 9, 2,     # mobility n,b,r,q (mg, eg)
+    19, 12, 11, 6,              # rook open, semi (mg, eg)
+], dtype=np.float64)
+
+DEFAULTS = np.concatenate([
+    _SCALAR_DEFAULTS,
+    _PST_DEFAULT_MG,
+    _PST_DEFAULT_EG,
+])
+
+# Column indices within the first 15 old scalar features.
 F_MATQ, F_MATN, F_MATB, F_MATR, F_MATP = 0, 1, 2, 3, 4
 F_ISO, F_DBL = 5, 6
 F_MN, F_MB, F_MR, F_MQ = 7, 8, 9, 10
@@ -54,65 +169,91 @@ def trunc_div24(a):
 
 
 def build(feats_path):
-    raw = np.loadtxt(feats_path).astype(np.int64)
+    raw = np.atleast_2d(np.loadtxt(feats_path)).astype(np.int64)
     label = raw[:, 0].astype(np.float64)
     phase = raw[:, 1].astype(np.int64)
     eval_true = raw[:, 2].astype(np.int64)
-    w = raw[:, 3:18]
-    b = raw[:, 18:33]
+    side_feats = SIDE_OLD + N_PST
+    w = raw[:, 3:3 + side_feats]
+    b = raw[:, 3 + side_feats:3 + 2 * side_feats]
     return label, phase, eval_true, w, b
+
+
+def split_side(side):
+    """Return (old_scalar, pst) from a side feature vector."""
+    old = side[:, :SIDE_OLD].astype(np.int64)
+    pst = side[:, SIDE_OLD:].astype(np.int64).reshape(-1, PST_PIECES, PST_SQUARES)
+    return old, pst
 
 
 def side_totals_int(side, phase, theta):
     """Exact integer per-side total using the current weights."""
-    mat = (side[:, F_MATQ] * theta[0] + side[:, F_MATN] * theta[1] +
-           side[:, F_MATB] * theta[2] + side[:, F_MATR] * theta[3] +
-           side[:, F_MATP] * theta[4]).astype(np.int64)
-    mg = (mat + side[:, F_ISO] * theta[5] + side[:, F_DBL] * theta[7] +
-          side[:, F_MN] * theta[9] + side[:, F_MB] * theta[11] +
-          side[:, F_MR] * theta[13] + side[:, F_MQ] * theta[15] +
-          side[:, F_ROPEN] * theta[17] + side[:, F_RSEMI] * theta[19] +
-          side[:, F_RESMG]).astype(np.int64)
-    eg = (mat + side[:, F_ISO] * theta[6] + side[:, F_DBL] * theta[8] +
-          side[:, F_MN] * theta[10] + side[:, F_MB] * theta[12] +
-          side[:, F_MR] * theta[14] + side[:, F_MQ] * theta[16] +
-          side[:, F_ROPEN] * theta[18] + side[:, F_RSEMI] * theta[20] +
-          side[:, F_RESEG]).astype(np.int64)
+    old, pst = split_side(side)
+    scalar = theta[:N_SCALAR]
+    wmg = theta[N_SCALAR:N_SCALAR + N_PST].reshape(PST_PIECES, PST_SQUARES)
+    weg = theta[N_SCALAR + N_PST:].reshape(PST_PIECES, PST_SQUARES)
+
+    mat = (old[:, F_MATQ] * scalar[0] + old[:, F_MATN] * scalar[1] +
+           old[:, F_MATB] * scalar[2] + old[:, F_MATR] * scalar[3] +
+           old[:, F_MATP] * scalar[4]).astype(np.int64)
+    ps_mg = np.sum(pst * wmg, axis=(1, 2)).astype(np.int64)
+    ps_eg = np.sum(pst * weg, axis=(1, 2)).astype(np.int64)
+
+    mg = (mat + ps_mg +
+          old[:, F_ISO] * scalar[5] + old[:, F_DBL] * scalar[7] +
+          old[:, F_MN] * scalar[9] + old[:, F_MB] * scalar[11] +
+          old[:, F_MR] * scalar[13] + old[:, F_MQ] * scalar[15] +
+          old[:, F_ROPEN] * scalar[17] + old[:, F_RSEMI] * scalar[19] +
+          old[:, F_RESMG]).astype(np.int64)
+    eg = (mat + ps_eg +
+          old[:, F_ISO] * scalar[6] + old[:, F_DBL] * scalar[8] +
+          old[:, F_MN] * scalar[10] + old[:, F_MB] * scalar[12] +
+          old[:, F_MR] * scalar[14] + old[:, F_MQ] * scalar[16] +
+          old[:, F_ROPEN] * scalar[18] + old[:, F_RSEMI] * scalar[20] +
+          old[:, F_RESEG]).astype(np.int64)
     return trunc_div24(mg * phase + eg * (24 - phase))
 
 
 def design_matrix(phase, w, b):
-    """X (N x 21) and c (N,) so eval_white_float ~= X @ theta + c."""
+    """X (N x N_PARAMS) and c (N,) so eval_white_float ~= X @ theta + c."""
     n = w.shape[0]
     ph = phase.astype(np.float64)
     mgw = ph / 24.0
     egw = (24.0 - ph) / 24.0
-    d = (w - b).astype(np.float64)  # white-minus-black per feature
-    X = np.zeros((n, 21), dtype=np.float64)
+    w_old, w_pst = split_side(w)
+    b_old, b_pst = split_side(b)
+    d_old = (w_old - b_old).astype(np.float64)
+    d_pst = (w_pst - b_pst).astype(np.float64).reshape(n, N_PST)
+
+    X = np.zeros((n, N_PARAMS), dtype=np.float64)
     # Material: phase-independent.
-    X[:, 0] = d[:, F_MATQ]
-    X[:, 1] = d[:, F_MATN]
-    X[:, 2] = d[:, F_MATB]
-    X[:, 3] = d[:, F_MATR]
-    X[:, 4] = d[:, F_MATP]
-    # mg/eg pairs.
-    X[:, 5] = d[:, F_ISO] * mgw
-    X[:, 6] = d[:, F_ISO] * egw
-    X[:, 7] = d[:, F_DBL] * mgw
-    X[:, 8] = d[:, F_DBL] * egw
-    X[:, 9] = d[:, F_MN] * mgw
-    X[:, 10] = d[:, F_MN] * egw
-    X[:, 11] = d[:, F_MB] * mgw
-    X[:, 12] = d[:, F_MB] * egw
-    X[:, 13] = d[:, F_MR] * mgw
-    X[:, 14] = d[:, F_MR] * egw
-    X[:, 15] = d[:, F_MQ] * mgw
-    X[:, 16] = d[:, F_MQ] * egw
-    X[:, 17] = d[:, F_ROPEN] * mgw
-    X[:, 18] = d[:, F_ROPEN] * egw
-    X[:, 19] = d[:, F_RSEMI] * mgw
-    X[:, 20] = d[:, F_RSEMI] * egw
-    c = d[:, F_RESMG] * mgw + d[:, F_RESEG] * egw
+    X[:, 0] = d_old[:, F_MATQ]
+    X[:, 1] = d_old[:, F_MATN]
+    X[:, 2] = d_old[:, F_MATB]
+    X[:, 3] = d_old[:, F_MATR]
+    X[:, 4] = d_old[:, F_MATP]
+    # mg/eg scalar pairs.
+    X[:, 5] = d_old[:, F_ISO] * mgw
+    X[:, 6] = d_old[:, F_ISO] * egw
+    X[:, 7] = d_old[:, F_DBL] * mgw
+    X[:, 8] = d_old[:, F_DBL] * egw
+    X[:, 9] = d_old[:, F_MN] * mgw
+    X[:, 10] = d_old[:, F_MN] * egw
+    X[:, 11] = d_old[:, F_MB] * mgw
+    X[:, 12] = d_old[:, F_MB] * egw
+    X[:, 13] = d_old[:, F_MR] * mgw
+    X[:, 14] = d_old[:, F_MR] * egw
+    X[:, 15] = d_old[:, F_MQ] * mgw
+    X[:, 16] = d_old[:, F_MQ] * egw
+    X[:, 17] = d_old[:, F_ROPEN] * mgw
+    X[:, 18] = d_old[:, F_ROPEN] * egw
+    X[:, 19] = d_old[:, F_RSEMI] * mgw
+    X[:, 20] = d_old[:, F_RSEMI] * egw
+    # PST mg/eg.
+    X[:, N_SCALAR:N_SCALAR + N_PST] = d_pst * mgw[:, None]
+    X[:, N_SCALAR + N_PST:] = d_pst * egw[:, None]
+
+    c = d_old[:, F_RESMG] * mgw + d_old[:, F_RESEG] * egw
     return X, c
 
 
@@ -136,7 +277,7 @@ def fit_K(evals, y):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--feats", required=True)
-    ap.add_argument("--iters", type=int, default=4000)
+    ap.add_argument("--iters", type=int, default=8000)
     ap.add_argument("--lr", type=float, default=2.0)
     ap.add_argument("--val-frac", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=0)
@@ -147,7 +288,8 @@ def main():
     ap.add_argument("--no-anchor-pawn", dest="anchor_pawn", action="store_false")
     ap.add_argument("--freeze-material", action="store_true",
                     help="Hold all 5 material values fixed; tune only the "
-                         "16 positional scalar terms (pins the eval scale).")
+                         "positional terms + PST.")
+    ap.add_argument("--out-c", help="Optional path to write tuned PST/material C snippet.")
     args = ap.parse_args()
 
     label, phase, eval_true, w, b = build(args.feats)
@@ -186,18 +328,16 @@ def main():
           file=sys.stderr)
 
     # (3) Gradient descent (Adam) on weights; refit K periodically.
-    # Relative L2 pull toward defaults keeps low-count terms sane; per-param
-    # scale so material (large) is barely constrained but mobility/rook (small)
-    # are held near their starting values unless the data strongly disagrees.
+    # Relative L2 pull toward defaults keeps low-count terms sane.
     reg_scale = np.maximum(np.abs(DEFAULTS), 20.0)
-    m = np.zeros(21); v = np.zeros(21)
+    m = np.zeros(N_PARAMS)
+    v = np.zeros(N_PARAMS)
     b1, b2, eps = 0.9, 0.999, 1e-8
     Xtr, ctr, ytr = X[tr], c[tr], y[tr]
     ntr = len(tr)
     for it in range(1, args.iters + 1):
         evals = Xtr @ theta + ctr
         p = sigmoid(K * evals)
-        # d/dtheta of mean (y-p)^2 :  mean( 2(p-y) * p(1-p) * K * X )
         g = (Xtr.T @ (2.0 * (p - ytr) * p * (1.0 - p) * K)) / ntr
         g += args.l2 * 1e-3 * (theta - DEFAULTS) / (reg_scale ** 2)
         m = b1 * m + (1 - b1) * g
@@ -216,13 +356,49 @@ def main():
             print(f"  it {it:5d}  K={K:.5f}  train={Ltr:.6f}  val={Lval:.6f}",
                   file=sys.stderr)
 
-    print("\n# tuned weights (round to int):", file=sys.stderr)
-    for name, d0, t in zip(PARAM_NAMES, DEFAULTS, theta):
-        print(f"  {name:14s} {int(round(d0)):5d} -> {int(round(t)):5d}",
+    rounded = np.round(theta).astype(np.int64)
+    print("\n# tuned scalar weights (round to int):", file=sys.stderr)
+    for name, d0, t in zip(PARAM_NAMES[:N_SCALAR], DEFAULTS[:N_SCALAR], rounded[:N_SCALAR]):
+        print(f"  {name:14s} {int(round(d0)):5d} -> {int(t):5d}",
               file=sys.stderr)
+
     # Machine-readable line for porting.
-    print("TUNED " + " ".join(str(int(round(t))) for t in theta))
+    print("TUNED " + " ".join(str(int(t)) for t in rounded))
+
+    if args.out_c:
+        write_c_snippet(args.out_c, rounded)
     return 0
+
+
+def write_c_snippet(path, rounded):
+    """Write a C snippet with tuned hce_piece_value and PST tables."""
+    mat = rounded[:5]
+    scalar = rounded[:N_SCALAR]
+    pst_mg = rounded[N_SCALAR:N_SCALAR + N_PST].reshape(PST_PIECES, PST_SQUARES)
+    pst_eg = rounded[N_SCALAR + N_PST:].reshape(PST_PIECES, PST_SQUARES)
+    with open(path, "w", encoding="utf-8") as fp:
+        fp.write("// Tuned HCE tables (machine-generated).\n")
+        fp.write("const int hce_piece_value[PIECE_TYPE_COUNT] = {\n")
+        fp.write("    0,\n")
+        for i, name in enumerate(["QUEEN", "BISHOP", "KNIGHT", "ROOK", "PAWN"]):
+            fp.write(f"    {mat[i]:4d},  // {name}\n")
+        fp.write("};\n\n")
+        _write_table(fp, "k_queen_pst", pst_mg[1])
+        _write_table(fp, "k_bishop_pst", pst_mg[2])
+        _write_table(fp, "k_knight_pst", pst_mg[3])
+        _write_table(fp, "k_rook_pst", pst_mg[4])
+        _write_table(fp, "k_pawn_pst", pst_mg[5])
+        fp.write("\n// Suggested scalar weights if tuning them separately:\n")
+        for name, val in zip(PARAM_NAMES[:N_SCALAR], scalar):
+            fp.write(f"// {name} = {val}\n")
+
+
+def _write_table(fp, name, arr):
+    fp.write(f"static const int {name}[64] = {{\n")
+    for r in range(8):
+        row = ", ".join(f"{int(arr[r * 8 + c]):4d}" for c in range(8))
+        fp.write("    " + row + ",\n")
+    fp.write("};\n")
 
 
 if __name__ == "__main__":

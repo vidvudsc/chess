@@ -40,6 +40,7 @@ typedef struct HceTuneFeatures {
     int doubled;                // pawns on a doubled file
     int mob_n, mob_b, mob_r, mob_q;  // raw mobility square counts by piece
     int rook_open, rook_semi;   // rooks on open / half-open files
+    int pst[PIECE_TYPE_COUNT][64];  // piece-square counts (view side, mirrored for black)
     int residual_mg;            // summed mg of all non-tuned terms
     int residual_eg;            // summed eg of all non-tuned terms
 } HceTuneFeatures;
@@ -52,6 +53,7 @@ int hce_eval_tune_features(const GameState *s,
                            int *phase_out);
 int engine_eval_cp_stm(const GameState *s);
 int hce_score_search_draw_stm(const GameState *s);
+int hce_qsearch_eval_cp_stm(const GameState *root);
 bool hce_pick_opening_move(const GameState *s, Move *out_move);
 bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchResult *out);
 int hce_probe_deep_eval_cp_stm(const GameState *state);
