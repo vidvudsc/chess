@@ -796,7 +796,6 @@ typedef struct EvalSideTerms {
     EvalTermPair bishop_quality;
     EvalTermPair rook_files;
     EvalTermPair mobility;
-    EvalTermPair bishop_pair;
     EvalTermPair king_safety_penalty;
     EvalTermPair hanging_penalty;
     EvalTermPair queen_trap_penalty;
@@ -925,19 +924,12 @@ static int eval_side(const GameState *s,
         }
     }
 
-    if (chess_count_bits(s->bb[side][PIECE_BISHOP]) >= 2) {
-        eval_term_add(&terms.bishop_pair, 24, 28);
-    }
-
     int king_danger = king_safety_penalty(s, side);
     int hanging = hanging_piece_penalty(s, side, attack_unions);
     int queen_trap = queen_trap_penalty(s, side, attack_unions);
     eval_term_add(&terms.king_safety_penalty, -king_danger, -(king_danger / 4));
     eval_term_add(&terms.hanging_penalty, -hanging, -hanging);
     eval_term_add(&terms.queen_trap_penalty, -queen_trap, -(queen_trap / 2));
-
-    terms.bishop_pair.mg = 0;
-    terms.bishop_pair.eg = 0;
 
     if (out_breakdown != NULL) {
         out_breakdown->material = eval_term_blend(terms.material, phase);
@@ -948,7 +940,6 @@ static int eval_side(const GameState *s,
         out_breakdown->bishop_quality = eval_term_blend(terms.bishop_quality, phase);
         out_breakdown->rook_files = eval_term_blend(terms.rook_files, phase);
         out_breakdown->mobility = eval_term_blend(terms.mobility, phase);
-        out_breakdown->bishop_pair = eval_term_blend(terms.bishop_pair, phase);
         out_breakdown->king_safety_penalty = -eval_term_blend(terms.king_safety_penalty, phase);
         out_breakdown->hanging_penalty = -eval_term_blend(terms.hanging_penalty, phase);
         out_breakdown->queen_trap_penalty = -eval_term_blend(terms.queen_trap_penalty, phase);
@@ -962,7 +953,6 @@ static int eval_side(const GameState *s,
                    terms.bishop_quality.mg +
                    terms.rook_files.mg +
                    terms.mobility.mg +
-                   terms.bishop_pair.mg +
                    terms.king_safety_penalty.mg +
                    terms.hanging_penalty.mg +
                    terms.queen_trap_penalty.mg;
@@ -974,7 +964,6 @@ static int eval_side(const GameState *s,
                    terms.bishop_quality.eg +
                    terms.rook_files.eg +
                    terms.mobility.eg +
-                   terms.bishop_pair.eg +
                    terms.king_safety_penalty.eg +
                    terms.hanging_penalty.eg +
                    terms.queen_trap_penalty.eg;
