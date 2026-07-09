@@ -1,5 +1,27 @@
 # HCE Experiments
 
+## 2026-07-08: Tempo Bonus Ablation
+Status: rejected for removal; tempo kept.
+
+Hypothesis: the fixed `+12 cp` side-to-move bonus might be arbitrary or noisy.
+Remove it in both normal eval and breakdown eval, then test against current HCE.
+
+Variant:
+- `hce-tempo-off` (`43681d0`): delete the two tempo additions in
+  `hce_eval_cp_stm` and `hce_eval_breakdown`.
+
+Validation:
+- Build: `make uci` passed, with only the existing unused `is_light_square`
+  warning.
+- 60-game match vs current HCE:
+  `current/baselines/ablate_tempo_off_60g_20260708.json`
+  scored 25.5/60 (`-52.5` Elo), CI95 `[-127.8, +18.1]`,
+  `P(better)=7.3%`.
+
+Conclusion: keep the tempo bonus. The term is small but materially useful in
+timed engine play, likely because it discourages sterile waiting moves and
+helps the search value initiative correctly.
+
 ## 2026-07-08: Mobility Eval Ablation
 Status: rejected for removal; mobility kept.
 
