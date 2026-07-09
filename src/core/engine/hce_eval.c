@@ -844,9 +844,6 @@ static int eval_side(const GameState *s,
             switch (piece) {
                 case PIECE_PAWN:
                     eval_term_add(&terms.piece_square, k_pawn_pst[view], k_pawn_pst[view] / 2);
-                    if (is_isolated_pawn(s, side, sq)) {
-                        eval_term_add(&terms.pawn_structure, -10, -15);
-                    }
                     if (is_doubled_pawn(s, side, sq)) {
                         eval_term_add(&terms.pawn_structure, -12, -15);
                     }
