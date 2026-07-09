@@ -43,6 +43,7 @@ typedef struct HceSearchContext {
     int lmr_move_bonus_at;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
+    Move countermove[PIECE_COLOR_COUNT][64][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
 } HceSearchContext;
 
@@ -580,6 +581,12 @@ static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext
                 score += 850000;
             }
         }
+        if (s->has_last_move) {
+            Move cm = ctx->countermove[s->side_to_move][move_from(s->last_move)][move_to(s->last_move)];
+            if (cm == m) {
+                score += 825000;
+            }
+        }
         score += ctx->history[s->side_to_move][move_from(m)][move_to(m)];
     }
     if (move_has_flag(m, MOVE_FLAG_PROMOTION)) {
@@ -657,6 +664,18 @@ static void history_update_delta(HceSearchContext *ctx, int side, Move move, int
 
 static void update_history(HceSearchContext *ctx, int side, Move move, int depth) {
     history_update_delta(ctx, side, move, history_bonus(depth));
+}
+
+static void update_countermove(HceSearchContext *ctx, const GameState *s, int side, Move move) {
+    if (ctx == NULL ||
+        s == NULL ||
+        side < 0 ||
+        side >= PIECE_COLOR_COUNT ||
+        !s->has_last_move ||
+        !is_quiet_move(move)) {
+        return;
+    }
+    ctx->countermove[side][move_from(s->last_move)][move_to(s->last_move)] = move;
 }
 
 static void penalize_quiet_history(HceSearchContext *ctx,
@@ -922,6 +941,7 @@ static int negamax(GameState *s,
             if (alpha >= beta) {
                 update_killer(ctx, ply, m);
                 update_history(ctx, side, m, depth);
+                update_countermove(ctx, s, side, m);
                 if (has_non_pawn_material(s, side)) {
                     penalize_quiet_history(ctx, side, failed_quiets, failed_quiet_count, depth);
                 }
@@ -1025,6 +1045,7 @@ static int search_root(GameState *root,
             if (alpha >= beta) {
                 update_killer(ctx, 0, m);
                 update_history(ctx, side, m, depth);
+                update_countermove(ctx, root, side, m);
                 tt_store(root_hash, depth, 0, beta, HCE_TT_LOWER, m);
                 if (best_move_out != NULL) {
                     *best_move_out = m;
