@@ -1,5 +1,21 @@
 # HCE Experiments
 
+## 2026-07-09: Quadratic King Safety
+Status: rejected; reverted.
+
+Hypothesis: the king-danger term is linear (`attack_units * 5`); a quadratic
+ramp should better reflect that stacking attackers are worth more than their
+sum. Replaced with `danger = min(units,30)^2 / 2` (x3/4 without an enemy queen),
+tuned to match the old linear at ~10 units.
+
+Validation (120ms, vs LMP baseline `e818841`): 60g `-52.5` Elo, CI95
+`[-114.0, +5.9]`, P(better) 3.9% (`current/ksq_vs_lmp_60g.json`). Clearly worse
+(9-33-18). Reverted, no confirm needed.
+
+Lesson: king-safety calibration is very sensitive and a hand-picked quadratic
+over-penalizes (engine turns timid). This term belongs in a systematic tuning
+pass (texel), not a hand guess.
+
 ## 2026-07-09: 1-ply Continuation History
 Status: rejected; parked on branch `hce-conthist` (`6387dfe`), not merged.
 
