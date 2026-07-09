@@ -1,5 +1,28 @@
 # HCE Experiments
 
+## 2026-07-09: Capture History Ordering
+Status: rejected; not merged.
+
+Hypothesis: MVV/LVA capture ordering is static and cannot learn which captures
+actually cause cutoffs in this search. Add a capture-history table keyed by
+side, attacking piece, victim piece, and destination square; reward capture
+beta cutoffs and penalize earlier failed captures.
+
+Variant:
+- `hce-capture-history` (`4ae5b1f`): adds capture-history scoring and update
+  flow for main-search captures.
+
+Validation:
+- Build: `make uci` passed.
+- `make hce_suite`: 6/6 passed.
+- 60-game match vs current HCE:
+  `current/baselines/capture_history_60g_20260709.json`
+  scored 28.5/60 (`-17.4` Elo), CI95 `[-80.2, +44.3]`,
+  `P(better)=29.0%`.
+
+Conclusion: reject this shape. Static MVV/LVA plus SEE pruning is still better
+for this engine than the simple capture-history bonus/malus tried here.
+
 ## 2026-07-09: Qsearch In-Check Eval Skip
 Status: kept and merged (`305cfdc`).
 
