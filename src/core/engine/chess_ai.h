@@ -27,6 +27,13 @@ typedef struct AiSearchConfig {
     // 0 means hard == soft (strict movetime behavior).
     int hard_time_ms;
     int max_depth;
+    // HCE search tuning knobs. Zero means use the engine's built-in default.
+    int hce_rfp_margin_per_depth;
+    int hce_null_base_reduction;
+    int hce_null_depth_divisor;
+    int hce_lmr_base_reduction;
+    int hce_lmr_depth_bonus_at;
+    int hce_lmr_move_bonus_at;
     AiSearchInfoCallback info_callback;
     void *info_user_data;
 } AiSearchConfig;

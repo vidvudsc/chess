@@ -10,6 +10,12 @@
 typedef struct UciOptions {
     int think_time_ms;
     int max_depth;
+    int hce_rfp_margin_per_depth;
+    int hce_null_base_reduction;
+    int hce_null_depth_divisor;
+    int hce_lmr_base_reduction;
+    int hce_lmr_depth_bonus_at;
+    int hce_lmr_move_bonus_at;
     ChessAiBackend backend;
     char book_file_path[512];
     char nn_model_path[512];
@@ -103,6 +109,24 @@ static char *next_token(char **cursor) {
     return start;
 }
 
+static bool set_spin_option(const char *name_buf,
+                            const char *value_buf,
+                            const char *option_name,
+                            int min_value,
+                            int max_value,
+                            int *target) {
+    if (!str_ieq(name_buf, option_name) || target == NULL) {
+        return false;
+    }
+    int parsed = 0;
+    if (parse_int_token(value_buf, &parsed) && parsed >= min_value && parsed <= max_value) {
+        *target = parsed;
+        printf("info string %s set to %d\n", option_name, *target);
+        fflush(stdout);
+    }
+    return true;
+}
+
 static MatchConfig make_headless_match_config(void) {
     MatchConfig cfg = {
         .clock_enabled = false,
@@ -168,6 +192,15 @@ static void parse_setoption(const char *line, UciOptions *opt) {
             printf("info string max depth set to %d\n", opt->max_depth);
             fflush(stdout);
         }
+        return;
+    }
+
+    if (set_spin_option(name_buf, value_buf, "HceRfpMargin", 0, 500, &opt->hce_rfp_margin_per_depth) ||
+        set_spin_option(name_buf, value_buf, "HceNullBase", 0, 6, &opt->hce_null_base_reduction) ||
+        set_spin_option(name_buf, value_buf, "HceNullDepthDivisor", 0, 12, &opt->hce_null_depth_divisor) ||
+        set_spin_option(name_buf, value_buf, "HceLmrBase", 0, 4, &opt->hce_lmr_base_reduction) ||
+        set_spin_option(name_buf, value_buf, "HceLmrDepthBonusAt", 0, 16, &opt->hce_lmr_depth_bonus_at) ||
+        set_spin_option(name_buf, value_buf, "HceLmrMoveBonusAt", 0, 32, &opt->hce_lmr_move_bonus_at)) {
         return;
     }
 
@@ -417,6 +450,12 @@ static void handle_go(GameState *state, const char *line, const UciOptions *opt)
         .think_time_ms = think_ms,
         .hard_time_ms = hard_ms,
         .max_depth = max_depth,
+        .hce_rfp_margin_per_depth = opt->hce_rfp_margin_per_depth,
+        .hce_null_base_reduction = opt->hce_null_base_reduction,
+        .hce_null_depth_divisor = opt->hce_null_depth_divisor,
+        .hce_lmr_base_reduction = opt->hce_lmr_base_reduction,
+        .hce_lmr_depth_bonus_at = opt->hce_lmr_depth_bonus_at,
+        .hce_lmr_move_bonus_at = opt->hce_lmr_move_bonus_at,
         .info_callback = uci_search_info_callback,
         .info_user_data = NULL,
     };
@@ -491,6 +530,12 @@ static void print_uci_intro(const UciOptions *opt) {
     printf("option name Backend type combo default classic var classic var nn var experimental\n");
     printf("option name MoveTime type spin default %d min 1 max 10000\n", opt->think_time_ms);
     printf("option name MaxDepth type spin default %d min 1 max 32\n", opt->max_depth);
+    printf("option name HceRfpMargin type spin default 0 min 0 max 500\n");
+    printf("option name HceNullBase type spin default 0 min 0 max 6\n");
+    printf("option name HceNullDepthDivisor type spin default 0 min 0 max 12\n");
+    printf("option name HceLmrBase type spin default 0 min 0 max 4\n");
+    printf("option name HceLmrDepthBonusAt type spin default 0 min 0 max 16\n");
+    printf("option name HceLmrMoveBonusAt type spin default 0 min 0 max 32\n");
     printf("option name NNModel type string default auto\n");
     printf("option name BookFile type string default auto\n");
     printf("uciok\n");

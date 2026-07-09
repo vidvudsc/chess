@@ -35,6 +35,12 @@ typedef struct HceSearchContext {
     bool timed_out;
     uint64_t nodes;
     int max_depth;
+    int rfp_margin_per_depth;
+    int null_base_reduction;
+    int null_depth_divisor;
+    int lmr_base_reduction;
+    int lmr_depth_bonus_at;
+    int lmr_move_bonus_at;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
@@ -226,6 +232,48 @@ static bool should_stop(HceSearchContext *ctx) {
 
 static bool search_uses_nn_backend(void) {
     return chess_ai_get_backend() == CHESS_AI_BACKEND_NN && nn_eval_is_loaded();
+}
+
+static int ctx_rfp_margin_per_depth(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->rfp_margin_per_depth > 0) {
+        return ctx->rfp_margin_per_depth;
+    }
+    return search_uses_nn_backend() ? 110 : 90;
+}
+
+static int ctx_null_base_reduction(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->null_base_reduction > 0) {
+        return ctx->null_base_reduction;
+    }
+    return search_uses_nn_backend() ? 1 : 2;
+}
+
+static int ctx_null_depth_divisor(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->null_depth_divisor > 0) {
+        return ctx->null_depth_divisor;
+    }
+    return 4;
+}
+
+static int ctx_lmr_base_reduction(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->lmr_base_reduction > 0) {
+        return ctx->lmr_base_reduction;
+    }
+    return 1;
+}
+
+static int ctx_lmr_depth_bonus_at(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->lmr_depth_bonus_at > 0) {
+        return ctx->lmr_depth_bonus_at;
+    }
+    return 6;
+}
+
+static int ctx_lmr_move_bonus_at(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->lmr_move_bonus_at > 0) {
+        return ctx->lmr_move_bonus_at;
+    }
+    return 6;
 }
 
 static int search_eval_cp_stm(const GameState *s, HceSearchContext *ctx, int ply) {
@@ -745,7 +793,7 @@ static int negamax(GameState *s,
     bool in_check = chess_in_check(s, s->side_to_move);
 
     if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
-        int margin = search_uses_nn_backend() ? (110 * depth) : (90 * depth);
+        int margin = ctx_rfp_margin_per_depth(ctx) * depth;
         if (search_eval_cp_stm(s, ctx, ply) >= beta + margin) {
             return beta;
         }
@@ -756,7 +804,7 @@ static int negamax(GameState *s,
         !in_check &&
         beta < HCE_MATE_THRESHOLD &&
         has_non_pawn_material(s, s->side_to_move)) {
-        int reduction = (search_uses_nn_backend() ? 1 : 2) + depth / 4;
+        int reduction = ctx_null_base_reduction(ctx) + depth / ctx_null_depth_divisor(ctx);
         if (reduction > depth - 1) {
             reduction = depth - 1;
         }
@@ -821,11 +869,11 @@ static int negamax(GameState *s,
                 quiet &&
                 depth >= 3 &&
                 searched >= 2) {
-                reduction = 1;
-                if (depth >= 6) {
+                reduction = ctx_lmr_base_reduction(ctx);
+                if (depth >= ctx_lmr_depth_bonus_at(ctx)) {
                     reduction += 1;
                 }
-                if (searched >= 6) {
+                if (searched >= ctx_lmr_move_bonus_at(ctx)) {
                     reduction += 1;
                 }
                 int hist = ctx->history[side][move_from(m)][move_to(m)];
@@ -1157,6 +1205,14 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     ctx.max_depth = (override_depth > 0) ? override_depth : ((cfg != NULL && cfg->max_depth > 0) ? cfg->max_depth : 10);
     if (ctx.max_depth > HCE_MAX_DEPTH) {
         ctx.max_depth = HCE_MAX_DEPTH;
+    }
+    if (cfg != NULL) {
+        ctx.rfp_margin_per_depth = cfg->hce_rfp_margin_per_depth;
+        ctx.null_base_reduction = cfg->hce_null_base_reduction;
+        ctx.null_depth_divisor = cfg->hce_null_depth_divisor;
+        ctx.lmr_base_reduction = cfg->hce_lmr_base_reduction;
+        ctx.lmr_depth_bonus_at = cfg->hce_lmr_depth_bonus_at;
+        ctx.lmr_move_bonus_at = cfg->hce_lmr_move_bonus_at;
     }
     Move best_move = legal[0];
     int best_score = -HCE_INF;
