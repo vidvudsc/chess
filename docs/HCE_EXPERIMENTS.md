@@ -1,5 +1,26 @@
 # HCE Experiments
 
+## 2026-07-09: Qsearch In-Check Eval Skip
+Status: kept and merged (`305cfdc`).
+
+Hypothesis: quiescence cannot legally stand pat while in check, but the code
+still evaluated the position before generating evasions. Skip that unused eval
+for a free speed win without changing the searched tree.
+
+Change:
+- Only compute `stand_pat` in `quiescence` when the side to move is not in
+  check.
+
+Validation:
+- Build: `make uci` passed.
+- Fixed-depth comparison on 10 FENs at depth 9: identical bestmove, score,
+  nodes, and PV.
+- Median NPS moved from 1,807,825 to 1,822,278 (`+0.8%`).
+- `make hce_suite`: 6/6 passed.
+
+Conclusion: keep. It is a tiny but node-identical speed cleanup, and there is
+no chess-behavior downside.
+
 ## 2026-07-09: Piece-Square History
 Status: rejected; not merged.
 
