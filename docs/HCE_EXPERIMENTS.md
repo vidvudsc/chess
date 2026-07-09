@@ -1,5 +1,33 @@
 # HCE Experiments
 
+## 2026-07-09: Texel-tuned linear eval weights
+Status: MERGED into `hce`.
+
+First systematic tune, after four hand-tuned single-term attempts went
+neutral/negative. Pipeline (committed 13dd7d0): `tunedump` emits an exact linear
+feature decomposition of the eval; `scripts/texel_build_dataset.py` turns 2,424
+`vidbot` lichess games into 27,771 labelled quiet positions; `scripts/
+texel_tune.py` fits the 21 linear weights (material + isolated/doubled +
+mobility + rook-files) through the Texel sigmoid vs game result. Feature
+reconstruction verified exact (0/27,771). Pawn anchored at 100; L2 toward
+defaults.
+
+Tuned: material q/n/b/r = 900/320/335/500 -> 1235/409/466/537 (pawn 100);
+isolated -10/-15 -> -13/-16; doubled -12/-15 -> -17/-15; mobility per square
+knight 3/2->8/4, bishop 2/3->9/4, rook 1/2->9/6, queen 1/1->9/2; rook_open
+18/12->19/12, rook_semi 10/6->11/6.
+
+Validation (120ms, vs LMP baseline `e818841`):
+- 60g (seed 20260709): +82.6 Elo, P 98.9% (`current/texel_vs_lmp_60g.json`).
+- 120g (seed 20260711, independent): +34.9 Elo, CI95 [-15.9, +87.1], P 91.1%
+  (`current/texel_vs_lmp_120g.json`).
+- Pooled 180g (independent seeds): 103.0/180 ~= +50 Elo, P ~= 97%.
+
+Note: PST/king-safety/passers were held fixed (residual), so material/mobility
+inflated to grab eval scale — a known partial-tuning artifact. It still wins;
+the next step (joint material+PST texel) should remove the artifact and gain
+more.
+
 ## 2026-07-09: Safe Mobility (exclude enemy-pawn squares)
 Status: rejected; reverted.
 

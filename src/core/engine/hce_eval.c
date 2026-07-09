@@ -4,10 +4,10 @@
 
 const int hce_piece_value[PIECE_TYPE_COUNT] = {
     0,
-    900,
-    335,
-    320,
-    500,
+    1235,
+    466,
+    409,
+    537,
     100,
 };
 
@@ -843,13 +843,13 @@ static int eval_side(const GameState *s,
                 case PIECE_PAWN:
                     eval_term_add(&terms.piece_square, k_pawn_pst[view], k_pawn_pst[view] / 2);
                     if (is_isolated_pawn(s, side, sq)) {
-                        eval_term_add(&terms.pawn_structure, -10, -15);
+                        eval_term_add(&terms.pawn_structure, -13, -16);
                         if (feat != NULL) {
                             feat->isolated += 1;
                         }
                     }
                     if (is_doubled_pawn(s, side, sq)) {
-                        eval_term_add(&terms.pawn_structure, -12, -15);
+                        eval_term_add(&terms.pawn_structure, -17, -15);
                         if (feat != NULL) {
                             feat->doubled += 1;
                         }
@@ -885,7 +885,7 @@ static int eval_side(const GameState *s,
                 case PIECE_KNIGHT: {
                     eval_term_add(&terms.piece_square, k_knight_pst[view], k_knight_pst[view] / 2);
                     int knight_mob = chess_count_bits(g_knight_attacks[sq] & ~s->occ[side]);
-                    eval_term_add(&terms.mobility, knight_mob * 3, knight_mob * 2);
+                    eval_term_add(&terms.mobility, knight_mob * 8, knight_mob * 4);
                     if (feat != NULL) {
                         feat->mob_n += knight_mob;
                     }
@@ -894,7 +894,7 @@ static int eval_side(const GameState *s,
                 case PIECE_BISHOP: {
                     eval_term_add(&terms.piece_square, k_bishop_pst[view], k_bishop_pst[view] / 2);
                     int bishop_mob = chess_count_bits(hce_bishop_attacks(sq, s->occ_all) & ~s->occ[side]);
-                    eval_term_add(&terms.mobility, bishop_mob * 2, bishop_mob * 3);
+                    eval_term_add(&terms.mobility, bishop_mob * 9, bishop_mob * 4);
                     if (feat != NULL) {
                         feat->mob_b += bishop_mob;
                     }
@@ -906,19 +906,19 @@ static int eval_side(const GameState *s,
                     bool own_pawn = (g_file_masks[file] & s->bb[side][PIECE_PAWN]) != 0;
                     bool enemy_pawn = (g_file_masks[file] & s->bb[enemy][PIECE_PAWN]) != 0;
                     if (!own_pawn && !enemy_pawn) {
-                        eval_term_add(&terms.rook_files, 18, 12);
+                        eval_term_add(&terms.rook_files, 19, 12);
                         if (feat != NULL) {
                             feat->rook_open += 1;
                         }
                     } else if (!own_pawn) {
-                        eval_term_add(&terms.rook_files, 10, 6);
+                        eval_term_add(&terms.rook_files, 11, 6);
                         if (feat != NULL) {
                             feat->rook_semi += 1;
                         }
                     }
                     {
                         int rook_mob = chess_count_bits(hce_rook_attacks(sq, s->occ_all) & ~s->occ[side]);
-                        eval_term_add(&terms.mobility, rook_mob, rook_mob * 2);
+                        eval_term_add(&terms.mobility, rook_mob * 9, rook_mob * 6);
                         if (feat != NULL) {
                             feat->mob_r += rook_mob;
                         }
@@ -931,7 +931,7 @@ static int eval_side(const GameState *s,
                         int queen_mob = chess_count_bits((hce_rook_attacks(sq, s->occ_all) |
                                                           hce_bishop_attacks(sq, s->occ_all)) &
                                                          ~s->occ[side]);
-                        eval_term_add(&terms.mobility, queen_mob, queen_mob);
+                        eval_term_add(&terms.mobility, queen_mob * 9, queen_mob * 2);
                         if (feat != NULL) {
                             feat->mob_q += queen_mob;
                         }
