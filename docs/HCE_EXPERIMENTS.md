@@ -1,5 +1,38 @@
 # HCE Experiments
 
+## 2026-07-09: Joint Texel tune of material, PSTs, and eval scalars
+Status: committed on `hce-kimi` (`2859044`); not yet merged to `hce`.
+
+Hypothesis: the first linear Texel tune held PSTs fixed, so material and mobility
+weights inflated to absorb eval scale. Jointly tuning material, middlegame/endgame
+PSTs, and eval-phase scalars should remove that artifact and add real strength.
+
+Pipeline:
+- `tunedump` extended to emit PST features per piece/square/color and to filter
+  quiet positions via `hce_qsearch_eval_cp_stm` (`|static - qsearch| < 50`).
+- `src/core/engine/hce_eval.c` gained separate endgame PST tables; the eval now
+  blends `mg` and `eg` PST values with the existing phase interpolation.
+- `scripts/texel_selfplay.py` generated ~1,000 120ms self-play games from 1,003
+  equal positions with paired colors.
+- Datasets: 2,424 `vidbot` lichess games (`current/vidbot_20260712.pgn`),
+  27,771 positions; self-play 11,894 positions; combined 39,665 positions;
+  25,663 quiet after filtering.
+- `scripts/texel_tune.py` jointly tuned material + mg/eg PSTs + scalars with the
+  Texel sigmoid (L2 toward defaults, pawn anchored at 100). Feature reconstruction
+  verified exact (0 mismatches).
+- `scripts/texel_apply_tune.py` writes the tuned `TUNED` line back into
+  `hce_eval.c`.
+
+Validation (fixed 120ms/move, lichess equal positions, vs prior HCE baseline
+`03afd16`):
+- 60g (seed 20260712): +46.6 Elo, CI95 [-11.6, +107.5], P(better)=93.7%
+  (`current/pst_tune_60g.json`).
+- 120g confirm (seed 20260714): +43.7 Elo, CI95 [-4.6, +93.7], P(better)=96.2%
+  (`current/pst_tune_120g.json`).
+
+Conclusion: keep and commit. The PST/material/scalar joint tune is a clear
+confirmed gain and becomes the new HCE baseline on this branch.
+
 ## 2026-07-09: Texel-tuned linear eval weights
 Status: MERGED into `hce`.
 
