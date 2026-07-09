@@ -880,7 +880,7 @@ static int eval_side(const GameState *s,
         }
     }
 
-    for (int piece = PIECE_QUEEN; piece <= PIECE_PAWN; ++piece) {
+    for (int piece = PIECE_KING; piece <= PIECE_PAWN; ++piece) {
         uint64_t bb = s->bb[side][piece];
         while (bb != 0) {
             int sq = chess_pop_lsb(&bb);

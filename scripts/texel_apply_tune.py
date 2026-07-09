@@ -3,7 +3,7 @@
 
 Reads the machine-readable `TUNED ...` line (789 integers):
     21 scalars (mat_q, mat_n, mat_b, mat_r, mat_p, iso_mg, iso_eg, ...)
-    384 mg PST values (K, Q, B, N, R, P each 64 squares; king is zero)
+    384 mg PST values (K, Q, B, N, R, P each 64 squares)
     384 eg PST values
 
 Then patches:
@@ -130,7 +130,7 @@ def patch_eval_c(path, vals):
 
     # Patch PST arrays.  Order in the tuned vector is K, Q, B, N, R, P.
     piece_table_names = {
-        0: ("k_king_mid_pst", "k_king_end_pst"),  # king plane is zero in features
+        0: ("k_king_mid_pst", "k_king_end_pst"),
         1: ("k_queen_pst", "k_queen_pst_eg"),
         2: ("k_bishop_pst", "k_bishop_pst_eg"),
         3: ("k_knight_pst", "k_knight_pst_eg"),

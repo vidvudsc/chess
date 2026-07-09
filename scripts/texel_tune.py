@@ -9,7 +9,7 @@ quiet position:
 where each 399-feature block is:
     mat_q mat_n mat_b mat_r mat_p isolated doubled
     mob_n mob_b mob_r mob_q rook_open rook_semi
-    pst[K,Q,B,N,R,P][64] flattened (king plane always zero)
+    pst[K,Q,B,N,R,P][64] flattened
     residual_mg residual_eg
 
 The engine's per-side eval is  total = (mg*phase + eg*(24-phase)) / 24  with an
@@ -113,10 +113,8 @@ K_KING_END_PST = np.array([
 ], dtype=np.float64)
 
 # Piece enum order: KING=0, QUEEN=1, BISHOP=2, KNIGHT=3, ROOK=4, PAWN=5.
-# The engine does not currently add a king PST in eval_side, so king defaults
-# stay at zero and the king PST plane in the feature dump is always zero.
 _PST_TABLES_MG = [
-    np.zeros(64, dtype=np.float64),   # KING (unused)
+    np.zeros(64, dtype=np.float64),   # KING (zero in the pre-king-PST baseline)
     K_QUEEN_PST,
     K_BISHOP_PST,
     K_KNIGHT_PST,
@@ -169,7 +167,7 @@ def trunc_div24(a):
 
 
 def build(feats_path):
-    raw = np.atleast_2d(np.loadtxt(feats_path)).astype(np.int64)
+    raw = np.atleast_2d(np.loadtxt(feats_path))
     label = raw[:, 0].astype(np.float64)
     phase = raw[:, 1].astype(np.int64)
     eval_true = raw[:, 2].astype(np.int64)
@@ -258,7 +256,18 @@ def design_matrix(phase, w, b):
 
 
 def sigmoid(z):
-    return 1.0 / (1.0 + np.exp(-z))
+    return 1.0 / (1.0 + np.exp(-np.clip(z, -60.0, 60.0)))
+
+
+def load_tuned_defaults(path):
+    with open(path, "r", encoding="utf-8") as fp:
+        lines = [line.strip() for line in fp if line.strip().startswith("TUNED ")]
+    if not lines:
+        raise SystemExit(f"no TUNED line found in {path}")
+    values = np.array([int(value) for value in lines[-1].split()[1:]], dtype=np.float64)
+    if len(values) != N_PARAMS:
+        raise SystemExit(f"expected {N_PARAMS} values in {path}, got {len(values)}")
+    return values
 
 
 def loss_for(K, evals, y):
@@ -290,15 +299,20 @@ def main():
                     help="Hold all 5 material values fixed; tune only the "
                          "positional terms + PST.")
     ap.add_argument("--out-c", help="Optional path to write tuned PST/material C snippet.")
+    ap.add_argument("--initial-tuned-file",
+                    help="Use the last TUNED line in this file as the exact current defaults.")
     args = ap.parse_args()
+
+    defaults = (load_tuned_defaults(args.initial_tuned_file)
+                if args.initial_tuned_file else DEFAULTS.copy())
 
     label, phase, eval_true, w, b = build(args.feats)
     n = len(label)
     print(f"positions: {n}", file=sys.stderr)
 
     # (1) Exact integer verification against the engine's own eval.
-    wt = side_totals_int(w, phase, DEFAULTS)
-    bt = side_totals_int(b, phase, DEFAULTS)
+    wt = side_totals_int(w, phase, defaults)
+    bt = side_totals_int(b, phase, defaults)
     eval_white = wt - bt
     mism = np.sum(np.abs(eval_true - 12) != np.abs(eval_white))
     print(f"verify: |eval_true-12| != |recon| on {mism}/{n} rows", file=sys.stderr)
@@ -320,7 +334,7 @@ def main():
     nval = int(n * args.val_frac)
     val, tr = idx[:nval], idx[nval:]
 
-    theta = DEFAULTS.copy()
+    theta = defaults.copy()
     evals_tr = X[tr] @ theta + c[tr]
     K, L0 = fit_K(evals_tr, y[tr])
     print(f"fit K={K:.5f}  baseline train loss={L0:.6f}  "
@@ -329,36 +343,46 @@ def main():
 
     # (3) Gradient descent (Adam) on weights; refit K periodically.
     # Relative L2 pull toward defaults keeps low-count terms sane.
-    reg_scale = np.maximum(np.abs(DEFAULTS), 20.0)
+    reg_scale = np.maximum(np.abs(defaults), 20.0)
     m = np.zeros(N_PARAMS)
     v = np.zeros(N_PARAMS)
     b1, b2, eps = 0.9, 0.999, 1e-8
     Xtr, ctr, ytr = X[tr], c[tr], y[tr]
     ntr = len(tr)
+    best_theta = theta.copy()
+    best_iteration = 0
+    best_val = loss_for(K, X[val] @ theta + c[val], y[val])
     for it in range(1, args.iters + 1):
         evals = Xtr @ theta + ctr
         p = sigmoid(K * evals)
         g = (Xtr.T @ (2.0 * (p - ytr) * p * (1.0 - p) * K)) / ntr
-        g += args.l2 * 1e-3 * (theta - DEFAULTS) / (reg_scale ** 2)
+        g += args.l2 * 1e-3 * (theta - defaults) / (reg_scale ** 2)
         m = b1 * m + (1 - b1) * g
         v = b2 * v + (1 - b2) * (g * g)
         mhat = m / (1 - b1 ** it)
         vhat = v / (1 - b2 ** it)
         theta -= args.lr * mhat / (np.sqrt(vhat) + eps)
         if args.freeze_material:
-            theta[0:5] = DEFAULTS[0:5]
+            theta[0:5] = defaults[0:5]
         elif args.anchor_pawn:
             theta[4] = 100.0
         if it % 500 == 0:
             K, _ = fit_K(Xtr @ theta + ctr, ytr)
             Ltr = loss_for(K, Xtr @ theta + ctr, ytr)
             Lval = loss_for(K, X[val] @ theta + c[val], y[val])
+            if Lval < best_val:
+                best_val = Lval
+                best_theta = theta.copy()
+                best_iteration = it
             print(f"  it {it:5d}  K={K:.5f}  train={Ltr:.6f}  val={Lval:.6f}",
                   file=sys.stderr)
 
+    theta = best_theta
+    print(f"selected iteration {best_iteration} with val loss={best_val:.6f}",
+          file=sys.stderr)
     rounded = np.round(theta).astype(np.int64)
     print("\n# tuned scalar weights (round to int):", file=sys.stderr)
-    for name, d0, t in zip(PARAM_NAMES[:N_SCALAR], DEFAULTS[:N_SCALAR], rounded[:N_SCALAR]):
+    for name, d0, t in zip(PARAM_NAMES[:N_SCALAR], defaults[:N_SCALAR], rounded[:N_SCALAR]):
         print(f"  {name:14s} {int(round(d0)):5d} -> {int(t):5d}",
               file=sys.stderr)
 
@@ -383,6 +407,8 @@ def write_c_snippet(path, rounded):
         for i, name in enumerate(["QUEEN", "BISHOP", "KNIGHT", "ROOK", "PAWN"]):
             fp.write(f"    {mat[i]:4d},  // {name}\n")
         fp.write("};\n\n")
+        _write_table(fp, "k_king_mid_pst", pst_mg[0])
+        _write_table(fp, "k_king_end_pst", pst_eg[0])
         _write_table(fp, "k_queen_pst", pst_mg[1])
         _write_table(fp, "k_bishop_pst", pst_mg[2])
         _write_table(fp, "k_knight_pst", pst_mg[3])
