@@ -1,5 +1,28 @@
 # HCE Experiments
 
+## 2026-07-09: 1-ply Continuation History
+Status: rejected; parked on branch `hce-conthist` (`6387dfe`), not merged.
+
+Hypothesis: the earlier flat-bonus countermove failed (`-17.4` pre-LMP) because
+a single fixed bonus is too coarse. A graded continuation-history table, updated
+with the same depth^2 bonus/malus as the butterfly history, should order quiet
+replies better — and should compound with LMP, which prunes late quiets hard.
+
+Change: `g_cont_hist[prev_piece][prev_to][cur_piece][cur_to]` (color-agnostic,
+static, cleared each search), folded additively into quiet move ordering;
+rewarded on quiet beta cutoff, penalized for the failed quiets at that node.
+
+Validation (fixed 120ms/move, vs LMP baseline `e818841`):
+- 60g: `+23.2` Elo, CI95 `[-45.5, +93.8]`, P 74.7% (`current/cm_vs_lmp_60g.json`).
+- 120g: `+11.6` Elo, CI95 `[-33.3, +56.9]`, P 69.4% (`current/cm_vs_lmp_120g.json`).
+- 240g, fresh seed: `+4.3` Elo, CI95 `[-29.2, +38.0]`, P 60.0%
+  (`current/cm_vs_lmp_240g.json`).
+
+Conclusion: the stronger form beats the flat bonus (sign flipped positive) but
+the signal decays to zero with sample size (+23 -> +11.6 -> +4.3). Neutral at
+this time control; not worth the 2.3MB table. Second confirmation (after LMR)
+that squeezing the search further yields little here — the bottleneck is eval.
+
 ## 2026-07-09: Log-based LMR + Late Move Pruning
 Status: MERGED into `hce`.
 
