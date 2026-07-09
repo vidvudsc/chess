@@ -936,6 +936,9 @@ static int eval_side(const GameState *s,
     eval_term_add(&terms.hanging_penalty, -hanging, -hanging);
     eval_term_add(&terms.queen_trap_penalty, -queen_trap, -(queen_trap / 2));
 
+    terms.bishop_pair.mg = 0;
+    terms.bishop_pair.eg = 0;
+
     if (out_breakdown != NULL) {
         out_breakdown->material = eval_term_blend(terms.material, phase);
         out_breakdown->piece_square = eval_term_blend(terms.piece_square, phase);
