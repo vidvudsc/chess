@@ -1,5 +1,31 @@
 # HCE Experiments
 
+## 2026-07-08: Tactical Penalty Half-Scale
+Status: rejected; full tactical penalties kept.
+
+Hypothesis: hanging-piece and queen-trap penalties are useful, but their static
+swings may be too large now that search is faster. Try half weight for both
+terms while keeping detection logic unchanged.
+
+Variant:
+- `hce-tactical-half` (`091a75b`): divide `hanging` and `queen_trap` by 2
+  before adding them to eval.
+
+Validation:
+- Build: `make uci` passed, with only the existing unused `is_light_square`
+  warning.
+- 60-game match vs current HCE:
+  `current/baselines/tune_tactical_half_60g_20260708.json`
+  scored 31.0/60 (`+11.6` Elo), CI95 `[-61.4, +85.6]`,
+  `P(better)=62.3%`.
+- 120-game match vs current HCE:
+  `current/baselines/tune_tactical_half_120g_20260708.json`
+  scored 56.5/120 (`-20.3` Elo), CI95 `[-68.3, +27.0]`,
+  `P(better)=20.0%`.
+
+Conclusion: reject. The 60-game positive was noise; full-strength tactical
+penalties are still better at this speed.
+
 ## 2026-07-08: Pawn Structure Penalty Ablations
 Status: rejected for removal; isolated/doubled penalties kept.
 
