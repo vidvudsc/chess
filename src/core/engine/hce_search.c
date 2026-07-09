@@ -761,6 +761,20 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
     return alpha;
 }
 
+int hce_qsearch_eval_cp_stm(const GameState *root) {
+    if (root == NULL) {
+        return 0;
+    }
+    GameState s = *root;
+    HceSearchContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.max_depth = 0;
+    ctx.start_ms = 0;
+    ctx.deadline_ms = 0;
+    ctx.hard_deadline_ms = 0;
+    return quiescence(&s, -HCE_INF, HCE_INF, 0, &ctx);
+}
+
 static int negamax(GameState *s,
                    int depth,
                    int alpha,
