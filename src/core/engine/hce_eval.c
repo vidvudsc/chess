@@ -991,8 +991,6 @@ int hce_eval_cp_stm(const GameState *s) {
     int black = eval_side(s, PIECE_BLACK, phase, &attack_unions, NULL);
     int cp_white = white - black;
     int cp_stm = (s->side_to_move == PIECE_WHITE) ? cp_white : -cp_white;
-    // Tempo bonus: small advantage for having the move
-    cp_stm += 12;
     return cp_stm;
 }
 
@@ -1014,7 +1012,6 @@ bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out) {
     out->black.total = eval_side(s, PIECE_BLACK, out->phase, &attack_unions, &out->black);
     out->score_cp_white = out->white.total - out->black.total;
     out->score_cp_stm = (s->side_to_move == PIECE_WHITE) ? out->score_cp_white : -out->score_cp_white;
-    out->score_cp_stm += 12;
     out->score_cp_white = (s->side_to_move == PIECE_WHITE) ? out->score_cp_stm : -out->score_cp_stm;
     return true;
 }
