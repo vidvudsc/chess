@@ -1,5 +1,26 @@
 # HCE Experiments
 
+## 2026-07-08: Passed Pawn Half-Scale
+Status: rejected; current passed-pawn weights kept.
+
+Hypothesis: passed-pawn bonuses are large and may over-push the engine into
+pawn-race optimism. Try half-strength passed-pawn bonuses while keeping the
+same detection, outside/support modifiers, and caps.
+
+Variant:
+- `hce-passed-pawns-half` (`a48ce5d`): divide `passer_mg` and `passer_eg` by
+  2 immediately before adding `terms.passed_pawns`.
+
+Validation:
+- Build: `make uci` passed cleanly.
+- 60-game match vs current HCE:
+  `current/baselines/tune_passed_pawns_half_60g_20260708.json`
+  scored 29.5/60 (`-5.8` Elo), CI95 `[-78.6, +66.5]`,
+  `P(better)=43.7%`.
+
+Conclusion: reject. This is neutral-to-slightly-negative and has no cleanup
+benefit, so keep the current passed-pawn weights.
+
 ## 2026-07-08: Tactical Penalty Half-Scale
 Status: rejected; full tactical penalties kept.
 
