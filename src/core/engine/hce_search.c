@@ -781,18 +781,7 @@ static int negamax(GameState *s,
         }
     }
 
-    Move moves[CHESS_MAX_MOVES];
-    int n = chess_generate_legal_moves_mut(s, moves);
-    if (n <= 0) {
-        if (in_check) {
-            return -HCE_MATE + ply;
-        }
-        return 0;
-    }
-    int move_scores[CHESS_MAX_MOVES];
-    score_moves(s, move_scores, moves, n, tt_move, ctx, ply);
-
-    Move best_move = moves[0];
+    Move best_move = tt_move;
     int best_score = -HCE_INF;
     int alpha_orig = alpha;
     int side = s->side_to_move;
@@ -800,8 +789,64 @@ static int negamax(GameState *s,
     Move failed_quiets[CHESS_MAX_MOVES];
     int failed_quiet_count = 0;
 
+    if (tt_move != 0) {
+        Move m = tt_move;
+        bool quiet = is_quiet_move(m);
+        if (chess_make_move_trusted(s, m)) {
+            ctx->nodes += 1;
+
+            int extension = search_move_extension(s, m, depth);
+            int next_depth = depth - 1 + extension;
+            int score = -negamax(s, next_depth, -beta, -alpha, ply + 1, ctx, NULL);
+            chess_undo_move(s);
+            if (ctx->timed_out) {
+                return alpha;
+            }
+
+            searched += 1;
+            best_score = score;
+            if (score > alpha) {
+                alpha = score;
+                if (alpha >= beta) {
+                    update_killer(ctx, ply, m);
+                    update_history(ctx, side, m, depth);
+                    tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
+                    if (best_move_out != NULL) {
+                        *best_move_out = m;
+                    }
+                    return beta;
+                }
+            }
+            if (quiet && failed_quiet_count < CHESS_MAX_MOVES) {
+                failed_quiets[failed_quiet_count++] = m;
+            }
+        } else {
+            best_move = 0;
+        }
+    }
+
+    Move moves[CHESS_MAX_MOVES];
+    int n = chess_generate_legal_moves_mut(s, moves);
+    if (n <= 0) {
+        if (searched > 0) {
+            goto finish_node;
+        }
+        if (in_check) {
+            return -HCE_MATE + ply;
+        }
+        return 0;
+    }
+    if (best_move == 0) {
+        best_move = moves[0];
+    }
+    int move_scores[CHESS_MAX_MOVES];
+    score_moves(s, move_scores, moves, n, tt_move, ctx, ply);
+
     for (int i = 0; i < n; ++i) {
         Move m = pick_next_move(moves, move_scores, i, n);
+        if (m == tt_move && searched > 0) {
+            continue;
+        }
         bool quiet = is_quiet_move(m);
         bool recapture = is_recapture_move(s, m);
         if (!chess_make_move_trusted(s, m)) {
@@ -889,6 +934,7 @@ static int negamax(GameState *s,
         }
     }
 
+finish_node:
     if (best_score == -HCE_INF) {
         best_score = in_check ? 0 : search_eval_cp_stm(s, ctx, ply);
     }
