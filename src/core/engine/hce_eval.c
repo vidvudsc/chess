@@ -109,10 +109,6 @@ static inline int mirror_sq(int sq) {
     return sq ^ 56;
 }
 
-static inline bool is_light_square(int sq) {
-    return ((square_file(sq) + square_rank(sq)) & 1) == 0;
-}
-
 static uint64_t knight_attacks_mask(int sq) {
     int f = square_file(sq);
     int r = square_rank(sq);
@@ -792,8 +788,6 @@ typedef struct EvalSideTerms {
     EvalTermPair piece_square;
     EvalTermPair pawn_structure;
     EvalTermPair passed_pawns;
-    EvalTermPair outposts;
-    EvalTermPair bishop_quality;
     EvalTermPair rook_files;
     EvalTermPair mobility;
     EvalTermPair king_safety_penalty;
@@ -936,8 +930,6 @@ static int eval_side(const GameState *s,
         out_breakdown->piece_square = eval_term_blend(terms.piece_square, phase);
         out_breakdown->pawn_structure = eval_term_blend(terms.pawn_structure, phase);
         out_breakdown->passed_pawns = eval_term_blend(terms.passed_pawns, phase);
-        out_breakdown->outposts = eval_term_blend(terms.outposts, phase);
-        out_breakdown->bishop_quality = eval_term_blend(terms.bishop_quality, phase);
         out_breakdown->rook_files = eval_term_blend(terms.rook_files, phase);
         out_breakdown->mobility = eval_term_blend(terms.mobility, phase);
         out_breakdown->king_safety_penalty = -eval_term_blend(terms.king_safety_penalty, phase);
@@ -949,8 +941,6 @@ static int eval_side(const GameState *s,
                    terms.piece_square.mg +
                    terms.pawn_structure.mg +
                    terms.passed_pawns.mg +
-                   terms.outposts.mg +
-                   terms.bishop_quality.mg +
                    terms.rook_files.mg +
                    terms.mobility.mg +
                    terms.king_safety_penalty.mg +
@@ -960,8 +950,6 @@ static int eval_side(const GameState *s,
                    terms.piece_square.eg +
                    terms.pawn_structure.eg +
                    terms.passed_pawns.eg +
-                   terms.outposts.eg +
-                   terms.bishop_quality.eg +
                    terms.rook_files.eg +
                    terms.mobility.eg +
                    terms.king_safety_penalty.eg +
