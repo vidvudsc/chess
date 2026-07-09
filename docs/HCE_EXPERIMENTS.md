@@ -1,5 +1,57 @@
 # HCE Experiments
 
+## 2026-07-09: Search Tuning Knobs + First LMR/RFP/Null Sweep
+Status: infrastructure kept; no search-default change shipped.
+
+Hypothesis: the next HCE gains are more likely in search shape than eval
+deletions. Expose the main pruning/reduction constants through UCI so variants
+can be tested without editing C for each attempt.
+
+Infrastructure:
+- `HceRfpMargin`: reverse-futility margin per remaining depth.
+- `HceNullBase`: null-move base reduction.
+- `HceNullDepthDivisor`: null-move depth divisor.
+- `HceLmrBase`: late-move reduction base.
+- `HceLmrDepthBonusAt`: depth threshold for the extra LMR ply.
+- `HceLmrMoveBonusAt`: searched-move threshold for the extra LMR ply.
+
+Default validation:
+- Defaults are behavior-preserving: fixed-depth comparison against pre-knob HCE
+  on 10 FENs at depth 9 had identical bestmove, score, nodes, and PV.
+- `make hce_suite`: 6/6 passed.
+
+Quick 40-game screen:
+- `lmr_conservative` (`HceLmrDepthBonusAt=8`,
+  `HceLmrMoveBonusAt=8`):
+  `current/baselines/search_lmr_conservative_40g_20260709.json`
+  scored 20.5/40 (`+8.7` Elo), `P(better)=58.2%`.
+- `lmr_aggressive` (`HceLmrDepthBonusAt=5`,
+  `HceLmrMoveBonusAt=4`):
+  `current/baselines/search_lmr_aggressive_40g_20260709.json`
+  scored 23.0/40 (`+52.5` Elo), `P(better)=90.1%`.
+- `rfp_conservative` (`HceRfpMargin=120`):
+  `current/baselines/search_rfp_conservative_40g_20260709.json`
+  scored 20.5/40 (`+8.7` Elo), `P(better)=59.5%`.
+- `null_aggressive` (`HceNullBase=3`):
+  `current/baselines/search_null_aggressive_40g_20260709.json`
+  scored 19.0/40 (`-17.4` Elo), `P(better)=32.9%`.
+
+Confirmations:
+- `lmr_aggressive` 120g:
+  `current/baselines/search_lmr_aggressive_120g_20260709.json`
+  scored 55.0/120 (`-29.0` Elo), `P(better)=11.6%`. Reject.
+- `lmr_conservative` 120g:
+  `current/baselines/search_lmr_conservative_120g_20260709.json`
+  scored 63.0/120 (`+17.4` Elo), `P(better)=76.6%`.
+- `lmr_conservative` 240g:
+  `current/baselines/search_lmr_conservative_240g_20260709.json`
+  scored 120.0/240 (`0.0` Elo), `P(better)=50.0%`. Reject as a default change.
+
+Conclusion: keep the tuning knobs, but do not change default LMR/null/RFP yet.
+The fast screen found plausible candidates, but longer matches showed the LMR
+signals were noise. Future search work should use the knobs for broader sweeps
+and only promote variants that survive 240+ games.
+
 ## 2026-07-08: Passed Pawn Half-Scale
 Status: rejected; current passed-pawn weights kept.
 
