@@ -1,5 +1,30 @@
 # HCE Experiments
 
+## 2026-07-08: Mobility Eval Ablation
+Status: rejected for removal; mobility kept.
+
+Hypothesis: the mobility term may be dead weight now that the search is faster,
+and it costs repeated knight/slider attack counts in every eval. Disable the
+term first without optimizing away the loops, so the match isolates chess value
+rather than speed.
+
+Variant:
+- `hce-mobility-off` (`70873d5`): set `terms.mobility.mg/eg = 0` in
+  `eval_side` before blending.
+
+Validation:
+- Build: `make uci` passed, with only the existing unused `is_light_square`
+  warning.
+- 60-game match vs current HCE:
+  `current/baselines/ablate_mobility_off_60g_20260708.json`
+  scored 28.5/60 (`-17.4` Elo), CI95 `[-84.6, +48.5]`,
+  `P(better)=30.2%`.
+
+Conclusion: do not delete mobility as a group. The result is not catastrophic,
+but it leans negative and does not pass the ablation rule for removal. If we
+return to this area, split by piece type or retune weights instead of removing
+all mobility at once.
+
 ## 2026-07-08: Root GameState Copy Cleanup
 Status: kept and merged (`a4ee219`).
 
