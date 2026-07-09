@@ -1,5 +1,30 @@
 # HCE Experiments
 
+## 2026-07-08: Staged TT Move Search
+Status: rejected; not merged.
+
+Hypothesis: try the transposition-table move before generating/scoring the full
+legal move list. If the TT move cuts off, the node avoids full move generation;
+otherwise generate the normal list and skip the already-searched TT move.
+
+Variant:
+- `hce-staged-tt-move` (`c03329d`): staged TT move in `negamax`.
+
+Validation:
+- Build: `make uci` passed, with only the existing unused `is_light_square`
+  warning.
+- Fixed-depth check on 10 FENs at depth 9: not node/PV identical; all 10
+  positions changed node counts/PVs and median NPS was essentially flat
+  (baseline 1,874,158 vs variant 1,880,529).
+- 60-game match vs current HCE:
+  `current/baselines/staged_tt_move_60g_20260708.json`
+  scored 26.0/60 (`-46.6` Elo), CI95 `[-124.6, +27.0]`,
+  `P(better)=10.7%`.
+
+Conclusion: reject. This did not deliver the intended speed benefit and changed
+search behavior enough to lose games. Keep the current full-list scoring/order
+until a cleaner staged generator can preserve search semantics more carefully.
+
 ## 2026-07-08: Rook File Bonus Ablation
 Status: rejected for removal; rook-file bonuses kept.
 
