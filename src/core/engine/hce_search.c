@@ -43,6 +43,7 @@ typedef struct HceSearchContext {
     int lmr_move_bonus_at;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
+    int piece_history[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
 } HceSearchContext;
 
@@ -581,6 +582,7 @@ static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext
             }
         }
         score += ctx->history[s->side_to_move][move_from(m)][move_to(m)];
+        score += ctx->piece_history[s->side_to_move][move_piece(m)][move_to(m)];
     }
     if (move_has_flag(m, MOVE_FLAG_PROMOTION)) {
         score += 700000 + hce_piece_value[move_promo(m)] * 8;
@@ -652,6 +654,16 @@ static void history_update_delta(HceSearchContext *ctx, int side, Move move, int
         *hist = 240000;
     } else if (*hist < -240000) {
         *hist = -240000;
+    }
+    int piece = move_piece(move);
+    if (piece >= 0 && piece < PIECE_TYPE_COUNT) {
+        int *piece_hist = &ctx->piece_history[side][piece][move_to(move)];
+        *piece_hist += delta;
+        if (*piece_hist > 120000) {
+            *piece_hist = 120000;
+        } else if (*piece_hist < -120000) {
+            *piece_hist = -120000;
+        }
     }
 }
 
