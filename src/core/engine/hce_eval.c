@@ -847,9 +847,6 @@ static int eval_side(const GameState *s,
                     if (is_isolated_pawn(s, side, sq)) {
                         eval_term_add(&terms.pawn_structure, -10, -15);
                     }
-                    if (is_doubled_pawn(s, side, sq)) {
-                        eval_term_add(&terms.pawn_structure, -12, -15);
-                    }
                     if (is_passed_pawn(s, side, sq)) {
                         int file = square_file(sq);
                         int advance = (side == PIECE_WHITE) ? square_rank(sq) : (7 - square_rank(sq));
