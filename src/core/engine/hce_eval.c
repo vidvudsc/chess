@@ -869,6 +869,8 @@ static int eval_side(const GameState *s,
                         if (passer_eg > eg_cap) {
                             passer_eg = eg_cap;
                         }
+                        passer_mg /= 2;
+                        passer_eg /= 2;
                         eval_term_add(&terms.passed_pawns, passer_mg, passer_eg);
                     }
                     break;
