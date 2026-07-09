@@ -923,6 +923,7 @@ static int search_root(GameState *root,
     Move best_move = (n > 0) ? moves[0] : 0;
     int side = root->side_to_move;
     int searched = 0;
+    uint64_t root_hash = root->zobrist_hash;
 
     if (n <= 0) {
         if (best_move_out != NULL) {
@@ -937,24 +938,28 @@ static int search_root(GameState *root,
 
     for (int i = 0; i < n; ++i) {
         Move m = pick_next_move(moves, root_scores, i, n);
-        GameState child = *root;
         int score = -HCE_INF;
 
-        if (!chess_make_move_trusted(&child, m)) {
+        if (!chess_make_move_trusted(root, m)) {
             continue;
         }
         ctx->nodes += 1;
 
-        int extension = search_move_extension(&child, m, depth);
+        int extension = search_move_extension(root, m, depth);
         int next_depth = depth - 1 + extension;
 
         if (searched == 0) {
-            score = -negamax(&child, next_depth, -beta, -alpha, 1, ctx, NULL);
+            score = -negamax(root, next_depth, -beta, -alpha, 1, ctx, NULL);
         } else {
-            score = -negamax(&child, next_depth, -alpha - 1, -alpha, 1, ctx, NULL);
+            score = -negamax(root, next_depth, -alpha - 1, -alpha, 1, ctx, NULL);
             if (score > alpha && score < beta) {
-                score = -negamax(&child, next_depth, -beta, -alpha, 1, ctx, NULL);
+                score = -negamax(root, next_depth, -beta, -alpha, 1, ctx, NULL);
             }
+        }
+
+        if (!chess_undo_move(root)) {
+            ctx->timed_out = true;
+            break;
         }
 
         if (ctx->timed_out) {
@@ -972,7 +977,7 @@ static int search_root(GameState *root,
             if (alpha >= beta) {
                 update_killer(ctx, 0, m);
                 update_history(ctx, side, m, depth);
-                tt_store(root->zobrist_hash, depth, 0, beta, HCE_TT_LOWER, m);
+                tt_store(root_hash, depth, 0, beta, HCE_TT_LOWER, m);
                 if (best_move_out != NULL) {
                     *best_move_out = m;
                 }
@@ -992,7 +997,7 @@ static int search_root(GameState *root,
         bound = HCE_TT_LOWER;
     }
     if (!ctx->timed_out) {
-        tt_store(root->zobrist_hash, depth, 0, best_score, bound, best_move);
+        tt_store(root_hash, depth, 0, best_score, bound, best_move);
     }
     if (best_move_out != NULL) {
         *best_move_out = best_move;
@@ -1191,8 +1196,7 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
         }
 
         for (;;) {
-            GameState iter = root;
-            score = search_root(&iter, depth, alpha, beta, &ctx, &iter_best);
+            score = search_root(&root, depth, alpha, beta, &ctx, &iter_best);
             if (ctx.timed_out) {
                 break;
             }
