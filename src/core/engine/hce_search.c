@@ -43,6 +43,7 @@ typedef struct HceSearchContext {
     int lmr_move_bonus_at;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
+    int capture_history[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT][PIECE_TYPE_COUNT][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
 } HceSearchContext;
 
@@ -572,6 +573,11 @@ static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext
             victim = PIECE_PAWN;
         }
         score += 1000000 + hce_piece_value[victim] * 16 - hce_piece_value[attacker];
+        if (ctx != NULL &&
+            attacker >= 0 && attacker < PIECE_TYPE_COUNT &&
+            victim >= 0 && victim < PIECE_TYPE_COUNT) {
+            score += ctx->capture_history[s->side_to_move][attacker][victim][move_to(m)];
+        }
     } else {
         if (ply >= 0 && ply < HCE_MAX_PLY) {
             if (ctx->killer[ply][0] == m) {
@@ -657,6 +663,51 @@ static void history_update_delta(HceSearchContext *ctx, int side, Move move, int
 
 static void update_history(HceSearchContext *ctx, int side, Move move, int depth) {
     history_update_delta(ctx, side, move, history_bonus(depth));
+}
+
+static void capture_history_update_delta(HceSearchContext *ctx,
+                                         const GameState *s,
+                                         int side,
+                                         Move move,
+                                         int delta) {
+    if (ctx == NULL || s == NULL || side < 0 || side >= PIECE_COLOR_COUNT ||
+        !move_has_flag(move, MOVE_FLAG_CAPTURE)) {
+        return;
+    }
+    int attacker = move_piece(move);
+    int victim = captured_piece_for_move(s, move);
+    int to = move_to(move);
+    if (attacker < 0 || attacker >= PIECE_TYPE_COUNT ||
+        victim < 0 || victim >= PIECE_TYPE_COUNT ||
+        to < 0 || to >= 64) {
+        return;
+    }
+    int *hist = &ctx->capture_history[side][attacker][victim][to];
+    *hist += delta;
+    if (*hist > 240000) {
+        *hist = 240000;
+    } else if (*hist < -240000) {
+        *hist = -240000;
+    }
+}
+
+static void update_capture_history(HceSearchContext *ctx, const GameState *s, int side, Move move, int depth) {
+    capture_history_update_delta(ctx, s, side, move, history_bonus(depth) * 32);
+}
+
+static void penalize_capture_history(HceSearchContext *ctx,
+                                     const GameState *s,
+                                     int side,
+                                     const Move captures[CHESS_MAX_MOVES],
+                                     int capture_count,
+                                     int depth) {
+    int malus = history_bonus(depth) * 16;
+    if (malus < 1) {
+        malus = 1;
+    }
+    for (int i = 0; i < capture_count; ++i) {
+        capture_history_update_delta(ctx, s, side, captures[i], -malus);
+    }
 }
 
 static void penalize_quiet_history(HceSearchContext *ctx,
@@ -848,10 +899,13 @@ static int negamax(GameState *s,
     int searched = 0;
     Move failed_quiets[CHESS_MAX_MOVES];
     int failed_quiet_count = 0;
+    Move failed_captures[CHESS_MAX_MOVES];
+    int failed_capture_count = 0;
 
     for (int i = 0; i < n; ++i) {
         Move m = pick_next_move(moves, move_scores, i, n);
         bool quiet = is_quiet_move(m);
+        bool capture = move_has_flag(m, MOVE_FLAG_CAPTURE);
         bool recapture = is_recapture_move(s, m);
         if (!chess_make_move_trusted(s, m)) {
             continue;
@@ -923,8 +977,10 @@ static int negamax(GameState *s,
             if (alpha >= beta) {
                 update_killer(ctx, ply, m);
                 update_history(ctx, side, m, depth);
+                update_capture_history(ctx, s, side, m, depth);
                 if (has_non_pawn_material(s, side)) {
                     penalize_quiet_history(ctx, side, failed_quiets, failed_quiet_count, depth);
+                    penalize_capture_history(ctx, s, side, failed_captures, failed_capture_count, depth);
                 }
                 tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
                 if (best_move_out != NULL) {
@@ -935,6 +991,9 @@ static int negamax(GameState *s,
         }
         if (quiet && failed_quiet_count < CHESS_MAX_MOVES) {
             failed_quiets[failed_quiet_count++] = m;
+        }
+        if (capture && failed_capture_count < CHESS_MAX_MOVES) {
+            failed_captures[failed_capture_count++] = m;
         }
     }
 
