@@ -1,5 +1,41 @@
 # HCE Experiments
 
+## 2026-07-08: Root GameState Copy Cleanup
+Status: kept and merged (`a4ee219`).
+
+Hypothesis: root search and aspiration retries still copied the full
+`GameState`, including the large undo/hash history arrays. The interior null
+move copy had already been removed; doing root moves with make/undo should be a
+small pure speed win without changing fixed-depth search.
+
+Change:
+- `search_root` now makes and undoes root moves in-place instead of copying
+  `GameState child = *root` for each candidate.
+- Aspiration retries call `search_root(&root, ...)` directly instead of copying
+  `GameState iter = root`.
+- Root TT stores use the saved pre-search root hash.
+
+Validation:
+- Fixed-depth identity vs
+  `current/engine_snapshots/hce_best_80b2fff_20260706_chess_uci` on 10 FENs at
+  depth 9: identical bestmove, score, nodes, and PV for every position.
+- NPS depth-9 comparison, 3 passes over the first five
+  `data/positions/lichess_equal_positions.fen`: baseline median 1,309,475 NPS,
+  root-copy-cleanup median 1,396,773 NPS (`+6.7%`).
+- `make hce_suite`: 6/6 passed.
+- `make test`: failed on
+  `Search draw detection should not flatten a mere twofold repetition to a draw`.
+  The clean `hce` baseline fails the same stale test, so this is not a
+  regression from the root-copy patch.
+- 60-game sanity match vs current HCE:
+  `current/baselines/rootcopy_cleanup_60g_20260708.json`
+  scored 31.0/60 (`+11.6` Elo), CI95 `[-51.4, +75.4]`,
+  `P(better)=64.2%`.
+
+Conclusion: keep. This is node-identical at fixed depth, measurably faster, and
+the timed-game sanity check is not negative. The stale repetition unit test
+should be cleaned up separately from this speed patch.
+
 ## 2026-07-06: Tactical Patch Split Ablation
 Status: both terms kept.
 
