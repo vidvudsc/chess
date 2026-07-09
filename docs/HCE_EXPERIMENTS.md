@@ -1,5 +1,46 @@
 # HCE Experiments
 
+## 2026-07-08: Pawn Structure Penalty Ablations
+Status: rejected for removal; isolated/doubled penalties kept.
+
+Hypothesis: fixed isolated and doubled pawn penalties may be stale hand tuning.
+They can over-penalize dynamic positions, and the first grouped test looked
+promising enough to split.
+
+Variants:
+- `hce-pawn-penalties-off` (`455ea23`): zero all `terms.pawn_structure`,
+  disabling isolated and doubled pawn penalties together while keeping passed
+  pawns.
+- `hce-isolated-pawn-off` (`8ff7e45`): remove only the isolated pawn penalty.
+- `hce-doubled-pawn-off` (`d79e94b`): remove only the doubled pawn penalty.
+
+Validation:
+- Grouped removal 60g:
+  `current/baselines/ablate_pawn_penalties_off_60g_20260708.json`
+  scored 35.0/60 (`+58.5` Elo), CI95 `[-3.0, +123.8]`,
+  `P(better)=96.9%`.
+- Isolated-only removal 60g:
+  `current/baselines/ablate_isolated_pawn_off_60g_20260708.json`
+  scored 29.5/60 (`-5.8` Elo), CI95 `[-74.6, +62.6]`,
+  `P(better)=43.3%`.
+- Doubled-only removal 60g:
+  `current/baselines/ablate_doubled_pawn_off_60g_20260708.json`
+  scored 26.5/60 (`-40.7` Elo), CI95 `[-108.9, +24.4]`,
+  `P(better)=11.1%`.
+- Grouped removal 120g:
+  `current/baselines/ablate_pawn_penalties_off_120g_20260708.json`
+  scored 62.5/120 (`+14.5` Elo), CI95 `[-32.9, +62.4]`,
+  `P(better)=72.6%`.
+- Grouped removal 240g:
+  `current/baselines/ablate_pawn_penalties_off_240g_20260708.json`
+  scored 120.5/240 (`+1.4` Elo), CI95 `[-31.4, +34.3]`,
+  `P(better)=53.4%`.
+
+Conclusion: keep the penalties. The exciting 60-game grouped result evaporated
+with more games, and the doubled-pawn split was clearly negative. Treat this as
+a good reminder that 60 games can find candidates, not final truth, when the
+signal is noisy.
+
 ## 2026-07-08: Staged TT Move Search
 Status: rejected; not merged.
 
