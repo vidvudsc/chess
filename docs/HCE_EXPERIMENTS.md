@@ -1,5 +1,30 @@
 # HCE Experiments
 
+## 2026-07-09: Countermove Heuristic
+Status: rejected; not merged.
+
+Hypothesis: remember the quiet reply that caused a beta cutoff against the
+opponent's previous move, then order that reply highly when the same previous
+move appears again. This should improve quiet move ordering beyond killers and
+from/to history.
+
+Variant:
+- `hce-countermove` (`141cf88`): adds
+  `countermove[side][prev_from][prev_to]`, rewards matching quiet moves below
+  killers but above ordinary history, and updates the table on quiet beta
+  cutoffs.
+
+Validation:
+- Build: `make uci` passed.
+- 60-game match vs current HCE:
+  `current/baselines/countermove_60g_20260709.json`
+  scored 28.5/60 (`-17.4` Elo), CI95 `[-75.6, +39.9]`,
+  `P(better)=27.5%`.
+
+Conclusion: reject this shape. A countermove/continuation-history family may
+still be worthwhile, but this simple bonus is not strong enough and leans
+negative.
+
 ## 2026-07-09: Search Tuning Knobs + First LMR/RFP/Null Sweep
 Status: infrastructure kept; no search-default change shipped.
 
