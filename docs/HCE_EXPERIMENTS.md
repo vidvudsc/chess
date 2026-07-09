@@ -1,5 +1,31 @@
 # HCE Experiments
 
+## 2026-07-08: Bishop Pair Bonus Ablation
+Status: removed and merged (`5722a80`, cleaned in `751d59e`).
+
+Hypothesis: the standalone bishop-pair bonus may be stale hand tuning. Bishop
+activity is already partly represented by PST and mobility, so the extra
+`+24/+28` pair bonus might overvalue bishops in positions where the search
+knows better.
+
+Variant:
+- `hce-bishop-pair-off` (`5722a80`): zero `terms.bishop_pair` before blending.
+- Cleanup removed the internal bishop-pair accumulator and bonus block while
+  leaving the public breakdown field compatible as zero.
+
+Validation:
+- Build: `make uci` passed, with only the existing unused `is_light_square`
+  warning.
+- 60-game match vs current HCE:
+  `current/baselines/ablate_bishop_pair_off_60g_20260708.json`
+  scored 31.5/60 (`+17.4` Elo), CI95 `[-42.1, +78.0]`,
+  `P(better)=71.7%`.
+- Cleaned version: `make hce_suite` passed 6/6.
+
+Conclusion: remove. The result is modest and noisy, but it passes the removal
+rule: the engine without the feature scored better than current, and the term
+was pure hand-tuned eval weight with no tactical safety role.
+
 ## 2026-07-08: Tempo Bonus Ablation
 Status: rejected for removal; tempo kept.
 
