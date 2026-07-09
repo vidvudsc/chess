@@ -1,5 +1,21 @@
 # HCE Experiments
 
+## 2026-07-09: Safe Mobility (exclude enemy-pawn squares)
+Status: rejected; reverted.
+
+Hypothesis: mobility counted squares controlled by enemy pawns as real
+mobility, which is wrong. Masked knight/bishop/rook/queen mobility with
+`~own_occ & ~enemy_pawn_attacks`.
+
+Validation (120ms, vs LMP baseline `e818841`): 60g `-17.4` Elo, CI95
+`[-78.0, +42.1]`, P(better) 28.3% (`current/mob_vs_lmp_60g.json`). Leans
+negative; reverted.
+
+Lesson: the fix is principled but the mobility weights were fit to the old
+inflated counts, so masking without re-fitting the weights loses. Fourth
+neutral-to-negative hand-tune since LMP -> the eval weights need *joint*
+tuning (texel), not one-term-at-a-time edits.
+
 ## 2026-07-09: Quadratic King Safety
 Status: rejected; reverted.
 
