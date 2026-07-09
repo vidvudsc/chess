@@ -1,5 +1,28 @@
 # HCE Experiments
 
+## 2026-07-09: Piece-Square History
+Status: rejected; not merged.
+
+Hypothesis: current history only tracks `from -> to`, so it cannot distinguish
+different pieces moving to the same square. Add a smaller
+`piece_history[color][piece][to]` table alongside existing history and update it
+with the same quiet beta-cutoff/malus flow.
+
+Variant:
+- `hce-piece-history` (`bdddb1c`): adds piece-to-destination history to quiet
+  move ordering.
+
+Validation:
+- Build: `make uci` passed.
+- 60-game match vs current HCE:
+  `current/baselines/piece_history_60g_20260709.json`
+  scored exactly 30.0/60 (`0.0` Elo), CI95 `[-63.4, +63.4]`,
+  `P(better)=50.0%`.
+
+Conclusion: reject as a default change. This simple additive history did not
+show a signal; more advanced continuation history needs a better design than
+just another quiet score term.
+
 ## 2026-07-09: Countermove Heuristic
 Status: rejected; not merged.
 
