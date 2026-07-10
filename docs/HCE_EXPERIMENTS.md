@@ -1,5 +1,35 @@
 # HCE Experiments
 
+## 2026-07-09: Post-Texel search follow-up matrix
+Status: all rejected or neutral; engine restored to the joint-Texel baseline.
+
+After promoting the joint material/PST/scalar tune, six isolated search ideas
+were tested at fixed 120ms with paired colors. Every candidate passed the 6/6
+HCE position suite before match play:
+
+- Pawn-keyed correction history applied only to shallow static-eval pruning:
+  27.0/60, -34.9 Elo, P(better)=17.2%
+  (`current/kimi_correction_60g.json`).
+- Guarded non-PV ProbCut over SEE-safe captures/promotions: 28.0/60,
+  -23.2 Elo, P=20.8% (`current/kimi_probcut_60g.json`).
+- Conservative depth-1/2 razoring: 25.0/60, -58.5 Elo, P=3.6%
+  (`current/kimi_razor_60g.json`).
+- LMP exemption for quiets with strong learned history: 30.5/60, +5.8 Elo,
+  P=57.3% (`current/kimi_history_lmp_60g.json`). Neutral; rejected.
+- Removing the duplicate TT-generation increment in isolation: 25.5/60,
+  -52.5 Elo, P=5.6% (`current/kimi_tt_generation_60g.json`). The existing
+  two-step generation behavior remains.
+- One-legal-evasion check extension: 24.0/60, -70.4 Elo, P=2.6%
+  (`current/kimi_forced_evasion_60g.json`).
+
+The correction, ProbCut, and razoring candidates all reduced representative
+fixed-depth node counts, but that extra pruning lost playing strength. The
+forced-evasion extension lost despite adding tactical depth. Conclusion: the
+current search is tightly calibrated around LMP/check extensions; do not keep
+adding generic pruning or extensions. Future substantial work should use a
+larger, game-grouped evaluation dataset or a fundamentally different evaluator,
+not more single-condition search guesses.
+
 ## 2026-07-09: Joint Texel tune of material, PSTs, and eval scalars
 Status: committed on `hce-kimi` (`2859044`); not yet merged to `hce`.
 
