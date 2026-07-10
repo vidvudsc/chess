@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Apply a TUNED weight line from texel_tune.py to hce_eval.c.
 
-Reads the machine-readable `TUNED ...` line (789 integers):
-    21 scalars (mat_q, mat_n, mat_b, mat_r, mat_p, iso_mg, iso_eg, ...)
+Reads the machine-readable `TUNED ...` line (803 integers):
+    27 scalars (material, structure, mobility, rook files,
+                king safety, hanging, queen trap)
     384 mg PST values (K, Q, B, N, R, P each 64 squares; king is zero)
     384 eg PST values
 
 Then patches:
   - hce_piece_value[PIECE_TYPE_COUNT]
   - scalar constants in eval_side (isolated, doubled, mobility, rook files)
+  - composite-term weights (HCE_KS_*, HCE_HANG_*, HCE_QTRAP_*)
   - k_*_pst and k_*_pst_eg arrays
 """
 import argparse
@@ -16,7 +18,7 @@ import re
 import sys
 from pathlib import Path
 
-N_SCALAR = 21
+N_SCALAR = 27
 N_PST = 6 * 64
 PST_PIECES = 6
 
@@ -52,6 +54,8 @@ def patch_eval_c(path, vals):
     mob_n_mg, mob_n_eg, mob_b_mg, mob_b_eg = scalar[9:13]
     mob_r_mg, mob_r_eg, mob_q_mg, mob_q_eg = scalar[13:17]
     rook_open_mg, rook_open_eg, rook_semi_mg, rook_semi_eg = scalar[17:21]
+    ks_mg, ks_eg, hang_mg, hang_eg = scalar[21:25]
+    qtrap_mg, qtrap_eg = scalar[25:27]
 
     # Piece enum order in engine: KING=0, QUEEN=1, BISHOP=2, KNIGHT=3, ROOK=4, PAWN=5.
     # Scalar order from tuner: mat_q, mat_n, mat_b, mat_r, mat_p.
@@ -124,6 +128,45 @@ def patch_eval_c(path, vals):
         lambda m: f"eval_term_add(&terms.rook_files, {rook_semi_mg}, {rook_semi_eg});\n"
                   f"                        if (feat != NULL) {{\n"
                   f"                            feat->rook_semi",
+        text,
+        count=1,
+    )
+
+    # Patch composite-term weights.  These are integer cp per unit; eg counts are
+    # pre-divided by the engine (king-danger/4, queen-trap/2).
+    text = re.sub(
+        r"static const int HCE_KS_MG\s*=\s*[-\d]+;",
+        f"static const int HCE_KS_MG      = {ks_mg:3d};",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"static const int HCE_KS_EG\s*=\s*[-\d]+;",
+        f"static const int HCE_KS_EG      = {ks_eg:3d};",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"static const int HCE_HANG_MG\s*=\s*[-\d]+;",
+        f"static const int HCE_HANG_MG    = {hang_mg:3d};",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"static const int HCE_HANG_EG\s*=\s*[-\d]+;",
+        f"static const int HCE_HANG_EG    = {hang_eg:3d};",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"static const int HCE_QTRAP_MG\s*=\s*[-\d]+;",
+        f"static const int HCE_QTRAP_MG   = {qtrap_mg:3d};",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"static const int HCE_QTRAP_EG\s*=\s*[-\d]+;",
+        f"static const int HCE_QTRAP_EG   = {qtrap_eg:3d};",
         text,
         count=1,
     )

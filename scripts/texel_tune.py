@@ -27,49 +27,82 @@ import sys
 import numpy as np
 
 # Number of scalar (material + positional) features and per-side layout.
-N_SCALAR = 21
-SIDE_OLD = 15
+N_SCALAR = 27
+SIDE_OLD = 21
 PST_PIECES = 6
 PST_SQUARES = 64
 N_PST = PST_PIECES * PST_SQUARES
-N_PARAMS = N_SCALAR + 2 * N_PST  # 789
+N_PARAMS = N_SCALAR + 2 * N_PST  # 803
 
 # Current engine PST tables (from src/core/engine/hce_eval.c).
 K_PAWN_PST = np.array([
      0,  0,  0,  0,  0,  0,  0,  0,
-    50, 50, 50, 50, 50, 50, 50, 50,
-    10, 10, 20, 30, 30, 20, 10, 10,
-     5,  5, 10, 25, 25, 10,  5,  5,
-     0,  0,  0, 20, 20,  0,  0,  0,
+    37, 39, 17, 50, 41, 45, 41, 39,
+    11, 10, 19, 28, 35, 19, 12, 11,
+     5,  6, 11, 28, 25, 12,  5,  5,
+     0,  0,  1, 21, 21,  1,  0,  0,
      5, -5,-10,  0,  0,-10, -5,  5,
      5, 10, 10,-20,-20, 10, 10,  5,
      0,  0,  0,  0,  0,  0,  0,  0,
 ], dtype=np.float64)
 
+K_PAWN_PST_EG = np.array([
+     0,  0,  0,  0,  0,  0,  0,  0,
+    22, 23, 23, 25, 25, 24, 22, 24,
+     5,  5,  9, 15, 16,  9,  6,  5,
+     2,  3,  6, 12, 13,  6,  2,  2,
+     0,  1,  1, 10, 10,  1,  0,  0,
+     2, -2, -5,  0,  0, -5, -2,  2,
+     2,  5,  5,-10,-10,  5,  5,  2,
+     0,  0,  0,  0,  0,  0,  0,  0,
+], dtype=np.float64)
+
 K_KNIGHT_PST = np.array([
-    -50,-40,-30,-30,-30,-30,-40,-50,
-    -40,-20,  0,  5,  5,  0,-20,-40,
-    -30,  5, 10, 15, 15, 10,  5,-30,
-    -30,  0, 15, 20, 20, 15,  0,-30,
-    -30,  5, 15, 20, 20, 15,  5,-30,
+    -50,-31,-30,-30,-30,-30,-44,-50,
+    -40,-20,  0,  6,  5,  0,-20,-40,
+    -31,  5,  9, 15, 15, 11,  5,-32,
+    -30,  0, 15, 20, 20, 15,  0,-29,
+    -30,  4, 15, 21, 20, 15,  5,-30,
     -30,  0, 10, 15, 15, 10,  0,-30,
     -40,-20,  0,  0,  0,  0,-20,-40,
     -50,-40,-30,-30,-30,-30,-40,-50,
 ], dtype=np.float64)
 
+K_KNIGHT_PST_EG = np.array([
+    -25,-20,-15,-15,-15,-15,-20,-25,
+    -20,-10,  0,  2,  2,  0,-10,-20,
+    -15,  2,  5,  7,  7,  5,  2,-15,
+    -15,  0,  7, 10, 10,  7,  0,-15,
+    -15,  2,  7, 10, 10,  7,  2,-15,
+    -15,  0,  5,  7,  7,  5,  0,-15,
+    -20,-10,  0,  0,  0,  0,-10,-20,
+    -25,-20,-15,-15,-15,-15,-20,-25,
+], dtype=np.float64)
+
 K_BISHOP_PST = np.array([
-    -20,-10,-10,-10,-10,-10,-10,-20,
-    -10,  5,  0,  0,  0,  0,  5,-10,
-    -10, 10, 10, 10, 10, 10, 10,-10,
+    -20,-10, -8,-10,-10,-11,-10,-20,
+    -10,  6,  0, -1,  1,  0,  6,-10,
+    -10, 10, 10,  9,  9, 10, 10,-10,
     -10,  0, 10, 10, 10, 10,  0,-10,
-    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  4,  5, 10, 10,  5,  5,-10,
     -10,  0,  5, 10, 10,  5,  0,-10,
     -10,  0,  0,  0,  0,  0,  0,-10,
     -20,-10,-10,-10,-10,-10,-10,-20,
 ], dtype=np.float64)
 
+K_BISHOP_PST_EG = np.array([
+    -10, -5, -5, -5, -5, -5, -5,-10,
+     -5,  2,  0,  0,  0,  0,  2, -5,
+     -5,  5,  5,  5,  5,  5,  5, -5,
+     -5,  0,  5,  5,  5,  5,  0, -5,
+     -5,  2,  2,  5,  5,  2,  2, -5,
+     -5,  0,  2,  5,  5,  2,  0, -5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+    -10, -5, -5, -5, -5, -5, -5,-10,
+], dtype=np.float64)
+
 K_ROOK_PST = np.array([
-     0,  0,  0,  5,  5,  0,  0,  0,
+     0, -1,  0,  5,  4,  2,  0, -1,
     -5,  0,  0,  0,  0,  0,  0, -5,
     -5,  0,  0,  0,  0,  0,  0, -5,
     -5,  0,  0,  0,  0,  0,  0, -5,
@@ -79,10 +112,21 @@ K_ROOK_PST = np.array([
      0,  0,  0,  0,  0,  0,  0,  0,
 ], dtype=np.float64)
 
+K_ROOK_PST_EG = np.array([
+     0,  0,  0,  2,  2,  0,  0,  0,
+    -2,  0,  0,  0,  0,  0,  0, -2,
+    -2,  0,  0,  0,  0,  0,  0, -2,
+    -2,  0,  0,  0,  0,  0,  0, -2,
+    -2,  0,  0,  0,  0,  0,  0, -2,
+    -2,  0,  0,  0,  0,  0,  0, -2,
+     2,  5,  5,  5,  5,  5,  5,  2,
+     0,  0,  0,  0,  0,  0,  0,  0,
+], dtype=np.float64)
+
 K_QUEEN_PST = np.array([
     -20,-10,-10, -5, -5,-10,-10,-20,
     -10,  0,  0,  0,  0,  0,  0,-10,
-    -10,  0,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  5,  4,  5,  0,-10,
      -5,  0,  5,  5,  5,  5,  0, -5,
       0,  0,  5,  5,  5,  5,  0, -5,
     -10,  5,  5,  5,  5,  5,  0,-10,
@@ -90,42 +134,37 @@ K_QUEEN_PST = np.array([
     -20,-10,-10, -5, -5,-10,-10,-20,
 ], dtype=np.float64)
 
-K_KING_MID_PST = np.array([
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -20,-30,-30,-40,-40,-30,-30,-20,
-    -10,-20,-20,-20,-20,-20,-20,-10,
-     20, 20,  0,  0,  0,  0, 20, 20,
-     20, 30, 10,  0,  0, 10, 30, 20,
+K_QUEEN_PST_EG = np.array([
+    -10, -5, -5, -2, -2, -5, -5,-10,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+     -5,  0,  2,  2,  2,  2,  0, -5,
+     -2,  0,  2,  2,  2,  2,  0, -2,
+      0,  0,  2,  2,  2,  2,  0, -2,
+     -5,  2,  2,  2,  2,  2,  0, -5,
+     -5,  0,  2,  0,  0,  0,  0, -5,
+    -10, -5, -5, -2, -2, -5, -5,-10,
 ], dtype=np.float64)
 
-K_KING_END_PST = np.array([
-    -50,-40,-30,-20,-20,-30,-40,-50,
-    -30,-20,-10,  0,  0,-10,-20,-30,
-    -30,-10, 20, 30, 30, 20,-10,-30,
-    -30,-10, 30, 40, 40, 30,-10,-30,
-    -30,-10, 30, 40, 40, 30,-10,-30,
-    -30,-10, 20, 30, 30, 20,-10,-30,
-    -30,-30,  0,  0,  0,  0,-30,-30,
-    -50,-30,-30,-30,-30,-30,-30,-50,
-], dtype=np.float64)
+# King PST planes are kept at zero in the engine; they are included for alignment.
+K_KING_MID_PST = np.zeros(64, dtype=np.float64)
+K_KING_END_PST = np.zeros(64, dtype=np.float64)
 
 # Piece enum order: KING=0, QUEEN=1, BISHOP=2, KNIGHT=3, ROOK=4, PAWN=5.
-# The engine does not currently add a king PST in eval_side, so king defaults
-# stay at zero and the king PST plane in the feature dump is always zero.
 _PST_TABLES_MG = [
-    np.zeros(64, dtype=np.float64),   # KING (unused)
+    K_KING_MID_PST,
     K_QUEEN_PST,
     K_BISHOP_PST,
     K_KNIGHT_PST,
     K_ROOK_PST,
     K_PAWN_PST,
 ]
-# The engine uses mg = table, eg = table/2 (trunc toward zero) for non-king pieces.
 _PST_TABLES_EG = [
-    np.sign(t) * (np.abs(t) // 2) for t in _PST_TABLES_MG
+    K_KING_END_PST,
+    K_QUEEN_PST_EG,
+    K_BISHOP_PST_EG,
+    K_KNIGHT_PST_EG,
+    K_ROOK_PST_EG,
+    K_PAWN_PST_EG,
 ]
 _PST_DEFAULT_MG = np.concatenate(_PST_TABLES_MG)
 _PST_DEFAULT_EG = np.concatenate(_PST_TABLES_EG)
@@ -135,17 +174,22 @@ PARAM_NAMES = (
      "iso_mg", "iso_eg", "dbl_mg", "dbl_eg",
      "mob_n_mg", "mob_n_eg", "mob_b_mg", "mob_b_eg",
      "mob_r_mg", "mob_r_eg", "mob_q_mg", "mob_q_eg",
-     "rook_open_mg", "rook_open_eg", "rook_semi_mg", "rook_semi_eg"]
+     "rook_open_mg", "rook_open_eg", "rook_semi_mg", "rook_semi_eg",
+     "ks_mg", "ks_eg", "hang_mg", "hang_eg",
+     "qtrap_mg", "qtrap_eg"]
     + [f"pst{p}_{s}_mg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
     + [f"pst{p}_{s}_eg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
 )
 
-# Current engine scalar defaults (post 44dc6b5 texel tune).
+# Current engine scalar defaults (post PST/material joint tune, plus new
+# composite-term weights from src/core/engine/hce_eval.c).
 _SCALAR_DEFAULTS = np.array([
-    1235, 409, 466, 537, 100,   # material q n b r p (knight=409, bishop=466)
-    -13, -16, -17, -15,         # isolated, doubled (mg, eg)
-    8, 4, 9, 4, 9, 6, 9, 2,     # mobility n,b,r,q (mg, eg)
-    19, 12, 11, 6,              # rook open, semi (mg, eg)
+    1329, 457, 499, 617, 100,   # material q n b r p (knight=457, bishop=499)
+    -16, -16, -20, -15,         # isolated, doubled (mg, eg)
+     6,  6,  8,  3,  8,  4,  8, 0,  # mobility n,b,r,q (mg, eg)
+    19, 12, 11,  6,             # rook open, semi (mg, eg)
+    -1, -1, -1, -1,             # king safety mg/eg, hanging mg/eg
+    -1, -1,                     # queen trap mg/eg
 ], dtype=np.float64)
 
 DEFAULTS = np.concatenate([
@@ -154,12 +198,15 @@ DEFAULTS = np.concatenate([
     _PST_DEFAULT_EG,
 ])
 
-# Column indices within the first 15 old scalar features.
+# Column indices within the per-side scalar feature block.
 F_MATQ, F_MATN, F_MATB, F_MATR, F_MATP = 0, 1, 2, 3, 4
 F_ISO, F_DBL = 5, 6
 F_MN, F_MB, F_MR, F_MQ = 7, 8, 9, 10
 F_ROPEN, F_RSEMI = 11, 12
-F_RESMG, F_RESEG = 13, 14
+F_KSMG, F_KSEG = 13, 14
+F_HANGMG, F_HANGEG = 15, 16
+F_QTRAPMG, F_QTRAPEG = 17, 18
+F_RESMG, F_RESEG = 19, 20
 
 
 def trunc_div24(a):
@@ -204,12 +251,18 @@ def side_totals_int(side, phase, theta):
           old[:, F_MN] * scalar[9] + old[:, F_MB] * scalar[11] +
           old[:, F_MR] * scalar[13] + old[:, F_MQ] * scalar[15] +
           old[:, F_ROPEN] * scalar[17] + old[:, F_RSEMI] * scalar[19] +
+          old[:, F_KSMG] * scalar[21] +
+          old[:, F_HANGMG] * scalar[23] +
+          old[:, F_QTRAPMG] * scalar[25] +
           old[:, F_RESMG]).astype(np.int64)
     eg = (mat + ps_eg +
           old[:, F_ISO] * scalar[6] + old[:, F_DBL] * scalar[8] +
           old[:, F_MN] * scalar[10] + old[:, F_MB] * scalar[12] +
           old[:, F_MR] * scalar[14] + old[:, F_MQ] * scalar[16] +
           old[:, F_ROPEN] * scalar[18] + old[:, F_RSEMI] * scalar[20] +
+          old[:, F_KSEG] * scalar[22] +
+          old[:, F_HANGEG] * scalar[24] +
+          old[:, F_QTRAPEG] * scalar[26] +
           old[:, F_RESEG]).astype(np.int64)
     return trunc_div24(mg * phase + eg * (24 - phase))
 
@@ -249,6 +302,13 @@ def design_matrix(phase, w, b):
     X[:, 18] = d_old[:, F_ROPEN] * egw
     X[:, 19] = d_old[:, F_RSEMI] * mgw
     X[:, 20] = d_old[:, F_RSEMI] * egw
+    # King safety / hanging / queen trap / tempo.
+    X[:, 21] = d_old[:, F_KSMG] * mgw
+    X[:, 22] = d_old[:, F_KSEG] * egw
+    X[:, 23] = d_old[:, F_HANGMG] * mgw
+    X[:, 24] = d_old[:, F_HANGEG] * egw
+    X[:, 25] = d_old[:, F_QTRAPMG] * mgw
+    X[:, 26] = d_old[:, F_QTRAPEG] * egw
     # PST mg/eg.
     X[:, N_SCALAR:N_SCALAR + N_PST] = d_pst * mgw[:, None]
     X[:, N_SCALAR + N_PST:] = d_pst * egw[:, None]

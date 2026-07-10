@@ -41,6 +41,9 @@ typedef struct HceTuneFeatures {
     int mob_n, mob_b, mob_r, mob_q;  // raw mobility square counts by piece
     int rook_open, rook_semi;   // rooks on open / half-open files
     int pst[PIECE_TYPE_COUNT][64];  // piece-square counts (view side, mirrored for black)
+    int ks_mg, ks_eg;           // king-danger units (eg count = danger / 4)
+    int hang_mg, hang_eg;       // hanging-piece penalty units
+    int qtrap_mg, qtrap_eg;     // queen-trap units (eg count = trap / 2)
     int residual_mg;            // summed mg of all non-tuned terms
     int residual_eg;            // summed eg of all non-tuned terms
 } HceTuneFeatures;

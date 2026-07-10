@@ -11,6 +11,16 @@ const int hce_piece_value[PIECE_TYPE_COUNT] = {
     100,
 };
 
+// Tunable composite-term weights (centipawns per unit).  These are patched by
+// scripts/texel_apply_tune.py.  King safety / queen-trap split mg and eg counts
+// so the default -1 weights reproduce the old behaviour exactly.
+static const int HCE_KS_MG      = -1;   // per king-danger unit
+static const int HCE_KS_EG      = -1;   // per (king-danger / 4) unit
+static const int HCE_HANG_MG    = -1;   // per hanging-penalty unit
+static const int HCE_HANG_EG    = -1;   // per hanging-penalty unit
+static const int HCE_QTRAP_MG   = -1;   // per queen-trap unit
+static const int HCE_QTRAP_EG   = -1;   // per (queen-trap / 2) unit
+
 const int hce_phase_inc[PIECE_TYPE_COUNT] = {
     0,
     4,
@@ -1000,9 +1010,23 @@ static int eval_side(const GameState *s,
     int king_danger = king_safety_penalty(s, side);
     int hanging = hanging_piece_penalty(s, side, attack_unions);
     int queen_trap = queen_trap_penalty(s, side, attack_unions);
-    eval_term_add(&terms.king_safety_penalty, -king_danger, -(king_danger / 4));
-    eval_term_add(&terms.hanging_penalty, -hanging, -hanging);
-    eval_term_add(&terms.queen_trap_penalty, -queen_trap, -(queen_trap / 2));
+    eval_term_add(&terms.king_safety_penalty,
+                  king_danger * HCE_KS_MG,
+                  (king_danger / 4) * HCE_KS_EG);
+    eval_term_add(&terms.hanging_penalty,
+                  hanging * HCE_HANG_MG,
+                  hanging * HCE_HANG_EG);
+    eval_term_add(&terms.queen_trap_penalty,
+                  queen_trap * HCE_QTRAP_MG,
+                  (queen_trap / 2) * HCE_QTRAP_EG);
+    if (feat != NULL) {
+        feat->ks_mg += king_danger;
+        feat->ks_eg += king_danger / 4;
+        feat->hang_mg += hanging;
+        feat->hang_eg += hanging;
+        feat->qtrap_mg += queen_trap;
+        feat->qtrap_eg += queen_trap / 2;
+    }
 
     if (out_breakdown != NULL) {
         out_breakdown->material = eval_term_blend(terms.material, phase);
@@ -1036,15 +1060,22 @@ static int eval_side(const GameState *s,
                    terms.queen_trap_penalty.eg;
     if (feat != NULL) {
         // Residual = everything not linearly reconstructed from the captured
-        // counts (material, piece squares, pawn_structure, rook_files, mobility).
+        // counts (material, piece squares, pawn_structure, rook_files, mobility,
+        // king safety, hanging, queen trap).  Tempo is added outside eval_side.
         // Keep it in pre-blend mg/eg form so the Python side can sum then blend
         // once, matching the engine's single integer division exactly.
         int tuned_mg = terms.material.mg + terms.piece_square.mg +
                        terms.pawn_structure.mg + terms.rook_files.mg +
-                       terms.mobility.mg;
+                       terms.mobility.mg +
+                       terms.king_safety_penalty.mg +
+                       terms.hanging_penalty.mg +
+                       terms.queen_trap_penalty.mg;
         int tuned_eg = terms.material.eg + terms.piece_square.eg +
                        terms.pawn_structure.eg + terms.rook_files.eg +
-                       terms.mobility.eg;
+                       terms.mobility.eg +
+                       terms.king_safety_penalty.eg +
+                       terms.hanging_penalty.eg +
+                       terms.queen_trap_penalty.eg;
         feat->residual_mg = total_mg - tuned_mg;
         feat->residual_eg = total_eg - tuned_eg;
     }

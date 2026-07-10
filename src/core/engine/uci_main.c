@@ -599,11 +599,14 @@ static int run_tune_dump(const char *infile, const char *outfile) {
             continue;
         }
         fprintf(fout, "%.1f %d %d", label, phase, eval_true);
-        // White old scalar features.
-        fprintf(fout, " %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+        // White scalar features (material, structure, mobility, rook files,
+        // king safety, hanging, queen trap, residual).
+        fprintf(fout, " %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
                 w.mat[PIECE_QUEEN], w.mat[PIECE_KNIGHT], w.mat[PIECE_BISHOP],
                 w.mat[PIECE_ROOK], w.mat[PIECE_PAWN], w.isolated, w.doubled,
                 w.mob_n, w.mob_b, w.mob_r, w.mob_q, w.rook_open, w.rook_semi,
+                w.ks_mg, w.ks_eg, w.hang_mg, w.hang_eg,
+                w.qtrap_mg, w.qtrap_eg,
                 w.residual_mg, w.residual_eg);
         // White PST counts.
         for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
@@ -611,11 +614,13 @@ static int run_tune_dump(const char *infile, const char *outfile) {
                 fprintf(fout, " %d", w.pst[piece][sq]);
             }
         }
-        // Black old scalar features.
-        fprintf(fout, " %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+        // Black scalar features.
+        fprintf(fout, " %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
                 b.mat[PIECE_QUEEN], b.mat[PIECE_KNIGHT], b.mat[PIECE_BISHOP],
                 b.mat[PIECE_ROOK], b.mat[PIECE_PAWN], b.isolated, b.doubled,
                 b.mob_n, b.mob_b, b.mob_r, b.mob_q, b.rook_open, b.rook_semi,
+                b.ks_mg, b.ks_eg, b.hang_mg, b.hang_eg,
+                b.qtrap_mg, b.qtrap_eg,
                 b.residual_mg, b.residual_eg);
         // Black PST counts.
         for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
