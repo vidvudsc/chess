@@ -347,8 +347,9 @@ def main():
                     help="Freeze pawn=100 so the eval stays in centipawns.")
     ap.add_argument("--no-anchor-pawn", dest="anchor_pawn", action="store_false")
     ap.add_argument("--freeze-material", action="store_true",
-                    help="Hold all 5 material values fixed; tune only the "
-                         "positional terms + PST.")
+                    help="Hold all 5 material values fixed.")
+    ap.add_argument("--freeze-pst", action="store_true",
+                    help="Hold all PST mg/eg values fixed.")
     ap.add_argument("--out-c", help="Optional path to write tuned PST/material C snippet.")
     args = ap.parse_args()
 
@@ -405,8 +406,13 @@ def main():
         mhat = m / (1 - b1 ** it)
         vhat = v / (1 - b2 ** it)
         theta -= args.lr * mhat / (np.sqrt(vhat) + eps)
+        frozen = np.zeros(N_PARAMS, dtype=bool)
         if args.freeze_material:
-            theta[0:5] = DEFAULTS[0:5]
+            frozen[0:5] = True
+        if args.freeze_pst:
+            frozen[N_SCALAR:N_SCALAR + 2 * N_PST] = True
+        if np.any(frozen):
+            theta[frozen] = DEFAULTS[frozen]
         elif args.anchor_pawn:
             theta[4] = 100.0
         if it % 500 == 0:
