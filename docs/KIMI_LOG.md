@@ -8,14 +8,35 @@ whether it was committed or reverted.
 ## Status summary (keep this block current)
 - Branch base: `hce` @ 03afd16
 - Confirmed wins committed this session: 1 — joint material/PST/scalar Texel tune (`2859044`)
+- Infrastructure committed this session: 1 — extend tuning pipeline to cover
+  king-safety / hanging / queen-trap composite terms (`593abb5`)
 - Datasets built:
   - `current/vidbot_20260712.pgn` (2,424 games)
   - `current/selfplay_120ms_20260712.pgn` (~1,000 games)
   - `current/combined_features.txt` (25,663 quiet positions)
+  - `current/ks_tune_features.txt` (25,694 quiet positions)
 - Pending / left for review: (none)
-- Baseline binary updated: `/tmp/base_uci` rebuilt from `2859044`
+- Baseline binary updated: `/tmp/base_uci` rebuilt from `593abb5`
 
 ## Entries
+
+### 2026-07-09 (late night) — Extend tuning pipeline to cover king-safety, hanging, queen-trap
+- Hypothesis: the PST/material tune left the major composite terms (king safety,
+  hanging pieces, queen traps) at hand-tuned defaults. Adding them to the same
+  joint Texel framework should find further Elo.
+- Change:
+  - Added tunable `HCE_KS_*`, `HCE_HANG_*`, `HCE_QTRAP_*` constants to
+    `hce_eval.c`, defaulting to the old behaviour.
+  - Extended `HceTuneFeatures`, `tunedump`, `texel_tune.py`, and
+    `texel_apply_tune.py` for the new mg/eg features.
+- Build: clean.
+- Tune: 25,694 quiet positions, 8,000 iters. Tuned values looked noisy (e.g.
+  `ks_eg` flipped positive).
+- Match: 60-position gate (seed 20260716): cand 62.5/120, +14.5 Elo,
+  CI95 [-31.5, +61.0], P(better)=73.2% (`current/ks_tune_60g.json`).
+- Result: **REVERTED** the tuned weights; kept the infrastructure commit `593abb5`.
+  The pipeline extension is now in place for a better-regularised retune or a
+  different term.
 
 ### 2026-07-09 (post-midnight) — Joint Texel tune of material, PSTs, and eval scalars
 - Hypothesis: the previous linear Texel tune fixed material/mobility/structure but
