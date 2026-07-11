@@ -14,7 +14,7 @@ already-merged chain suffered the same. Re-validated every seam at 240 games
 | LMP (e818841) vs session-start | +64.4, CI [+31.9, +98.1], P=100% (`current/ladder_lmp_vs_orig_240g.json`) |
 | linear texel (44dc6b5) vs LMP | +51.0, CI [+18.3, +84.7], P=99.9% (`current/ladder_texel_vs_lmp_240g.json`) |
 | joint PST (58d89c0) vs linear texel | +46.6, CI [+13.2, +80.9], P=99.7% (`current/ladder_pst_vs_texel_240g.json`) |
-| Jul-6 behavioral batch (efbdfd2) vs pre (fe88312) | pending (`current/ladder_jul6_vs_pre_240g.json`) |
+| Jul-6 session (efbdfd2) vs pre-session (fe88312) | +147.2, CI [+117.6, +179.0], P=100% (`current/ladder_jul6_vs_pre_240g.json`) |
 
 Notes: every stage's CI floor is well above zero — all three merged stages are
 individually real. Point estimates at 120g ran ~1.5-2x hot vs 240g (LMP +123.7
