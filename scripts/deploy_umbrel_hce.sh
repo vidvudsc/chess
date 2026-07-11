@@ -33,7 +33,8 @@ ssh "$HOST" "mkdir -p '$REMOTE_RELEASE_DIR' '$REMOTE_ROOT/shared' '$REMOTE_ROOT/
 # Append a changelog entry to shared/DEPLOY_LOG.md (survives release pruning).
 # The previous deploy's commit is parsed from the newest release dir name
 # (<date>_<time>_<shorthash>), so the entry lists exactly what this deploy ships.
-PREV_HASH="$(ssh "$HOST" "ls '$REMOTE_ROOT/releases' 2>/dev/null | grep -v migration | sort | tail -1" | awk -F_ '{print $3}')"
+# Exclude the release dir we just created so we diff against the real previous deploy.
+PREV_HASH="$(ssh "$HOST" "ls '$REMOTE_ROOT/releases' 2>/dev/null | grep -v migration | grep -v '$RELEASE_ID' | sort | tail -1" | awk -F_ '{print $3}')"
 BRANCH="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 DIRTY=""
 if [[ -n "$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null)" ]]; then
