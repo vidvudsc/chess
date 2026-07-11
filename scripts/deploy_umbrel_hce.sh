@@ -30,6 +30,31 @@ REMOTE_RELEASE_DIR="$REMOTE_ROOT/releases/$RELEASE_ID"
 
 ssh "$HOST" "mkdir -p '$REMOTE_RELEASE_DIR' '$REMOTE_ROOT/shared' '$REMOTE_ROOT/shared/logs' '$REMOTE_ROOT/releases'"
 
+# Append a changelog entry to shared/DEPLOY_LOG.md (survives release pruning).
+# The previous deploy's commit is parsed from the newest release dir name
+# (<date>_<time>_<shorthash>), so the entry lists exactly what this deploy ships.
+PREV_HASH="$(ssh "$HOST" "ls '$REMOTE_ROOT/releases' 2>/dev/null | grep -v migration | sort | tail -1" | awk -F_ '{print $3}')"
+BRANCH="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+DIRTY=""
+if [[ -n "$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null)" ]]; then
+  DIRTY=" (DIRTY WORKING TREE)"
+fi
+{
+  echo "## $RELEASE_ID"
+  echo "- when: $(date -u +"%Y-%m-%d %H:%M UTC")"
+  echo "- branch: $BRANCH @ $GIT_SHORT$DIRTY"
+  if [[ -n "$PREV_HASH" ]] && git -C "$ROOT_DIR" cat-file -e "$PREV_HASH" 2>/dev/null; then
+    echo "- changes since last deploy ($PREV_HASH):"
+    git -C "$ROOT_DIR" log --oneline "$PREV_HASH..HEAD" | sed 's/^/    /'
+  else
+    echo "- previous deploy unknown; recent commits:"
+    git -C "$ROOT_DIR" log --oneline -10 | sed 's/^/    /'
+  fi
+  echo ""
+} > /tmp/deploy_log_entry.md
+ssh "$HOST" "cat >> '$REMOTE_ROOT/shared/DEPLOY_LOG.md'" < /tmp/deploy_log_entry.md
+cat /tmp/deploy_log_entry.md
+
 rsync -avh --delete \
   --exclude '__pycache__/' \
   "$STAGE_DIR/" "$HOST:$REMOTE_RELEASE_DIR/"
