@@ -348,7 +348,12 @@ class LichessApi:
                     log_event("stream", f"open {path}")
                 else:
                     log_event("stream", f"reopen {path} (attempt {attempt})")
-                with self.session.get(self._url(path), stream=True, timeout=(15, None)) as resp:
+                # Read timeout must be finite: lichess sends keep-alive lines
+                # every ~6s, so 60s of silence means the connection is dead.
+                # With None, a silently dropped TCP stream blocks iter_lines()
+                # forever and the reconnect logic below never fires (this
+                # zombied the bot for ~44h on 2026-07-10).
+                with self.session.get(self._url(path), stream=True, timeout=(15, 60)) as resp:
                     resp.raise_for_status()
                     if attempt > 0:
                         log_event("stream", f"stream restored on {path} after {attempt} retries")
