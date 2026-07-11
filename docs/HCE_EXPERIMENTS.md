@@ -1,5 +1,28 @@
 # HCE Experiments
 
+## 2026-07-11: 240-game attribution audit of the merged chain
+Status: all merged stages CONFIRMED at 240g; nothing slipped through.
+
+Motivation: several candidate ideas looked good at 60/120g and collapsed at
+240g (selection bias on noisy gates), raising the question of whether the
+already-merged chain suffered the same. Re-validated every seam at 240 games
+(120 fresh positions, paired colors, fixed 120ms, seeds 20260716/17):
+
+| Match | Result |
+|---|---|
+| current hce (58d89c0) vs session-start (efbdfd2) | +117.2, CI [+82.2, +154.6], P=100% (`current/cumulative_240g.json`) |
+| LMP (e818841) vs session-start | +64.4, CI [+31.9, +98.1], P=100% (`current/ladder_lmp_vs_orig_240g.json`) |
+| linear texel (44dc6b5) vs LMP | +51.0, CI [+18.3, +84.7], P=99.9% (`current/ladder_texel_vs_lmp_240g.json`) |
+| joint PST (58d89c0) vs linear texel | +46.6, CI [+13.2, +80.9], P=99.7% (`current/ladder_pst_vs_texel_240g.json`) |
+| Jul-6 behavioral batch (efbdfd2) vs pre (fe88312) | pending (`current/ladder_jul6_vs_pre_240g.json`) |
+
+Notes: every stage's CI floor is well above zero — all three merged stages are
+individually real. Point estimates at 120g ran ~1.5-2x hot vs 240g (LMP +123.7
+-> +64.4), confirming the inflation-of-gated-winners effect; stage sums
+(+162) exceed the direct cumulative (+117) as expected for chained Elo. The
+joint-PST block (1a9b951 + 42ec83c + b388411), previously undeployed, is
+confirmed +46.6 at 240g and is clear to ship.
+
 ## 2026-07-09: Post-Texel search follow-up matrix
 Status: all rejected or neutral; engine restored to the joint-Texel baseline.
 
