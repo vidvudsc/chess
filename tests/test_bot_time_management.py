@@ -98,7 +98,7 @@ def test_bullet_no_increment_budget_is_capped() -> None:
 
     assert_close(remaining, 60.0)
     assert_close(increment, 0.0)
-    assert_close(budget, 0.35)
+    assert_close(budget, 0.50)
 
 
 def test_blitz_increment_budget_respects_hard_cap() -> None:
@@ -117,7 +117,7 @@ def test_blitz_increment_budget_respects_hard_cap() -> None:
 
     assert_close(remaining, 180.0)
     assert_close(increment, 2.0)
-    assert_close(budget, 1.5)
+    assert_close(budget, 3.5)
 
 
 def test_concurrency_scales_time_budget() -> None:
@@ -146,7 +146,89 @@ def test_concurrency_scales_time_budget() -> None:
 
     if not busy_budget < solo_budget:
         raise AssertionError(f"expected concurrency to lower budget, got solo={solo_budget} busy={busy_budget}")
-    assert_close(busy_budget, 0.9)
+    assert_close(busy_budget, 2.8)
+
+
+def test_rapid_no_increment_uses_available_clock() -> None:
+    runner = object.__new__(BotRunner)
+    board = chess.Board()
+    state = {"wtime": 600000, "btime": 600000, "winc": 0, "binc": 0}
+
+    budget, _, _ = runner._compute_move_budget(
+        board, state, chess.WHITE, 600.0, 0.0, 2.5, 1
+    )
+
+    assert_close(budget, 6.0)
+
+
+def test_rapid_increment_can_spend_up_to_increment() -> None:
+    runner = object.__new__(BotRunner)
+    board = chess.Board()
+    state = {"wtime": 600000, "btime": 600000, "winc": 10000, "binc": 10000}
+
+    solo_budget, _, _ = runner._compute_move_budget(
+        board, state, chess.WHITE, 600.0, 10.0, 5.0, 1
+    )
+    busy_budget, _, _ = runner._compute_move_budget(
+        board, state, chess.WHITE, 600.0, 10.0, 5.0, 3
+    )
+
+    assert_close(solo_budget, 10.0)
+    assert_close(busy_budget, 8.0)
+
+
+def test_long_rapid_has_larger_but_bounded_budget() -> None:
+    runner = object.__new__(BotRunner)
+    board = chess.Board()
+    state = {"wtime": 900000, "btime": 900000, "winc": 10000, "binc": 10000}
+
+    budget, _, _ = runner._compute_move_budget(
+        board, state, chess.WHITE, 900.0, 10.0, 5.0, 1
+    )
+
+    assert_close(budget, 12.0)
+
+
+def test_rapid_budget_preserves_clock_over_long_game() -> None:
+    runner = object.__new__(BotRunner)
+    board = chess.Board()
+    remaining = 600.0
+
+    for _ in range(80):
+        state = {
+            "wtime": int(remaining * 1000),
+            "btime": int(remaining * 1000),
+            "winc": 0,
+            "binc": 0,
+        }
+        budget, _, _ = runner._compute_move_budget(
+            board, state, chess.WHITE, 600.0, 0.0, 2.5, 1
+        )
+        remaining -= budget
+
+    if remaining < 150.0:
+        raise AssertionError(f"10+0 policy exhausted its long-game reserve: {remaining}")
+
+
+def test_increment_rapid_does_not_burn_base_clock() -> None:
+    runner = object.__new__(BotRunner)
+    board = chess.Board()
+    remaining = 600.0
+
+    for _ in range(90):
+        state = {
+            "wtime": int(remaining * 1000),
+            "btime": int(remaining * 1000),
+            "winc": 10000,
+            "binc": 10000,
+        }
+        budget, _, _ = runner._compute_move_budget(
+            board, state, chess.WHITE, 600.0, 10.0, 5.0, 1
+        )
+        remaining = remaining - budget + 10.0
+
+    if remaining < 590.0:
+        raise AssertionError(f"10+10 policy burned its base clock: {remaining}")
 
 
 def test_low_clock_panic_budget_stays_small() -> None:
@@ -165,7 +247,7 @@ def test_low_clock_panic_budget_stays_small() -> None:
 
     assert_close(remaining, 0.8)
     assert_close(increment, 0.5)
-    if not 0.05 <= budget <= 0.225:
+    if not 0.05 <= budget <= 0.175:
         raise AssertionError(f"panic budget outside expected range: {budget}")
 
 
@@ -200,6 +282,11 @@ def main() -> None:
     test_bullet_no_increment_budget_is_capped()
     test_blitz_increment_budget_respects_hard_cap()
     test_concurrency_scales_time_budget()
+    test_rapid_no_increment_uses_available_clock()
+    test_rapid_increment_can_spend_up_to_increment()
+    test_long_rapid_has_larger_but_bounded_budget()
+    test_rapid_budget_preserves_clock_over_long_game()
+    test_increment_rapid_does_not_burn_base_clock()
     test_low_clock_panic_budget_stays_small()
     test_dead_game_stream_errors_do_not_retry_forever()
     test_incoming_speed_filter_defaults_to_all_speeds()

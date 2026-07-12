@@ -978,9 +978,9 @@ class BotRunner:
     @staticmethod
     def _concurrency_scale(active_bot_games: int) -> float:
         if active_bot_games >= 3:
-            return 0.60
+            return 0.80
         if active_bot_games >= 2:
-            return 0.75
+            return 0.90
         return 1.0
 
     @classmethod
@@ -989,33 +989,35 @@ class BotRunner:
                           increment_s: float,
                           remaining_s: float,
                           active_bot_games: int) -> float:
-        if increment_s > 0.0:
-            if initial_s <= 180.0 and increment_s <= 2.0:
-                hard_cap = 1.50
-            elif initial_s <= 300.0 and increment_s <= 3.0:
-                hard_cap = 1.85
-            elif initial_s <= 600.0:
-                hard_cap = 2.50
+        if initial_s <= 120.0:
+            if increment_s > 0.0:
+                hard_cap = min(3.0, 0.75 + increment_s * 0.85)
             else:
-                hard_cap = min(5.00, 1.50 + increment_s * 0.50)
+                hard_cap = 0.50 if initial_s <= 60.0 else 0.90
+        elif initial_s <= 300.0:
+            if increment_s > 0.0:
+                hard_cap = min(6.0, 1.50 + increment_s)
+            else:
+                hard_cap = 3.50
+        elif initial_s <= 600.0:
+            if increment_s > 0.0:
+                hard_cap = min(10.0, 4.0 + increment_s * 0.60)
+            else:
+                hard_cap = 6.0
         else:
-            if initial_s <= 60.0:
-                hard_cap = 0.35
-            elif initial_s <= 180.0:
-                hard_cap = 0.60
-            elif initial_s <= 300.0:
-                hard_cap = 1.00
-            elif initial_s <= 600.0:
-                hard_cap = 2.00
+            if increment_s > 0.0:
+                hard_cap = min(12.0, 5.0 + increment_s * 0.70)
             else:
-                hard_cap = 3.00
+                hard_cap = 8.0
 
         hard_cap *= cls._concurrency_scale(active_bot_games)
 
         if remaining_s <= 10.0:
-            hard_cap = min(hard_cap, max(0.10, remaining_s * 0.10 + increment_s * 0.35))
+            hard_cap = min(hard_cap, max(0.10, remaining_s * 0.08 + increment_s * 0.50))
         if remaining_s <= 3.0:
-            hard_cap = min(hard_cap, max(0.05, remaining_s / 5.0 + increment_s * 0.25))
+            hard_cap = min(hard_cap, max(0.05, remaining_s * 0.12 + increment_s * 0.35))
+        if remaining_s <= 1.0:
+            hard_cap = min(hard_cap, 0.05 + increment_s * 0.25)
         return max(0.05, hard_cap)
 
     def _active_bot_games(self) -> int:
@@ -1037,16 +1039,20 @@ class BotRunner:
             return 0.05, remaining, increment
 
         moves_to_go = self._estimate_moves_to_go(board)
-        reserve = max(0.15, increment * 2.0)
         if increment <= 0.0:
-            reserve = max(reserve, remaining * 0.12)
+            reserve = max(1.0, remaining * 0.08)
         else:
-            reserve = max(reserve, min(remaining * 0.08, increment * 3.0))
+            reserve = max(1.0, min(remaining * 0.05, increment * 2.0))
 
         usable = max(0.05, remaining - reserve)
-        horizon = max(24.0, float(moves_to_go) * 4.0)
-        budget = usable / horizon + increment * 0.35
-        budget *= self._concurrency_scale(active_bot_games)
+        if initial_s <= 120.0:
+            horizon_scale = 2.50
+        elif initial_s <= 300.0:
+            horizon_scale = 2.10
+        else:
+            horizon_scale = 1.80
+        horizon = max(20.0, float(moves_to_go) * horizon_scale)
+        budget = usable / horizon + increment * 0.65
 
         legal_count = board.legal_moves.count()
         queens = len(board.pieces(chess.QUEEN, chess.WHITE)) + len(board.pieces(chess.QUEEN, chess.BLACK))
@@ -1058,33 +1064,20 @@ class BotRunner:
         simplified_endgame = queens == 0 and rooks <= 2 and minors <= 3
 
         if board.is_check():
-            budget *= 1.40
+            budget *= 1.25
         if legal_count <= 4:
-            budget *= 1.20
-        if legal_count <= 2:
             budget *= 1.15
+        if legal_count <= 2:
+            budget *= 1.10
         if simplified_endgame:
-            budget *= 1.35
+            budget *= 1.20
         if legal_count == 1:
-            budget *= 0.65
+            budget *= 0.55
 
         floor = 0.05
         if increment > 0.0:
-            floor = max(floor, min(0.25, increment * 0.35))
-        cap = min(8.0, max(0.10, usable * 0.55))
-        if increment <= 0.0:
-            cap = min(cap, max(0.10, remaining * 0.22))
-        else:
-            cap = min(cap, max(0.15, remaining * 0.25 + increment * 2.0))
-        cap *= self._concurrency_scale(active_bot_games)
-
-        if remaining <= 3.0:
-            cap = min(cap, max(0.05, remaining / 5.0 + increment * 0.40))
-        if remaining <= 1.0:
-            cap = min(cap, 0.10 + increment * 0.25)
-
-        hard_cap = self._hard_cap_seconds(initial_s, increment_s, remaining, active_bot_games)
-        cap = min(cap, hard_cap)
+            floor = max(floor, min(0.50, increment * 0.40))
+        cap = self._hard_cap_seconds(initial_s, increment_s, remaining, active_bot_games)
 
         if budget < floor:
             budget = floor

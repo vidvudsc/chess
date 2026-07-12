@@ -1,5 +1,25 @@
 # HCE Experiments
 
+## 2026-07-12: Unified clock-aware live move budgeting
+Status: kept; requires live observation after deployment.
+
+Replaced the overlapping base-time, cap, and concurrency reductions in the
+Lichess bot with one policy: estimate moves remaining, preserve a clock
+reserve, spend 65% of increment, adjust for checks/forced moves/endgames, then
+apply one time-control cap and one low-clock safety cap. Concurrency now reduces
+only the final ceiling (90% for two games, 80% for three) instead of shrinking
+both the calculated budget and its cap.
+
+Representative solo ceilings are now 0.5s at 1+0, 1.48s at 1+1, 3.5s at 3+2,
+4.5s at 5+3, 6s at 5+5 or 10+0, 10s at 10+10, and 12s at 15+10. Simulated
+10+0 retained 173s after 80 engine moves; simulated 10+10 retained its full
+600s base clock after 90 moves. Panic caps still dominate below 10s/3s/1s.
+
+Validation: expanded bot-time tests cover bullet, blitz, rapid, concurrency,
+low-clock panic, and long-game clock depletion. Python compilation, HCE suite
+6/6, tactical, clock, rules, perft, and NN data/training smoke tests passed.
+Full `make test` retains only the known stale twofold-repetition assertion.
+
 ## 2026-07-12: Remove the live UCI depth-16 ceiling
 Status: kept; live-bot configuration improvement.
 
