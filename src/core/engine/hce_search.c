@@ -51,6 +51,23 @@ static HceTtEntry g_hce_tt[HCE_TT_SIZE];
 static uint8_t g_hce_tt_generation = 0;
 static atomic_flag g_hce_lock = ATOMIC_FLAG_INIT;
 
+// Cooperative stop for UCI "stop" (and later pondering/SMP): set from any
+// thread, polled by the search alongside its time check. Cleared when a new
+// search starts.
+static atomic_bool g_hce_stop_flag;
+
+void hce_search_request_stop(void) {
+    atomic_store_explicit(&g_hce_stop_flag, true, memory_order_relaxed);
+}
+
+void hce_search_clear_stop(void) {
+    atomic_store_explicit(&g_hce_stop_flag, false, memory_order_relaxed);
+}
+
+static bool hce_search_stop_requested(void) {
+    return atomic_load_explicit(&g_hce_stop_flag, memory_order_relaxed);
+}
+
 static int64_t now_ms(void) {
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
@@ -249,10 +266,17 @@ static void tt_store(uint64_t key, int depth, int ply, int score, HceTtBound bou
 }
 
 static bool should_stop(HceSearchContext *ctx) {
-    if (ctx == NULL || ctx->deadline_ms <= 0) {
+    if (ctx == NULL) {
         return false;
     }
     if ((ctx->nodes & 2047ULL) != 0ULL) {
+        return false;
+    }
+    if (hce_search_stop_requested()) {
+        ctx->timed_out = true;
+        return true;
+    }
+    if (ctx->deadline_ms <= 0) {
         return false;
     }
     if (now_ms() >= ctx->deadline_ms) {

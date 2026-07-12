@@ -63,6 +63,13 @@ int hce_score_search_draw_stm(const GameState *s);
 int hce_qsearch_eval_cp_stm(const GameState *root);
 bool hce_pick_opening_move(const GameState *s, Move *out_move);
 bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchResult *out);
+// Ask a running search to stop at its next node-count check (~2k nodes).
+// Safe to call from any thread; a no-op when no search is running.
+void hce_search_request_stop(void);
+// Clear a pending stop request. Must be called by the thread that issues
+// searches BEFORE starting one (not inside the search itself), or a stop
+// arriving between spawn and search entry would be silently erased.
+void hce_search_clear_stop(void);
 int hce_probe_deep_eval_cp_stm(const GameState *state);
 
 #endif

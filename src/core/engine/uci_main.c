@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -350,6 +351,19 @@ static void handle_position(GameState *state, const char *line) {
     }
 }
 
+// The search runs on its own thread so the stdin loop stays responsive and
+// "stop" can interrupt it (hce_search_request_stop). Every command that reads
+// or mutates engine state joins the search first via search_thread_join().
+typedef struct SearchThreadArgs {
+    GameState *state;
+    const UciOptions *opt;
+    char line[2048];
+} SearchThreadArgs;
+
+static pthread_t g_search_thread;
+static bool g_search_running = false;
+static SearchThreadArgs g_search_args;
+
 static void handle_go(GameState *state, const char *line, const UciOptions *opt) {
     if (state == NULL || line == NULL || opt == NULL) {
         printf("bestmove 0000\n");
@@ -645,6 +659,42 @@ static int run_tune_dump(const char *infile, const char *outfile) {
     return 0;
 }
 
+static void *search_thread_main(void *arg) {
+    SearchThreadArgs *a = (SearchThreadArgs *)arg;
+    handle_go(a->state, a->line, a->opt);
+    return NULL;
+}
+
+static void search_thread_join(void) {
+    if (!g_search_running) {
+        return;
+    }
+    pthread_join(g_search_thread, NULL);
+    g_search_running = false;
+}
+
+static void search_thread_start(GameState *state, const char *line, const UciOptions *opt) {
+    search_thread_join();
+    hce_search_clear_stop();
+    g_search_args.state = state;
+    g_search_args.opt = opt;
+    snprintf(g_search_args.line, sizeof(g_search_args.line), "%s", line);
+    // The search keeps multi-hundred-KB GameState copies and the search
+    // context on the stack; the default non-main-thread stack (512KB on
+    // macOS) overflows. Give the search thread a main-thread-sized stack.
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 16u * 1024u * 1024u);
+    int rc = pthread_create(&g_search_thread, &attr, search_thread_main, &g_search_args);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        // Fall back to a synchronous search rather than dropping the command.
+        handle_go(state, line, opt);
+        return;
+    }
+    g_search_running = true;
+}
+
 int main(void) {
     GameState state;
     UciOptions opt;
@@ -675,25 +725,31 @@ int main(void) {
             continue;
         }
         if (starts_with(line, "setoption ")) {
+            search_thread_join();
             parse_setoption(line, &opt);
             continue;
         }
         if (strcmp(line, "ucinewgame") == 0) {
+            search_thread_join();
             reset_start_position(&state);
             continue;
         }
         if (starts_with(line, "position")) {
+            search_thread_join();
             handle_position(&state, line);
             continue;
         }
         if (starts_with(line, "go")) {
-            handle_go(&state, line, &opt);
+            search_thread_start(&state, line, &opt);
             continue;
         }
         if (strcmp(line, "stop") == 0) {
+            hce_search_request_stop();
+            search_thread_join();
             continue;
         }
         if (strcmp(line, "d") == 0) {
+            search_thread_join();
             char fen[256];
             chess_export_fen(&state, fen, sizeof(fen));
             printf("info string fen %s\n", fen);
@@ -701,6 +757,7 @@ int main(void) {
             continue;
         }
         if (starts_with(line, "tunedump ")) {
+            search_thread_join();
             char inpath[256] = {0};
             char outpath[256] = {0};
             if (sscanf(line + 9, "%255s %255s", inpath, outpath) == 2) {
@@ -712,6 +769,8 @@ int main(void) {
             continue;
         }
         if (strcmp(line, "quit") == 0) {
+            hce_search_request_stop();
+            search_thread_join();
             break;
         }
     }
