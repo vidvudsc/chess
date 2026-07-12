@@ -639,7 +639,7 @@ int main(void) {
     UciOptions opt;
     memset(&opt, 0, sizeof(opt));
     opt.think_time_ms = 350;
-    opt.max_depth = 16;
+    opt.max_depth = 32;
     opt.backend = CHESS_AI_BACKEND_CLASSIC;
     opt.book_file_path[0] = '\0';
     opt.nn_model_path[0] = '\0';

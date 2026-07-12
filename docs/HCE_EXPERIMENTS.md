@@ -1,5 +1,24 @@
 # HCE Experiments
 
+## 2026-07-12: Remove the live UCI depth-16 ceiling
+Status: kept; live-bot configuration improvement.
+
+The current Umbrel release log contained 146 games and 6,974 engine moves.
+After excluding opening-book and forced-mate moves, normal searches averaged
+depth 14.78 with a median of 15, and 47.7% stopped exactly at the UCI default
+`MaxDepth=16`. The cap affected 33.5% of bullet, 51.2% of blitz, and 61.8% of
+rapid moves. Capped searches consumed only 34.3% of their assigned budget on
+average (31.3% in rapid), proving that depth rather than time stopped them.
+
+Changed the UCI default `MaxDepth` from 16 to the engine-supported maximum of
+32. Time management remains the effective limit for every move. A 120ms
+middlegame smoke search still stopped normally at depth 9 after 73ms, while a
+quiet 1.5-second endgame reached depth 19 in 964ms instead of stopping at 16.
+
+Validation: UCI reports default 32; HCE position suite 6/6, tactical, clock,
+rules, perft, bot-time, and NN data/training smoke tests passed. Full `make
+test` retains only the known stale twofold-repetition assertion in `test_ai`.
+
 ## 2026-07-12: Selective-depth follow-up after evaluator speedup
 Status: rejected; engine restored to `07c5bf3` behavior.
 
