@@ -1,5 +1,31 @@
 # HCE Experiments
 
+## 2026-07-12: Cached pawn terms and consolidated attack evaluation
+Status: kept; behavior-preserving speed improvement.
+
+Runtime sampling put `eval_side` at roughly one third of CPU time and
+`compute_attack_unions` at another 12%. The evaluator now caches material,
+MG/EG PST, isolated/doubled, and passed-pawn terms by the two pawn bitboards.
+It also computes slider attacks once per piece and reuses them for attack
+unions, mobility, and king-pressure units instead of generating the same
+attacks up to three times.
+
+Validation:
+- Clean `make uci`; HCE position suite 6/6, rules, clock, perft, tactical,
+  bot-time, NN dataset, and NN training-smoke tests passed.
+- The full `make test` reached only the pre-existing stale twofold-repetition
+  assertion in `test_ai`, unchanged from the clean baseline.
+- Exact fixed-depth identity on 100 FENs: same score, node count, and PV.
+- Fresh Texel dump verification: 0/599 reconstruction mismatches.
+- Six alternating pawn-cache-only trials showed a median `+5.1%` NPS.
+- Four alternating trials of the complete optimization showed a stable median
+  `+11.4%` NPS (all trials `+11.2%` to `+12.4%`). At 500ms over 20 positions,
+  average completed depth moved from 12.45 to 12.65 and four positions gained
+  one full ply.
+
+Conclusion: keep. The search tree and evaluation are identical; the change
+buys more nodes and occasional extra completed depth for the same clock.
+
 ## 2026-07-11: 240-game attribution audit of the merged chain
 Status: all merged stages CONFIRMED at 240g; nothing slipped through.
 
