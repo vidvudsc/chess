@@ -1,5 +1,25 @@
 # HCE Experiments
 
+## 2026-07-12: Deeper-HCE-trained quiet move policy
+Status: rejected; engine restored exactly.
+
+Trained a compact policy-PST from 1,557 quiet best moves selected by depth-14
+HCE searches over 2,000 diverse positions. Features were relative source/to
+squares by piece, castling, and destination pawn attack/support. Held-out top-1
+teacher accuracy reached 7.7% with mean teacher rank 10.04.
+
+- Full policy weight expanded depth-11 nodes by about 15%; rejected before a
+  match.
+- Quarter weight was node-neutral and scored 32.0/60, `+23.2` Elo,
+  P(better)=74.7% (`current/move_policy_quarter_60g.json`). Below gate.
+- Applying the quarter policy only to moves with zero dynamic history reduced
+  fixed-depth nodes by 6%, but scored exactly 30.0/60, `0.0` Elo,
+  P(better)=50.0% (`current/move_policy_cold_60g.json`).
+
+Conclusion: the static policy can make alpha-beta cheaper, but its teacher
+ranking does not improve timed play. Removed all policy code and generated
+weights; do not confuse node reduction with strength.
+
 ## 2026-07-12: Residual-term and pawn-activity Texel follow-up
 Status: tuning infrastructure kept; candidate weights rejected.
 
