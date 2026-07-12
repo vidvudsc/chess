@@ -1,5 +1,27 @@
 # HCE Experiments
 
+## 2026-07-12: Lazy SMP + opponent-time pondering
+Status: SMP confirmed and committed; pondering confirmed at 60g, 120g running.
+
+Infrastructure session: the engine gained a dedicated search thread with a
+working UCI `stop` (~1ms latency, single-thread play bit-identical), then lazy
+SMP (`Threads` option: helpers share the TT, per-thread pawn cache), and the
+bot gained opponent-time pondering (background analysis of the current
+position between our moves; TT carries the work over) plus a shared-box thread
+policy (never more than 4 of the 8 hardware threads: 3/2/1 threads for 1/2/3+
+concurrent games, ponder only as the lone game).
+
+Validation:
+- SMP, Threads=4 vs 1 (same binary, 120ms, conc 2): 60g +168.4 (P=100%);
+  240g confirm +159.4, CI95 [+125.8, +196.1], P=100.0%
+  (`current/smp4_vs_t1_240g.json`). Largest confirmed gain in the project.
+- Pondering on vs off (same binary, 30+0.3 clock, conc 2, test_lab --ponder):
+  60g 40.0/60, +120.4, CI95 [+63.7, +184.2], P=100.0%
+  (`current/ponder_ab_60g.json`). 120g confirm pending.
+
+Commits: b5d8a33 (threaded search/stop), e8f5231 (lazy SMP), bf158e3 (bot
+pondering), d711d8b (+85fdd5f) thread policy + test_lab ponder support.
+
 ## 2026-07-12: Deeper-HCE-trained quiet move policy
 Status: rejected; engine restored exactly.
 
