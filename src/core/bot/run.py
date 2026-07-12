@@ -1096,12 +1096,17 @@ class BotRunner:
                 return max(1, min(8, int(raw)))
             except ValueError:
                 return 1
-        # Auto policy for the 4-core/8-thread box: a lone game gets 4 threads,
-        # anything running alongside other games gets 2 so the worst case
-        # (4 concurrent games) still fits the hardware exactly.
+        # Auto policy for a SHARED 4-core/8-thread box: the bot never takes
+        # more than half the hardware (4 threads total across all games), so
+        # the other services on the machine always keep the rest.
+        #   1 game -> 3 threads, 2 games -> 2 each, 3+ games -> 1 each.
         with self.lock:
             active = len(self.active_games)
-        return 4 if active <= 1 else 2
+        if active <= 1:
+            return 3
+        if active == 2:
+            return 2
+        return 1
 
     def _configure_engine(self, engine: chess.engine.SimpleEngine) -> None:
         options: dict = {}
@@ -1466,9 +1471,9 @@ class BotRunner:
             ponder_stop()
             if not self.cfg.ponder or pos.is_game_over():
                 return
-            # Under heavy concurrency the extra always-on searches would
-            # oversubscribe the box; only ponder when the load is light.
-            if self._active_bot_games() > 2:
+            # Pondering keeps a core busy on opponent time; on a shared box
+            # only do it when this is the lone active game.
+            if self._active_bot_games() > 1:
                 return
             try:
                 ponder_handle = engine.analysis(pos, chess.engine.Limit(time=300.0))
