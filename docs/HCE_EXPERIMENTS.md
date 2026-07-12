@@ -134,6 +134,24 @@ Validation:
 Conclusion: keep. The search tree and evaluation are identical; the change
 buys more nodes and occasional extra completed depth for the same clock.
 
+## 2026-07-12: Singular extensions
+Status: rejected; reverted (never committed).
+
+Standard singular extensions: with a trustworthy TT entry (LOWER/EXACT, depth
+>= d-3) at depth >= 8, verify the TT move by an exclusion search at half depth
+with window just below tt_score - 2*depth; if everything else fails low, the
+TT move is singular and gets extended. Exclusion searches skipped TT cutoff
+and null move and never stored to the TT.
+
+Validation (120ms, vs HEAD with threading, both single-threaded):
+- 60g: +46.6, CI95 [-17.3, +113.9], P 92.3% (`current/singular_vs_head_60g.json`).
+- 240g confirm: -2.9, CI95 [-34.9, +29.1], P 42.9%
+  (`current/singular_vs_head_240g.json`). The 60g signal evaporated.
+
+Eighth-ish search tweak in a row that is neutral at 240g. The search remains
+tightly calibrated around LMP; stop hand-adding search features. The gains of
+this session came from infrastructure instead: lazy SMP +159.4 at 240g.
+
 ## 2026-07-11: 240-game attribution audit of the merged chain
 Status: all merged stages CONFIRMED at 240g; nothing slipped through.
 
