@@ -1,5 +1,29 @@
 # HCE Experiments
 
+## 2026-07-12: Selective-depth follow-up after evaluator speedup
+Status: rejected; engine restored to `07c5bf3` behavior.
+
+Three search-allocation candidates were tested against the evaluator-speedup
+baseline at fixed 120ms with paired colors. All passed the 6/6 HCE position
+suite before match play:
+
+- Raising the iterative-deepening start cutoff from 55% to 65% used about 18%
+  more nodes and gained a completed ply on 4/30 probe positions, but scored
+  27.0/60: `-34.9` Elo, P(better)=14.4%
+  (`current/time65_vs_base_60g.json`).
+- A PV-only singular extension with deep exact/lower-bound TT evidence scored
+  30.5/60: `+5.8` Elo, P(better)=56.9%
+  (`current/singular_pv_vs_base_60g.json`). Neutral; rejected.
+- A modestly more conservative logarithmic LMR divisor (`2.25 -> 2.50`)
+  slightly raised average probe depth, but scored 27.0/60: `-34.9` Elo,
+  P(better)=15.9% (`current/lmr250_vs_base_60g.json`).
+
+Conclusion: completed depth alone is a poor promotion metric. The current time
+cutoff and LMR curve allocate nodes better in games, while singular proof
+searches cost about as much depth as their tactical focus returns. Future
+search work should improve move ordering directly instead of adding depth or
+changing broad reduction thresholds.
+
 ## 2026-07-12: Cached pawn terms and consolidated attack evaluation
 Status: kept; behavior-preserving speed improvement.
 
