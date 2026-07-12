@@ -27,6 +27,9 @@ typedef struct AiSearchConfig {
     // 0 means hard == soft (strict movetime behavior).
     int hard_time_ms;
     int max_depth;
+    // Lazy SMP: total search threads (one less than this run as helpers on
+    // the same root sharing the transposition table). 0 or 1 = single-threaded.
+    int threads;
     // HCE search tuning knobs. Zero means use the engine's built-in default.
     int hce_rfp_margin_per_depth;
     int hce_null_base_reduction;

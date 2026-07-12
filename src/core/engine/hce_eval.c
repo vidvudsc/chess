@@ -873,7 +873,9 @@ typedef struct PawnEvalCacheEntry {
     bool valid;
 } PawnEvalCacheEntry;
 
-static PawnEvalCacheEntry g_pawn_eval_cache[HCE_PAWN_CACHE_SIZE];
+// Thread-local: lazy-SMP helper threads each get their own pawn cache, so a
+// torn concurrent write can never hand one thread another position's terms.
+static _Thread_local PawnEvalCacheEntry g_pawn_eval_cache[HCE_PAWN_CACHE_SIZE];
 
 static inline void eval_term_add(EvalTermPair *term, int mg, int eg) {
     if (term == NULL) {

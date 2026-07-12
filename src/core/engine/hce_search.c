@@ -4,6 +4,7 @@
 
 #include <limits.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1356,6 +1357,26 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     return true;
 }
 
+// Lazy SMP helper: searches the same root with its own context and a shared
+// transposition table. Its result is discarded — the TT entries it writes are
+// the payload. Helpers exit via the shared stop flag when the main search is
+// done. TT access is deliberately unsynchronized: a torn entry can only yield
+// a wrong-scored or garbage move, and moves from the TT are always matched
+// against the position's own legal move list before use, never played raw.
+#define HCE_MAX_THREADS 8
+
+typedef struct SmpHelperArgs {
+    GameState root;
+    AiSearchConfig cfg;
+} SmpHelperArgs;
+
+static void *smp_helper_main(void *arg) {
+    SmpHelperArgs *a = (SmpHelperArgs *)arg;
+    AiSearchResult scratch;
+    run_search(&a->root, &a->cfg, &scratch, 0, 0);
+    return NULL;
+}
+
 bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchResult *out) {
     bool ok;
     hce_lock();
@@ -1363,7 +1384,48 @@ bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchRe
     init_lmr_table();
     g_hce_tt_generation += 1;
     g_hce_tt_generation += 1;
+
+    int threads = (cfg != NULL) ? cfg->threads : 1;
+    if (threads > HCE_MAX_THREADS) {
+        threads = HCE_MAX_THREADS;
+    }
+
+    pthread_t helper_threads[HCE_MAX_THREADS];
+    static SmpHelperArgs helper_args[HCE_MAX_THREADS];
+    int helpers_started = 0;
+    if (threads > 1 && state != NULL && cfg != NULL) {
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 16u * 1024u * 1024u);
+        for (int i = 0; i < threads - 1; ++i) {
+            SmpHelperArgs *a = &helper_args[i];
+            a->root = *state;
+            a->cfg = *cfg;
+            a->cfg.threads = 1;
+            a->cfg.info_callback = NULL;
+            a->cfg.info_user_data = NULL;
+            // Helpers get the hard budget as their whole budget; the stop
+            // flag from the finishing main thread is what actually ends them.
+            if (a->cfg.hard_time_ms > a->cfg.think_time_ms) {
+                a->cfg.think_time_ms = a->cfg.hard_time_ms;
+            }
+            if (pthread_create(&helper_threads[helpers_started], &attr,
+                               smp_helper_main, a) != 0) {
+                break;
+            }
+            helpers_started += 1;
+        }
+        pthread_attr_destroy(&attr);
+    }
+
     ok = run_search(state, cfg, out, 0, 0);
+
+    if (helpers_started > 0) {
+        hce_search_request_stop();
+        for (int i = 0; i < helpers_started; ++i) {
+            pthread_join(helper_threads[i], NULL);
+        }
+    }
     hce_unlock();
     return ok;
 }

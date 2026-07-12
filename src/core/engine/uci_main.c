@@ -12,6 +12,7 @@
 typedef struct UciOptions {
     int think_time_ms;
     int max_depth;
+    int threads;
     int hce_rfp_margin_per_depth;
     int hce_null_base_reduction;
     int hce_null_depth_divisor;
@@ -197,7 +198,8 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         return;
     }
 
-    if (set_spin_option(name_buf, value_buf, "HceRfpMargin", 0, 500, &opt->hce_rfp_margin_per_depth) ||
+    if (set_spin_option(name_buf, value_buf, "Threads", 1, 8, &opt->threads) ||
+        set_spin_option(name_buf, value_buf, "HceRfpMargin", 0, 500, &opt->hce_rfp_margin_per_depth) ||
         set_spin_option(name_buf, value_buf, "HceNullBase", 0, 6, &opt->hce_null_base_reduction) ||
         set_spin_option(name_buf, value_buf, "HceNullDepthDivisor", 0, 12, &opt->hce_null_depth_divisor) ||
         set_spin_option(name_buf, value_buf, "HceLmrBase", 0, 4, &opt->hce_lmr_base_reduction) ||
@@ -465,6 +467,7 @@ static void handle_go(GameState *state, const char *line, const UciOptions *opt)
         .think_time_ms = think_ms,
         .hard_time_ms = hard_ms,
         .max_depth = max_depth,
+        .threads = (opt->threads > 0) ? opt->threads : 1,
         .hce_rfp_margin_per_depth = opt->hce_rfp_margin_per_depth,
         .hce_null_base_reduction = opt->hce_null_base_reduction,
         .hce_null_depth_divisor = opt->hce_null_depth_divisor,
@@ -545,6 +548,7 @@ static void print_uci_intro(const UciOptions *opt) {
     printf("option name Backend type combo default classic var classic var nn var experimental\n");
     printf("option name MoveTime type spin default %d min 1 max 10000\n", opt->think_time_ms);
     printf("option name MaxDepth type spin default %d min 1 max 32\n", opt->max_depth);
+    printf("option name Threads type spin default %d min 1 max 8\n", (opt->threads > 0) ? opt->threads : 1);
     printf("option name HceRfpMargin type spin default 0 min 0 max 500\n");
     printf("option name HceNullBase type spin default 0 min 0 max 6\n");
     printf("option name HceNullDepthDivisor type spin default 0 min 0 max 12\n");
@@ -700,6 +704,7 @@ int main(void) {
     UciOptions opt;
     memset(&opt, 0, sizeof(opt));
     opt.think_time_ms = 350;
+    opt.threads = 1;
     opt.max_depth = 32;
     opt.backend = CHESS_AI_BACKEND_CLASSIC;
     opt.book_file_path[0] = '\0';
