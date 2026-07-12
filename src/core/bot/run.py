@@ -106,6 +106,7 @@ class BotConfig:
     max_human_games: int
     accept_bots: bool
     accept_humans: bool
+    ponder: bool
     accept_speeds: List[str]
     log_file: str
     log_max_bytes: int
@@ -1425,6 +1426,39 @@ class BotRunner:
         initial_s = 0.0
         increment_s = 0.0
 
+        # Pondering: while the opponent thinks, keep the engine searching the
+        # current position (opponent to move). Every line it explores starts
+        # with one of their replies, so the persistent transposition table is
+        # warm whichever move they play; the normal search then starts deeper.
+        # The handle MUST be stopped before any other engine command.
+        ponder_handle = None
+
+        def ponder_stop():
+            nonlocal ponder_handle
+            if ponder_handle is None:
+                return
+            try:
+                ponder_handle.stop()
+                ponder_handle.wait()
+            except Exception as exc:
+                log_event("ponder", f"stop failed: {exc}", game_id)
+            ponder_handle = None
+
+        def ponder_start(pos: chess.Board):
+            nonlocal ponder_handle
+            ponder_stop()
+            if not self.cfg.ponder or pos.is_game_over():
+                return
+            # Under heavy concurrency the extra always-on searches would
+            # oversubscribe the box; only ponder when the load is light.
+            if self._active_bot_games() > 2:
+                return
+            try:
+                ponder_handle = engine.analysis(pos, chess.engine.Limit(time=300.0))
+            except Exception as exc:
+                log_event("ponder", f"start failed: {exc}", game_id)
+                ponder_handle = None
+
         try:
             for event in api.stream_events(f"/api/bot/game/stream/{game_id}", reconnect=True):
                 etype = event.get("type")
@@ -1481,6 +1515,7 @@ class BotRunner:
                 status = state.get("status", "started")
                 game_status = status
                 if status != "started":
+                    ponder_stop()
                     winner = state.get("winner", "")
                     wdraw = state.get("wdraw", False)
                     bdraw = state.get("bdraw", False)
@@ -1539,6 +1574,7 @@ class BotRunner:
                         game_id,
                     )
 
+                ponder_stop()
                 try:
                     result_move, result_info = self._analyse_move(
                         engine,
@@ -1583,6 +1619,7 @@ class BotRunner:
                     break
 
                 last_played_ply = ply
+                ponder_start(next_board)
                 info_bits = [
                     f"ply={ply}",
                     f"move={uci}",
@@ -1627,6 +1664,10 @@ class BotRunner:
                     )
         finally:
             try:
+                ponder_stop()
+            except Exception:
+                pass
+            try:
                 engine.quit()
             except Exception:
                 pass
@@ -1655,6 +1696,7 @@ def parse_args() -> BotConfig:
     seek_default = env_list("LICHESS_BOT_AUTO_CHALLENGES") or env_list("LICHESS_BOT_SEEKS")
     seek_rated_default = env_bool("LICHESS_BOT_AUTO_CHALLENGE_RATED", env_bool("LICHESS_BOT_SEEK_RATED", False))
     accept_bots_default = env_bool("LICHESS_BOT_ACCEPT_BOTS", False)
+    ponder_default = env_bool("LICHESS_BOT_PONDER", False)
     accept_humans_default = env_bool("LICHESS_BOT_ACCEPT_HUMANS", False)
     accept_speeds_default = ",".join(env_list("LICHESS_BOT_ACCEPT_SPEEDS"))
     seek_variant_default = os.environ.get("LICHESS_BOT_AUTO_CHALLENGE_VARIANT",
@@ -1677,6 +1719,9 @@ def parse_args() -> BotConfig:
     parser.add_argument("--nn-model", default=default_nn_model, help="Path to NN inference model binary")
     parser.add_argument("--think-time", type=float, default=0.35, help="Think time per move in seconds")
     parser.add_argument("--max-depth", type=int, default=0, help="Optional depth cap (0 = engine default)")
+    parser.add_argument("--ponder", action="store_true", default=ponder_default,
+                        help="Search the position on the opponent's time to warm the engine's "
+                             "transposition table (needs an engine with working UCI stop)")
     parser.add_argument("--max-games", type=int, default=max_games_default, help="Total concurrent game cap")
     parser.add_argument("--max-bot-games", type=int, default=max_bot_games_default, help="Concurrent slots reserved for bot auto-challenges/games")
     parser.add_argument("--max-human-games", type=int, default=max_human_games_default, help="Concurrent slots reserved for direct human challenges")
@@ -1770,6 +1815,7 @@ def parse_args() -> BotConfig:
         max_bot_games=max(0, max_bot_games),
         max_human_games=max(0, max_human_games),
         accept_bots=args.accept_bots,
+        ponder=args.ponder,
         accept_humans=args.accept_humans,
         accept_speeds=accept_speeds,
         log_file=args.log_file,
