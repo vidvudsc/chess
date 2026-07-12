@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Apply a TUNED weight line from texel_tune.py to hce_eval.c.
 
-Reads the machine-readable `TUNED ...` line (789 integers):
-    21 scalars (mat_q, mat_n, mat_b, mat_r, mat_p, iso_mg, iso_eg, ...)
+Reads the machine-readable `TUNED ...` line (803 integers):
+    35 scalars (established terms, residual scales, and pawn activity)
     384 mg PST values (K, Q, B, N, R, P each 64 squares)
     384 eg PST values
 
@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 
-N_SCALAR = 21
+N_SCALAR = 35
 N_PST = 6 * 64
 PST_PIECES = 6
 
@@ -52,6 +52,13 @@ def patch_eval_c(path, vals):
     mob_n_mg, mob_n_eg, mob_b_mg, mob_b_eg = scalar[9:13]
     mob_r_mg, mob_r_eg, mob_q_mg, mob_q_eg = scalar[13:17]
     rook_open_mg, rook_open_eg, rook_semi_mg, rook_semi_eg = scalar[17:21]
+    (passed_mg_scale, passed_eg_scale,
+     king_mg_scale, king_eg_scale,
+     hanging_mg_scale, hanging_eg_scale,
+     queen_mg_scale, queen_eg_scale) = scalar[21:29]
+    (pawn_push_mg, pawn_push_eg,
+     pawn_threat_minor_mg, pawn_threat_minor_eg,
+     pawn_threat_major_mg, pawn_threat_major_eg) = scalar[29:35]
 
     # Piece enum order in engine: KING=0, QUEEN=1, BISHOP=2, KNIGHT=3, ROOK=4, PAWN=5.
     # Scalar order from tuner: mat_q, mat_n, mat_b, mat_r, mat_p.
@@ -127,6 +134,44 @@ def patch_eval_c(path, vals):
         text,
         count=1,
     )
+
+    scale_values = {
+        "k_passed_mg_scale": passed_mg_scale,
+        "k_passed_eg_scale": passed_eg_scale,
+        "k_king_mg_scale": king_mg_scale,
+        "k_king_eg_scale": king_eg_scale,
+        "k_hanging_mg_scale": hanging_mg_scale,
+        "k_hanging_eg_scale": hanging_eg_scale,
+        "k_queen_mg_scale": queen_mg_scale,
+        "k_queen_eg_scale": queen_eg_scale,
+    }
+    for name, value in scale_values.items():
+        text, replaced = re.subn(
+            rf"static const int {name} = -?\d+;",
+            f"static const int {name} = {value};",
+            text,
+            count=1,
+        )
+        if replaced != 1:
+            raise SystemExit(f"failed to patch {name} in {path}")
+
+    pawn_values = {
+        "k_pawn_push_mg": pawn_push_mg,
+        "k_pawn_push_eg": pawn_push_eg,
+        "k_pawn_threat_minor_mg": pawn_threat_minor_mg,
+        "k_pawn_threat_minor_eg": pawn_threat_minor_eg,
+        "k_pawn_threat_major_mg": pawn_threat_major_mg,
+        "k_pawn_threat_major_eg": pawn_threat_major_eg,
+    }
+    for name, value in pawn_values.items():
+        text, replaced = re.subn(
+            rf"static const int {name} = -?\d+;",
+            f"static const int {name} = {value};",
+            text,
+            count=1,
+        )
+        if replaced != 1:
+            raise SystemExit(f"failed to patch {name} in {path}")
 
     # Patch PST arrays.  Order in the tuned vector is K, Q, B, N, R, P.
     piece_table_names = {

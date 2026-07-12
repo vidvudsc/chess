@@ -511,6 +511,7 @@ static bool square_supported_by_pawn(const GameState *s, int side, int sq) {
 typedef struct AttackUnions {
     uint64_t all[PIECE_COLOR_COUNT];
     uint64_t non_king[PIECE_COLOR_COUNT];
+    uint64_t pawn[PIECE_COLOR_COUNT];
     int mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int king_attack_units[PIECE_COLOR_COUNT];
 } AttackUnions;
@@ -526,6 +527,7 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
         uint64_t a = (side == PIECE_WHITE)
                          ? (((pawns & ~g_file_masks[0]) << 7) | ((pawns & ~g_file_masks[7]) << 9))
                          : (((pawns & ~g_file_masks[0]) >> 9) | ((pawns & ~g_file_masks[7]) >> 7));
+        out->pawn[side] = a;
         uint64_t pawn_scan = pawns;
         while (pawn_scan != 0) {
             int sq = chess_pop_lsb(&pawn_scan);
@@ -831,10 +833,26 @@ typedef struct EvalSideTerms {
     EvalTermPair passed_pawns;
     EvalTermPair rook_files;
     EvalTermPair mobility;
+    EvalTermPair pawn_activity;
     EvalTermPair king_safety_penalty;
     EvalTermPair hanging_penalty;
     EvalTermPair queen_trap_penalty;
 } EvalSideTerms;
+
+static const int k_passed_mg_scale = 100;
+static const int k_passed_eg_scale = 100;
+static const int k_king_mg_scale = -100;
+static const int k_king_eg_scale = -100;
+static const int k_hanging_mg_scale = -100;
+static const int k_hanging_eg_scale = -100;
+static const int k_queen_mg_scale = -100;
+static const int k_queen_eg_scale = -100;
+static const int k_pawn_push_mg = 0;
+static const int k_pawn_push_eg = 0;
+static const int k_pawn_threat_minor_mg = 0;
+static const int k_pawn_threat_minor_eg = 0;
+static const int k_pawn_threat_major_mg = 0;
+static const int k_pawn_threat_major_eg = 0;
 
 #define HCE_PAWN_CACHE_BITS 16u
 #define HCE_PAWN_CACHE_SIZE (1u << HCE_PAWN_CACHE_BITS)
@@ -845,6 +863,7 @@ typedef struct PawnEvalTerms {
     EvalTermPair piece_square;
     EvalTermPair pawn_structure;
     EvalTermPair passed_pawns;
+    EvalTermPair pawn_activity;
 } PawnEvalTerms;
 
 typedef struct PawnEvalCacheEntry {
@@ -892,6 +911,10 @@ static void compute_pawn_eval_terms(const GameState *s, int side, PawnEvalTerms 
                       hce_piece_value[PIECE_PAWN],
                       hce_piece_value[PIECE_PAWN]);
         eval_term_add(&out->piece_square, k_pawn_pst[view], k_pawn_pst_eg[view]);
+        int front_sq = sq + ((side == PIECE_WHITE) ? 8 : -8);
+        if (front_sq >= 0 && front_sq < 64 && s->sq_piece[front_sq] == PIECE_NONE) {
+            eval_term_add(&out->pawn_activity, k_pawn_push_mg, k_pawn_push_eg);
+        }
         if (is_isolated_pawn(s, side, sq)) {
             eval_term_add(&out->pawn_structure, -16, -16);
         }
@@ -911,7 +934,7 @@ static void compute_pawn_eval_terms(const GameState *s, int side, PawnEvalTerms 
             passer_mg += 10;
             passer_eg += 28;
         }
-        int front_sq = sq + ((side == PIECE_WHITE) ? 8 : -8);
+        front_sq = sq + ((side == PIECE_WHITE) ? 8 : -8);
         if (front_sq >= 0 && front_sq < 64 && square_supported_by_pawn(s, side, front_sq)) {
             passer_mg += 4;
             passer_eg += 8;
@@ -963,6 +986,7 @@ static int eval_side(const GameState *s,
         terms.piece_square = pawn_terms->piece_square;
         terms.pawn_structure = pawn_terms->pawn_structure;
         terms.passed_pawns = pawn_terms->passed_pawns;
+        terms.pawn_activity = pawn_terms->pawn_activity;
     } else {
         uint64_t enemy_pawns_scan = s->bb[enemy][PIECE_PAWN];
         while (enemy_pawns_scan != 0) {
@@ -993,6 +1017,18 @@ static int eval_side(const GameState *s,
             switch (piece) {
                 case PIECE_PAWN:
                     eval_term_add(&terms.piece_square, k_pawn_pst[view], k_pawn_pst_eg[view]);
+                    {
+                        int front_sq = sq + ((side == PIECE_WHITE) ? 8 : -8);
+                        if (front_sq >= 0 && front_sq < 64 &&
+                            s->sq_piece[front_sq] == PIECE_NONE) {
+                            eval_term_add(&terms.pawn_activity,
+                                          k_pawn_push_mg,
+                                          k_pawn_push_eg);
+                            if (feat != NULL) {
+                                feat->pawn_pushes += 1;
+                            }
+                        }
+                    }
                     if (is_isolated_pawn(s, side, sq)) {
                         eval_term_add(&terms.pawn_structure, -16, -16);
                     if (feat != NULL) {
@@ -1031,6 +1067,10 @@ static int eval_side(const GameState *s,
                             passer_eg = eg_cap;
                         }
                         eval_term_add(&terms.passed_pawns, passer_mg, passer_eg);
+                        if (feat != NULL) {
+                            feat->passed_mg += passer_mg;
+                            feat->passed_eg += passer_eg;
+                        }
                     }
                     break;
                 case PIECE_KNIGHT: {
@@ -1085,12 +1125,41 @@ static int eval_side(const GameState *s,
         feat->mob_q += queen_mob;
     }
 
+    uint64_t enemy_minors = s->bb[enemy][PIECE_BISHOP] | s->bb[enemy][PIECE_KNIGHT];
+    uint64_t enemy_majors = s->bb[enemy][PIECE_ROOK] | s->bb[enemy][PIECE_QUEEN];
+    int pawn_threat_minor = chess_count_bits(attack_unions->pawn[side] & enemy_minors);
+    int pawn_threat_major = chess_count_bits(attack_unions->pawn[side] & enemy_majors);
+    eval_term_add(&terms.pawn_activity,
+                  pawn_threat_minor * k_pawn_threat_minor_mg +
+                      pawn_threat_major * k_pawn_threat_major_mg,
+                  pawn_threat_minor * k_pawn_threat_minor_eg +
+                      pawn_threat_major * k_pawn_threat_major_eg);
+    if (feat != NULL) {
+        feat->pawn_threat_minor = pawn_threat_minor;
+        feat->pawn_threat_major = pawn_threat_major;
+    }
+
     int king_danger = king_safety_penalty(s, side, attack_unions);
     int hanging = hanging_piece_penalty(s, side, attack_unions);
     int queen_trap = queen_trap_penalty(s, side, attack_unions);
-    eval_term_add(&terms.king_safety_penalty, -king_danger, -(king_danger / 4));
-    eval_term_add(&terms.hanging_penalty, -hanging, -hanging);
-    eval_term_add(&terms.queen_trap_penalty, -queen_trap, -(queen_trap / 2));
+    terms.passed_pawns.mg = terms.passed_pawns.mg * k_passed_mg_scale / 100;
+    terms.passed_pawns.eg = terms.passed_pawns.eg * k_passed_eg_scale / 100;
+    eval_term_add(&terms.king_safety_penalty,
+                  king_danger * k_king_mg_scale / 100,
+                  (king_danger / 4) * k_king_eg_scale / 100);
+    eval_term_add(&terms.hanging_penalty,
+                  hanging * k_hanging_mg_scale / 100,
+                  hanging * k_hanging_eg_scale / 100);
+    eval_term_add(&terms.queen_trap_penalty,
+                  queen_trap * k_queen_mg_scale / 100,
+                  (queen_trap / 2) * k_queen_eg_scale / 100);
+    if (feat != NULL) {
+        feat->king_mg = king_danger;
+        feat->king_eg = king_danger / 4;
+        feat->hanging = hanging;
+        feat->queen_mg = queen_trap;
+        feat->queen_eg = queen_trap / 2;
+    }
 
     if (out_breakdown != NULL) {
         out_breakdown->material = eval_term_blend(terms.material, phase);
@@ -1099,6 +1168,7 @@ static int eval_side(const GameState *s,
         out_breakdown->passed_pawns = eval_term_blend(terms.passed_pawns, phase);
         out_breakdown->rook_files = eval_term_blend(terms.rook_files, phase);
         out_breakdown->mobility = eval_term_blend(terms.mobility, phase);
+        out_breakdown->pawn_activity = eval_term_blend(terms.pawn_activity, phase);
         out_breakdown->king_safety_penalty = -eval_term_blend(terms.king_safety_penalty, phase);
         out_breakdown->hanging_penalty = -eval_term_blend(terms.hanging_penalty, phase);
         out_breakdown->queen_trap_penalty = -eval_term_blend(terms.queen_trap_penalty, phase);
@@ -1110,6 +1180,7 @@ static int eval_side(const GameState *s,
                    terms.passed_pawns.mg +
                    terms.rook_files.mg +
                    terms.mobility.mg +
+                   terms.pawn_activity.mg +
                    terms.king_safety_penalty.mg +
                    terms.hanging_penalty.mg +
                    terms.queen_trap_penalty.mg;
@@ -1119,20 +1190,28 @@ static int eval_side(const GameState *s,
                    terms.passed_pawns.eg +
                    terms.rook_files.eg +
                    terms.mobility.eg +
+                   terms.pawn_activity.eg +
                    terms.king_safety_penalty.eg +
                    terms.hanging_penalty.eg +
                    terms.queen_trap_penalty.eg;
     if (feat != NULL) {
         // Residual = everything not linearly reconstructed from the captured
-        // counts (material, piece squares, pawn_structure, rook_files, mobility).
+        // counts (material, piece squares, pawn structure, passed pawns,
+        // rook files, mobility, king danger, hanging pieces, and queen traps).
         // Keep it in pre-blend mg/eg form so the Python side can sum then blend
         // once, matching the engine's single integer division exactly.
         int tuned_mg = terms.material.mg + terms.piece_square.mg +
                        terms.pawn_structure.mg + terms.rook_files.mg +
-                       terms.mobility.mg;
+                       terms.mobility.mg + terms.passed_pawns.mg +
+                       terms.pawn_activity.mg +
+                       terms.king_safety_penalty.mg + terms.hanging_penalty.mg +
+                       terms.queen_trap_penalty.mg;
         int tuned_eg = terms.material.eg + terms.piece_square.eg +
                        terms.pawn_structure.eg + terms.rook_files.eg +
-                       terms.mobility.eg;
+                       terms.mobility.eg + terms.passed_pawns.eg +
+                       terms.pawn_activity.eg +
+                       terms.king_safety_penalty.eg + terms.hanging_penalty.eg +
+                       terms.queen_trap_penalty.eg;
         feat->residual_mg = total_mg - tuned_mg;
         feat->residual_eg = total_eg - tuned_eg;
     }

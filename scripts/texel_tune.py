@@ -4,11 +4,13 @@
 Input: the file produced by `chess_uci`'s `tunedump` command, one line per
 quiet position:
 
-    <label> <phase> <eval_true> <white 399 feats> <black 399 feats>
+    <label> <phase> <eval_true> <white 409 feats> <black 409 feats>
 
 where each 399-feature block is:
     mat_q mat_n mat_b mat_r mat_p isolated doubled
     mob_n mob_b mob_r mob_q rook_open rook_semi
+    passed_mg passed_eg king_mg king_eg hanging queen_mg queen_eg
+    pawn_pushes pawn_threat_minor pawn_threat_major
     pst[K,Q,B,N,R,P][64] flattened
     residual_mg residual_eg
 
@@ -27,8 +29,10 @@ import sys
 import numpy as np
 
 # Number of scalar (material + positional) features and per-side layout.
-N_SCALAR = 21
-SIDE_OLD = 15
+N_BASE_SCALAR = 21
+N_EXTRA_SCALAR = 14
+N_SCALAR = N_BASE_SCALAR + N_EXTRA_SCALAR
+SIDE_OLD = 25
 PST_PIECES = 6
 PST_SQUARES = 64
 N_PST = PST_PIECES * PST_SQUARES
@@ -133,7 +137,14 @@ PARAM_NAMES = (
      "iso_mg", "iso_eg", "dbl_mg", "dbl_eg",
      "mob_n_mg", "mob_n_eg", "mob_b_mg", "mob_b_eg",
      "mob_r_mg", "mob_r_eg", "mob_q_mg", "mob_q_eg",
-     "rook_open_mg", "rook_open_eg", "rook_semi_mg", "rook_semi_eg"]
+     "rook_open_mg", "rook_open_eg", "rook_semi_mg", "rook_semi_eg",
+     "passed_mg_scale", "passed_eg_scale",
+     "king_mg_scale", "king_eg_scale",
+     "hanging_mg_scale", "hanging_eg_scale",
+     "queen_mg_scale", "queen_eg_scale",
+     "pawn_push_mg", "pawn_push_eg",
+     "pawn_threat_minor_mg", "pawn_threat_minor_eg",
+     "pawn_threat_major_mg", "pawn_threat_major_eg"]
     + [f"pst{p}_{s}_mg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
     + [f"pst{p}_{s}_eg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
 )
@@ -144,6 +155,13 @@ _SCALAR_DEFAULTS = np.array([
     -13, -16, -17, -15,         # isolated, doubled (mg, eg)
     8, 4, 9, 4, 9, 6, 9, 2,     # mobility n,b,r,q (mg, eg)
     19, 12, 11, 6,              # rook open, semi (mg, eg)
+    100, 100,                    # passed-pawn mg/eg percentage scales
+    -100, -100,                  # king-danger mg/eg percentage scales
+    -100, -100,                  # hanging-piece mg/eg percentage scales
+    -100, -100,                  # queen-trap mg/eg percentage scales
+    0, 0,                        # pawn push mg/eg
+    0, 0,                        # pawn threat vs minor mg/eg
+    0, 0,                        # pawn threat vs major mg/eg
 ], dtype=np.float64)
 
 DEFAULTS = np.concatenate([
@@ -157,12 +175,23 @@ F_MATQ, F_MATN, F_MATB, F_MATR, F_MATP = 0, 1, 2, 3, 4
 F_ISO, F_DBL = 5, 6
 F_MN, F_MB, F_MR, F_MQ = 7, 8, 9, 10
 F_ROPEN, F_RSEMI = 11, 12
-F_RESMG, F_RESEG = 13, 14
+F_PASSMG, F_PASSEG = 13, 14
+F_KINGMG, F_KINGEG = 15, 16
+F_HANGING = 17
+F_QUEENMG, F_QUEENEG = 18, 19
+F_PAWN_PUSH, F_PAWN_THREAT_MINOR, F_PAWN_THREAT_MAJOR = 20, 21, 22
+F_RESMG, F_RESEG = 23, 24
 
 
 def trunc_div24(a):
     """C integer division by 24 truncating toward zero (vectorized)."""
     q = np.abs(a) // 24
+    return np.where(a < 0, -q, q).astype(np.int64)
+
+
+def trunc_div100(a):
+    """C integer division by 100 truncating toward zero (vectorized)."""
+    q = np.abs(a) // 100
     return np.where(a < 0, -q, q).astype(np.int64)
 
 
@@ -202,12 +231,26 @@ def side_totals_int(side, phase, theta):
           old[:, F_MN] * scalar[9] + old[:, F_MB] * scalar[11] +
           old[:, F_MR] * scalar[13] + old[:, F_MQ] * scalar[15] +
           old[:, F_ROPEN] * scalar[17] + old[:, F_RSEMI] * scalar[19] +
+          trunc_div100(old[:, F_PASSMG] * scalar[21]) +
+          trunc_div100(old[:, F_KINGMG] * scalar[23]) +
+          trunc_div100(old[:, F_HANGING] * scalar[25]) +
+          trunc_div100(old[:, F_QUEENMG] * scalar[27]) +
+          old[:, F_PAWN_PUSH] * scalar[29] +
+          old[:, F_PAWN_THREAT_MINOR] * scalar[31] +
+          old[:, F_PAWN_THREAT_MAJOR] * scalar[33] +
           old[:, F_RESMG]).astype(np.int64)
     eg = (mat + ps_eg +
           old[:, F_ISO] * scalar[6] + old[:, F_DBL] * scalar[8] +
           old[:, F_MN] * scalar[10] + old[:, F_MB] * scalar[12] +
           old[:, F_MR] * scalar[14] + old[:, F_MQ] * scalar[16] +
           old[:, F_ROPEN] * scalar[18] + old[:, F_RSEMI] * scalar[20] +
+          trunc_div100(old[:, F_PASSEG] * scalar[22]) +
+          trunc_div100(old[:, F_KINGEG] * scalar[24]) +
+          trunc_div100(old[:, F_HANGING] * scalar[26]) +
+          trunc_div100(old[:, F_QUEENEG] * scalar[28]) +
+          old[:, F_PAWN_PUSH] * scalar[30] +
+          old[:, F_PAWN_THREAT_MINOR] * scalar[32] +
+          old[:, F_PAWN_THREAT_MAJOR] * scalar[34] +
           old[:, F_RESEG]).astype(np.int64)
     return trunc_div24(mg * phase + eg * (24 - phase))
 
@@ -247,6 +290,20 @@ def design_matrix(phase, w, b):
     X[:, 18] = d_old[:, F_ROPEN] * egw
     X[:, 19] = d_old[:, F_RSEMI] * mgw
     X[:, 20] = d_old[:, F_RSEMI] * egw
+    X[:, 21] = d_old[:, F_PASSMG] * mgw / 100.0
+    X[:, 22] = d_old[:, F_PASSEG] * egw / 100.0
+    X[:, 23] = d_old[:, F_KINGMG] * mgw / 100.0
+    X[:, 24] = d_old[:, F_KINGEG] * egw / 100.0
+    X[:, 25] = d_old[:, F_HANGING] * mgw / 100.0
+    X[:, 26] = d_old[:, F_HANGING] * egw / 100.0
+    X[:, 27] = d_old[:, F_QUEENMG] * mgw / 100.0
+    X[:, 28] = d_old[:, F_QUEENEG] * egw / 100.0
+    X[:, 29] = d_old[:, F_PAWN_PUSH] * mgw
+    X[:, 30] = d_old[:, F_PAWN_PUSH] * egw
+    X[:, 31] = d_old[:, F_PAWN_THREAT_MINOR] * mgw
+    X[:, 32] = d_old[:, F_PAWN_THREAT_MINOR] * egw
+    X[:, 33] = d_old[:, F_PAWN_THREAT_MAJOR] * mgw
+    X[:, 34] = d_old[:, F_PAWN_THREAT_MAJOR] * egw
     # PST mg/eg.
     X[:, N_SCALAR:N_SCALAR + N_PST] = d_pst * mgw[:, None]
     X[:, N_SCALAR + N_PST:] = d_pst * egw[:, None]
@@ -265,6 +322,13 @@ def load_tuned_defaults(path):
     if not lines:
         raise SystemExit(f"no TUNED line found in {path}")
     values = np.array([int(value) for value in lines[-1].split()[1:]], dtype=np.float64)
+    old_params = N_BASE_SCALAR + 2 * N_PST
+    if len(values) == old_params:
+        values = np.concatenate([
+            values[:N_BASE_SCALAR],
+            _SCALAR_DEFAULTS[N_BASE_SCALAR:],
+            values[N_BASE_SCALAR:],
+        ])
     if len(values) != N_PARAMS:
         raise SystemExit(f"expected {N_PARAMS} values in {path}, got {len(values)}")
     return values
@@ -298,6 +362,11 @@ def main():
     ap.add_argument("--freeze-material", action="store_true",
                     help="Hold all 5 material values fixed; tune only the "
                          "positional terms + PST.")
+    ap.add_argument("--only-extra-scalars", action="store_true",
+                    help="Tune only passed-pawn, king-danger, hanging, and "
+                         "queen-trap scales; freeze established scalars/PSTs.")
+    ap.add_argument("--only-new-features", action="store_true",
+                    help="Tune only pawn activity/threat weights.")
     ap.add_argument("--out-c", help="Optional path to write tuned PST/material C snippet.")
     ap.add_argument("--initial-tuned-file",
                     help="Use the last TUNED line in this file as the exact current defaults.")
@@ -344,27 +413,36 @@ def main():
     # (3) Gradient descent (Adam) on weights; refit K periodically.
     # Relative L2 pull toward defaults keeps low-count terms sane.
     reg_scale = np.maximum(np.abs(defaults), 20.0)
-    m = np.zeros(N_PARAMS)
-    v = np.zeros(N_PARAMS)
     b1, b2, eps = 0.9, 0.999, 1e-8
     Xtr, ctr, ytr = X[tr], c[tr], y[tr]
     ntr = len(tr)
+    if args.only_new_features:
+        active = np.arange(N_BASE_SCALAR + 8, N_SCALAR)
+    elif args.only_extra_scalars:
+        active = np.arange(N_BASE_SCALAR, N_SCALAR)
+    elif args.freeze_material:
+        active = np.arange(5, N_PARAMS)
+    else:
+        active = np.arange(N_PARAMS)
+    Xactive = Xtr[:, active]
+    fixed_tr = Xtr @ defaults + ctr - Xactive @ defaults[active]
+    m = np.zeros(len(active))
+    v = np.zeros(len(active))
     best_theta = theta.copy()
     best_iteration = 0
     best_val = loss_for(K, X[val] @ theta + c[val], y[val])
     for it in range(1, args.iters + 1):
-        evals = Xtr @ theta + ctr
+        evals = fixed_tr + Xactive @ theta[active]
         p = sigmoid(K * evals)
-        g = (Xtr.T @ (2.0 * (p - ytr) * p * (1.0 - p) * K)) / ntr
-        g += args.l2 * 1e-3 * (theta - defaults) / (reg_scale ** 2)
+        g = (Xactive.T @ (2.0 * (p - ytr) * p * (1.0 - p) * K)) / ntr
+        g += (args.l2 * 1e-3 * (theta[active] - defaults[active]) /
+              (reg_scale[active] ** 2))
         m = b1 * m + (1 - b1) * g
         v = b2 * v + (1 - b2) * (g * g)
         mhat = m / (1 - b1 ** it)
         vhat = v / (1 - b2 ** it)
-        theta -= args.lr * mhat / (np.sqrt(vhat) + eps)
-        if args.freeze_material:
-            theta[0:5] = defaults[0:5]
-        elif args.anchor_pawn:
+        theta[active] -= args.lr * mhat / (np.sqrt(vhat) + eps)
+        if args.anchor_pawn and 4 in active:
             theta[4] = 100.0
         if it % 500 == 0:
             K, _ = fit_K(Xtr @ theta + ctr, ytr)

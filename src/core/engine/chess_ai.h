@@ -57,6 +57,7 @@ typedef struct ChessEvalSideBreakdown {
     int bishop_quality;
     int rook_files;
     int mobility;
+    int pawn_activity;
     int bishop_pair;
     int king_safety_penalty;
     int hanging_penalty;

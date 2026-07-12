@@ -40,6 +40,13 @@ typedef struct HceTuneFeatures {
     int doubled;                // pawns on a doubled file
     int mob_n, mob_b, mob_r, mob_q;  // raw mobility square counts by piece
     int rook_open, rook_semi;   // rooks on open / half-open files
+    int passed_mg, passed_eg;   // raw passed-pawn bonuses before scaling
+    int king_mg, king_eg;       // raw king-danger penalties before scaling
+    int hanging;                // raw hanging-piece penalty
+    int queen_mg, queen_eg;     // raw queen-trap penalties before scaling
+    int pawn_pushes;            // pawns with an unobstructed single push
+    int pawn_threat_minor;      // enemy bishops/knights attacked by pawns
+    int pawn_threat_major;      // enemy rooks/queens attacked by pawns
     int pst[PIECE_TYPE_COUNT][64];  // piece-square counts (view side, mirrored for black)
     int residual_mg;            // summed mg of all non-tuned terms
     int residual_eg;            // summed eg of all non-tuned terms

@@ -547,7 +547,8 @@ static void print_uci_intro(const UciOptions *opt) {
 // quiet position, "<label> <phase> <eval_true>" followed by white's then black's
 // feature block.  Each block is:
 //   5 material counts q/n/b/r/p, isolated, doubled, 4 mobility counts n/b/r/q,
-//   rook_open, rook_semi,
+//   rook_open, rook_semi, passed_mg, passed_eg, king_mg, king_eg, hanging,
+//   queen_mg, queen_eg, pawn_pushes, pawn_threat_minor, pawn_threat_major,
 //   6*64 piece-square counts (K,Q,B,N,R,P by square, king always zero),
 //   residual_mg, residual_eg.
 // Positions are kept only if |static_eval - qsearch_eval| < 50 cp so the label
@@ -600,10 +601,15 @@ static int run_tune_dump(const char *infile, const char *outfile) {
         }
         fprintf(fout, "%.1f %d %d", label, phase, eval_true);
         // White old scalar features.
-        fprintf(fout, " %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+        fprintf(fout,
+                " %d %d %d %d %d %d %d %d %d %d %d %d %d"
+                " %d %d %d %d %d %d %d %d %d %d %d %d",
                 w.mat[PIECE_QUEEN], w.mat[PIECE_KNIGHT], w.mat[PIECE_BISHOP],
                 w.mat[PIECE_ROOK], w.mat[PIECE_PAWN], w.isolated, w.doubled,
                 w.mob_n, w.mob_b, w.mob_r, w.mob_q, w.rook_open, w.rook_semi,
+                w.passed_mg, w.passed_eg, w.king_mg, w.king_eg, w.hanging,
+                w.queen_mg, w.queen_eg,
+                w.pawn_pushes, w.pawn_threat_minor, w.pawn_threat_major,
                 w.residual_mg, w.residual_eg);
         // White PST counts.
         for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
@@ -612,10 +618,15 @@ static int run_tune_dump(const char *infile, const char *outfile) {
             }
         }
         // Black old scalar features.
-        fprintf(fout, " %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+        fprintf(fout,
+                " %d %d %d %d %d %d %d %d %d %d %d %d %d"
+                " %d %d %d %d %d %d %d %d %d %d %d %d",
                 b.mat[PIECE_QUEEN], b.mat[PIECE_KNIGHT], b.mat[PIECE_BISHOP],
                 b.mat[PIECE_ROOK], b.mat[PIECE_PAWN], b.isolated, b.doubled,
                 b.mob_n, b.mob_b, b.mob_r, b.mob_q, b.rook_open, b.rook_semi,
+                b.passed_mg, b.passed_eg, b.king_mg, b.king_eg, b.hanging,
+                b.queen_mg, b.queen_eg,
+                b.pawn_pushes, b.pawn_threat_minor, b.pawn_threat_major,
                 b.residual_mg, b.residual_eg);
         // Black PST counts.
         for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {

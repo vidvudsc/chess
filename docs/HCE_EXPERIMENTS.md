@@ -1,5 +1,30 @@
 # HCE Experiments
 
+## 2026-07-12: Residual-term and pawn-activity Texel follow-up
+Status: tuning infrastructure kept; candidate weights rejected.
+
+Extended the exact Texel decomposition to cover the existing passed-pawn,
+king-danger, hanging-piece, and queen-trap terms as percentage scales. Added
+zero-default features for unobstructed pawn pushes and pawn attacks on minor or
+major pieces. Refreshed 2,571 VidBot games into 30,053 positions and combined
+them with 11,894 paired self-play positions; qsearch filtering retained 27,156
+quiet positions. Exact reconstruction passed on both baseline and candidate
+dumps.
+
+Results against the current baseline at fixed 120ms, paired colors:
+
+- Residual scales were stable across three splits but scored 30.5/60,
+  `+5.8` Elo, P(better)=56.5% (`current/residual_tune_60g.json`). Rejected.
+- Pawn activity converged to push `+5/+1`, minor threat `+1/0`, major threat
+  `0/0`, but scored 31.5/60, `+17.4` Elo, P(better)=70.4%
+  (`current/pawn_activity_60g.json`). Directional but below the promotion gate;
+  rejected rather than selecting on noise.
+
+All candidate weights were restored to their behavior-preserving defaults.
+The expanded zero-weight infrastructure matched score, nodes, and PV on 36/36
+fixed-depth searches, with no measurable speed change. HCE suite 6/6, tactical,
+and bot-time tests passed.
+
 ## 2026-07-12: Unified clock-aware live move budgeting
 Status: kept; requires live observation after deployment.
 
