@@ -571,7 +571,7 @@ static void print_uci_intro(const UciOptions *opt) {
 //   residual_mg, residual_eg.
 // Positions are kept only if |static_eval - qsearch_eval| < 50 cp so the label
 // reflects the static evaluation rather than a pending tactical sequence.
-static int run_tune_dump(const char *infile, const char *outfile) {
+static int run_tune_dump(const char *infile, const char *outfile, bool quiet_only) {
     FILE *fin = fopen(infile, "r");
     if (fin == NULL) {
         printf("info string tunedump: cannot open %s\n", infile);
@@ -613,7 +613,8 @@ static int run_tune_dump(const char *infile, const char *outfile) {
         int eval_true = hce_eval_tune_features(&st, &w, &b, &phase);
         int static_stm = eval_true - 12;
         int qsearch_stm = hce_qsearch_eval_cp_stm(&st);
-        if (static_stm < qsearch_stm - 50 || static_stm > qsearch_stm + 50) {
+        if (quiet_only &&
+            (static_stm < qsearch_stm - 50 || static_stm > qsearch_stm + 50)) {
             noisy += 1;
             continue;
         }
@@ -766,9 +767,20 @@ int main(void) {
             char inpath[256] = {0};
             char outpath[256] = {0};
             if (sscanf(line + 9, "%255s %255s", inpath, outpath) == 2) {
-                run_tune_dump(inpath, outpath);
+                run_tune_dump(inpath, outpath, true);
             } else {
                 printf("info string usage: tunedump <infile> <outfile>\n");
+                fflush(stdout);
+            }
+            continue;
+        }
+        if (starts_with(line, "tunedumpall ")) {
+            char inpath[256] = {0};
+            char outpath[256] = {0};
+            if (sscanf(line + 12, "%255s %255s", inpath, outpath) == 2) {
+                run_tune_dump(inpath, outpath, false);
+            } else {
+                printf("info string usage: tunedumpall <infile> <outfile>\n");
                 fflush(stdout);
             }
             continue;
