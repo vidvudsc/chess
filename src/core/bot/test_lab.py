@@ -364,7 +364,9 @@ def play_one_game(game_index: int,
                   max_depth: int,
                   max_plies: int,
                   clock_initial_s: float = 0.0,
-                  clock_inc_s: float = 0.0) -> GameRecord:
+                  clock_inc_s: float = 0.0,
+                  white_ponder: bool = False,
+                  black_ponder: bool = False) -> GameRecord:
     board = chess.Board(start_fen)
     use_clock = clock_initial_s > 0.0
     wtime_s = clock_initial_s
@@ -375,6 +377,32 @@ def play_one_game(game_index: int,
 
     moves_uci: List[str] = []
     elapsed_ms = {"white": 0, "black": 0}
+
+    # Bot-style pondering: after a side moves, its engine keeps analysing the
+    # new position (opponent to move) in the background, warming its TT for
+    # whichever reply comes. Stopped before that side's next play() call.
+    ponder_enabled = {"white": white_ponder, "black": black_ponder}
+    ponder_handles: dict = {"white": None, "black": None}
+
+    def ponder_stop(key: str) -> None:
+        handle = ponder_handles.get(key)
+        if handle is None:
+            return
+        try:
+            handle.stop()
+            handle.wait()
+        except Exception:
+            pass
+        ponder_handles[key] = None
+
+    def ponder_start(key: str, engine_obj, pos: chess.Board) -> None:
+        if not ponder_enabled.get(key) or pos.is_game_over():
+            return
+        try:
+            ponder_handles[key] = engine_obj.analysis(pos.copy(stack=False),
+                                                      chess.engine.Limit(time=600.0))
+        except Exception:
+            ponder_handles[key] = None
 
     while True:
         outcome = board.outcome(claim_draw=True)
@@ -391,6 +419,7 @@ def play_one_game(game_index: int,
                 white_inc=clock_inc_s,
                 black_inc=clock_inc_s,
             )
+        ponder_stop(actor_key)
         started = time.perf_counter()
         try:
             result = actor_engine.play(board, move_limit)
@@ -476,7 +505,10 @@ def play_one_game(game_index: int,
 
         board.push(result.move)
         moves_uci.append(result.move.uci())
+        ponder_start(actor_key, actor_engine, board)
 
+    ponder_stop("white")
+    ponder_stop("black")
     result_text, winner, termination = choose_termination(board, max_plies)
     return GameRecord(
         index=game_index,
@@ -578,7 +610,9 @@ def run_lab(competitors: List[CompetitorBuild],
             restart_each_game: bool,
             concurrency: int = 1,
             clock_initial_s: float = 0.0,
-            clock_inc_s: float = 0.0) -> Dict[str, object]:
+            clock_inc_s: float = 0.0,
+            ponder_names: Optional[set] = None) -> Dict[str, object]:
+    ponder_names = ponder_names or set()
     engines: Dict[str, chess.engine.SimpleEngine] = {}
     thread_state = threading.local()
     all_engines: List[chess.engine.SimpleEngine] = []
@@ -639,6 +673,8 @@ def run_lab(competitors: List[CompetitorBuild],
                         max_plies=max_plies,
                         clock_initial_s=clock_initial_s,
                         clock_inc_s=clock_inc_s,
+                        white_ponder=scheduled.white in ponder_names,
+                        black_ponder=scheduled.black in ponder_names,
                     )
                 finally:
                     for engine in (white_engine, black_engine):
@@ -661,6 +697,8 @@ def run_lab(competitors: List[CompetitorBuild],
                 max_plies=max_plies,
                 clock_initial_s=clock_initial_s,
                 clock_inc_s=clock_inc_s,
+                white_ponder=scheduled.white in ponder_names,
+                black_ponder=scheduled.black in ponder_names,
             )
 
         for round_name in dict.fromkeys(item.round_name for item in schedule):
@@ -806,6 +844,9 @@ def parse_args() -> argparse.Namespace:
                              "and flag falls lose the game.")
     parser.add_argument("--concurrency", type=int, default=1,
                         help="Play this many games in parallel (each worker uses its own engine processes).")
+    parser.add_argument("--ponder", metavar="NAME", action="append", default=[],
+                        help="Enable bot-style pondering (background analysis on the opponent's "
+                             "time) for this competitor. Meaningful with --clock.")
     parser.add_argument("--restart-each-game", action="store_true",
                         help="Launch fresh engine processes for every game instead of reusing long-lived ones.")
     return parser.parse_args()
@@ -885,6 +926,7 @@ def main() -> int:
         seed=args.seed,
         baseline_name=baseline_name,
         restart_each_game=bool(args.restart_each_game),
+        ponder_names=set(args.ponder),
         concurrency=max(1, args.concurrency),
         clock_initial_s=clock_initial_s,
         clock_inc_s=clock_inc_s,

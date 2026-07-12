@@ -107,6 +107,7 @@ class BotConfig:
     accept_bots: bool
     accept_humans: bool
     ponder: bool
+    engine_threads: str
     accept_speeds: List[str]
     log_file: str
     log_max_bytes: int
@@ -1088,8 +1089,24 @@ class BotRunner:
             budget = 0.01
         return budget, remaining, increment
 
+    def _engine_threads_for_new_game(self) -> int:
+        raw = (self.cfg.engine_threads or "1").strip().lower()
+        if raw != "auto":
+            try:
+                return max(1, min(8, int(raw)))
+            except ValueError:
+                return 1
+        # Auto policy for the 4-core/8-thread box: a lone game gets 4 threads,
+        # anything running alongside other games gets 2 so the worst case
+        # (4 concurrent games) still fits the hardware exactly.
+        with self.lock:
+            active = len(self.active_games)
+        return 4 if active <= 1 else 2
+
     def _configure_engine(self, engine: chess.engine.SimpleEngine) -> None:
         options: dict = {}
+        if "Threads" in engine.options:
+            options["Threads"] = self._engine_threads_for_new_game()
         if self.cfg.backend == "nn" and "NNModel" in engine.options and self.cfg.nn_model_path:
             options["NNModel"] = self.cfg.nn_model_path
         if "Backend" in engine.options:
@@ -1719,6 +1736,9 @@ def parse_args() -> BotConfig:
     parser.add_argument("--nn-model", default=default_nn_model, help="Path to NN inference model binary")
     parser.add_argument("--think-time", type=float, default=0.35, help="Think time per move in seconds")
     parser.add_argument("--max-depth", type=int, default=0, help="Optional depth cap (0 = engine default)")
+    parser.add_argument("--engine-threads", default=os.environ.get("LICHESS_BOT_ENGINE_THREADS", "1"),
+                        help="Engine search threads per game: a number, or 'auto' to give a lone "
+                             "game 4 threads and 2 when other games are active (box has 8 hw threads)")
     parser.add_argument("--ponder", action="store_true", default=ponder_default,
                         help="Search the position on the opponent's time to warm the engine's "
                              "transposition table (needs an engine with working UCI stop)")
@@ -1816,6 +1836,7 @@ def parse_args() -> BotConfig:
         max_human_games=max(0, max_human_games),
         accept_bots=args.accept_bots,
         ponder=args.ponder,
+        engine_threads=str(args.engine_threads),
         accept_humans=args.accept_humans,
         accept_speeds=accept_speeds,
         log_file=args.log_file,
