@@ -653,7 +653,11 @@ static int run_tune_dump(const char *infile, const char *outfile, bool quiet_onl
                 fprintf(fout, " %d", b.pst[piece][sq]);
             }
         }
-        fprintf(fout, "\n");
+        if (quiet_only) {
+            fprintf(fout, "\n");
+        } else {
+            fprintf(fout, " %d\n", qsearch_stm - static_stm);
+        }
         ok += 1;
     }
     fclose(fin);

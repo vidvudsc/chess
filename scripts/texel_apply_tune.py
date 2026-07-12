@@ -27,6 +27,13 @@ def parse_tuned_line(line):
         parts = parts[1:]
     vals = [int(x) for x in parts]
     expected = N_SCALAR + 2 * N_PST
+    legacy_expected = 21 + 2 * N_PST
+    if len(vals) == legacy_expected:
+        extra_defaults = [
+            100, 100, -100, -100, -100, -100, -100, -100,
+            0, 0, 0, 0, 0, 0,
+        ]
+        vals = vals[:21] + extra_defaults + vals[21:]
     if len(vals) != expected:
         raise SystemExit(f"expected {expected} tuned integers, got {len(vals)}")
     return vals

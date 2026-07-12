@@ -26,6 +26,8 @@ Only changes developed after that commit count toward the campaign target.
 - Select the strictly deepest lazy-SMP helper result: +46.6 Elo at 60g,
   then -8.7 Elo at 120g, P=35.1%.
 - Four-ply Stockfish-expanded opening book: 27.5/60, -29.0 Elo, P=16.8%.
+- Full 789-parameter Stockfish distillation with material frozen and strong
+  ridge regularization: 31.5/60, +17.4 Elo, P=69.3%; below gate.
 
 All playing-code candidates above were reverted. The repeated 60-to-120
 collapses reinforce the requirement for 240-game confirmation before any Elo
