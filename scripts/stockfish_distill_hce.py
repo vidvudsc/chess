@@ -30,6 +30,11 @@ def main():
     parser.add_argument("--max-score", type=int, default=1500)
     parser.add_argument("--alpha", type=float, default=0.0,
                         help="Fit one ridge strength instead of scanning defaults.")
+    parser.add_argument("--group", choices=("all", "king-pst"), default="all",
+                        help="Restrict the fitted parameters to one feature group.")
+    parser.add_argument("--refit-all", action="store_true",
+                        help="After selecting alpha on the validation split, refit that model "
+                             "on every retained position for the final output.")
     args = parser.parse_args()
 
     sf = load_scores(args.labels)
@@ -39,6 +44,10 @@ def main():
     if len(sf) != len(phase):
         raise SystemExit(f"label/feature mismatch: {len(sf)} vs {len(phase)}")
     defaults = texel_tune.load_tuned_defaults(args.initial_tuned_file)
+    if args.group == "king-pst":
+        # The available initializer predates rejection of the experimental
+        # pawn-activity terms. The frozen campaign baseline keeps them dormant.
+        defaults[29:texel_tune.N_SCALAR] = 0.0
     wt = texel_tune.side_totals_int(white, phase, defaults)
     bt = texel_tune.side_totals_int(black, phase, defaults)
     if np.any(np.abs(eval_true - 12) != np.abs(wt - bt)):
@@ -60,7 +69,15 @@ def main():
 
     slope, intercept = np.polyfit(baseline[train], sf[train], 1)
     teacher = (sf - intercept) / slope
-    active = np.arange(5, texel_tune.N_PARAMS)
+    if args.group == "king-pst":
+        king_mg = np.arange(texel_tune.N_SCALAR,
+                            texel_tune.N_SCALAR + texel_tune.PST_SQUARES)
+        king_eg_start = texel_tune.N_SCALAR + texel_tune.N_PST
+        king_eg = np.arange(king_eg_start,
+                            king_eg_start + texel_tune.PST_SQUARES)
+        active = np.concatenate((king_mg, king_eg))
+    else:
+        active = np.arange(5, texel_tune.N_PARAMS)
     parameter_scale = np.full(texel_tune.N_PARAMS, 10.0)
     parameter_scale[:5] = 100.0
     parameter_scale[5:texel_tune.N_SCALAR] = 20.0
@@ -80,8 +97,18 @@ def main():
         if best is None or rmse < best[0]:
             best = (rmse, alpha, model.coef_.copy())
 
+    coefficients = best[2]
+    if args.refit_all:
+        slope, intercept = np.polyfit(baseline, sf, 1)
+        teacher = (sf - intercept) / slope
+        target = teacher - baseline
+        final_model = Ridge(alpha=best[1], fit_intercept=False,
+                            solver="lsqr", tol=1e-6)
+        final_model.fit(z, target)
+        coefficients = final_model.coef_
+
     theta = defaults.copy()
-    theta[active] += best[2] * parameter_scale[active]
+    theta[active] += coefficients * parameter_scale[active]
     theta[4] = 100.0
     rounded = np.rint(theta).astype(int)
     with open(args.out, "w", encoding="utf-8") as target_file:

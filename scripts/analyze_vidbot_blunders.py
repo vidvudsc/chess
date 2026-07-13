@@ -40,10 +40,27 @@ def analyse_game(game, username, engine_path, depth, hash_mb):
             before_fen = board.fen()
             before = engine.analyse(board, chess.engine.Limit(depth=depth))
             best_move = before.get("pv", [None])[0]
-            best_score = before["score"].pov(bot_color).score(mate_score=30000)
-            board.push(move)
-            after = engine.analyse(board, chess.engine.Limit(depth=depth))
-            played_score = after["score"].pov(bot_color).score(mate_score=30000)
+            candidates = [move]
+            if best_move is not None and best_move != move:
+                candidates.append(best_move)
+            # Score both root moves together. Separate searches can discover
+            # different mate horizons even at the same nominal depth, which
+            # previously assigned huge losses to moves compared with themselves.
+            comparison = engine.analyse(
+                board,
+                chess.engine.Limit(depth=depth),
+                root_moves=candidates,
+                multipv=len(candidates),
+            )
+            if isinstance(comparison, dict):
+                comparison = [comparison]
+            scores = {
+                info["pv"][0]: info["score"].pov(bot_color).score(mate_score=30000)
+                for info in comparison
+                if info.get("pv")
+            }
+            played_score = scores[move]
+            best_score = max(scores.values())
             rows.append({
                 "game_id": game.headers.get("GameId", ""),
                 "time_control": game.headers.get("TimeControl", ""),
@@ -56,6 +73,7 @@ def analyse_game(game, username, engine_path, depth, hash_mb):
                 "played_cp": played_score,
                 "loss_cp": max(0, best_score - played_score),
             })
+            board.push(move)
     finally:
         engine.quit()
     return rows

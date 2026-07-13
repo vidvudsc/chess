@@ -22,13 +22,16 @@ typedef enum HceTtBound {
 } HceTtBound;
 
 typedef struct HceTtEntry {
-    uint64_t key;
-    Move move;
-    int16_t score;
-    int8_t depth;
-    uint8_t bound;
-    uint8_t age;
+    atomic_uint_fast64_t key;
+    atomic_uint_fast64_t payload;
 } HceTtEntry;
+
+#define HCE_TT_WRITE_LOCK UINT64_MAX
+#define HCE_TT_MOVE_MASK ((1ULL << 26) - 1ULL)
+#define HCE_TT_SCORE_SHIFT 26u
+#define HCE_TT_DEPTH_SHIFT 42u
+#define HCE_TT_BOUND_SHIFT 50u
+#define HCE_TT_AGE_SHIFT 52u
 
 typedef struct HceSearchContext {
     int64_t start_ms;
@@ -219,28 +222,63 @@ static HceTtEntry *tt_entry(uint64_t key) {
     return &g_hce_tt[key & HCE_TT_MASK];
 }
 
+static uint64_t tt_pack_payload(Move move, int score, int depth, HceTtBound bound, uint8_t age) {
+    return ((uint64_t)move & HCE_TT_MOVE_MASK) |
+           ((uint64_t)(uint16_t)(int16_t)score << HCE_TT_SCORE_SHIFT) |
+           ((uint64_t)(uint8_t)(int8_t)depth << HCE_TT_DEPTH_SHIFT) |
+           ((uint64_t)bound << HCE_TT_BOUND_SHIFT) |
+           ((uint64_t)age << HCE_TT_AGE_SHIFT);
+}
+
+static Move tt_payload_move(uint64_t payload) {
+    return (Move)(payload & HCE_TT_MOVE_MASK);
+}
+
+static int tt_payload_score(uint64_t payload) {
+    return (int)(int16_t)((payload >> HCE_TT_SCORE_SHIFT) & 0xFFFFULL);
+}
+
+static int tt_payload_depth(uint64_t payload) {
+    return (int)(int8_t)((payload >> HCE_TT_DEPTH_SHIFT) & 0xFFULL);
+}
+
+static HceTtBound tt_payload_bound(uint64_t payload) {
+    return (HceTtBound)((payload >> HCE_TT_BOUND_SHIFT) & 0x3ULL);
+}
+
+static uint8_t tt_payload_age(uint64_t payload) {
+    return (uint8_t)((payload >> HCE_TT_AGE_SHIFT) & 0xFFULL);
+}
+
 static bool tt_probe(uint64_t key, int depth, int ply, int alpha, int beta, Move *move_out, int *score_out) {
     HceTtEntry *entry = tt_entry(key);
-    if (entry->bound == HCE_TT_NONE || entry->key != key) {
+    uint64_t key_before = atomic_load_explicit(&entry->key, memory_order_acquire);
+    if (key_before != key || key_before == HCE_TT_WRITE_LOCK) {
+        return false;
+    }
+    uint64_t payload = atomic_load_explicit(&entry->payload, memory_order_relaxed);
+    uint64_t key_after = atomic_load_explicit(&entry->key, memory_order_acquire);
+    HceTtBound bound = tt_payload_bound(payload);
+    if (key_after != key_before || bound == HCE_TT_NONE) {
         return false;
     }
     if (move_out != NULL) {
-        *move_out = entry->move;
+        *move_out = tt_payload_move(payload);
     }
-    if (entry->depth < depth || score_out == NULL) {
+    if (tt_payload_depth(payload) < depth || score_out == NULL) {
         return false;
     }
 
-    int score = tt_score_from_store(entry->score, ply);
-    if (entry->bound == HCE_TT_EXACT) {
+    int score = tt_score_from_store(tt_payload_score(payload), ply);
+    if (bound == HCE_TT_EXACT) {
         *score_out = score;
         return true;
     }
-    if (entry->bound == HCE_TT_LOWER && score >= beta) {
+    if (bound == HCE_TT_LOWER && score >= beta) {
         *score_out = score;
         return true;
     }
-    if (entry->bound == HCE_TT_UPPER && score <= alpha) {
+    if (bound == HCE_TT_UPPER && score <= alpha) {
         *score_out = score;
         return true;
     }
@@ -249,21 +287,34 @@ static bool tt_probe(uint64_t key, int depth, int ply, int alpha, int beta, Move
 
 static void tt_store(uint64_t key, int depth, int ply, int score, HceTtBound bound, Move move) {
     HceTtEntry *entry = tt_entry(key);
+    uint64_t current_key = atomic_load_explicit(&entry->key, memory_order_acquire);
+    if (current_key == HCE_TT_WRITE_LOCK) {
+        return;
+    }
+    uint64_t current_payload = atomic_load_explicit(&entry->payload, memory_order_relaxed);
     // Keep deeper data for the same position within the current search
     // generation; entries from older searches are always replaceable.
-    if (entry->bound != HCE_TT_NONE &&
-        entry->key == key &&
-        entry->age == g_hce_tt_generation &&
-        entry->depth > depth &&
+    if (tt_payload_bound(current_payload) != HCE_TT_NONE &&
+        current_key == key &&
+        tt_payload_age(current_payload) == g_hce_tt_generation &&
+        tt_payload_depth(current_payload) > depth &&
         bound != HCE_TT_EXACT) {
         return;
     }
-    entry->key = key;
-    entry->move = move;
-    entry->depth = (int8_t)depth;
-    entry->bound = (uint8_t)bound;
-    entry->age = g_hce_tt_generation;
-    entry->score = (int16_t)tt_score_to_store(score, ply);
+    if (!atomic_compare_exchange_strong_explicit(&entry->key,
+                                                  &current_key,
+                                                  HCE_TT_WRITE_LOCK,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire)) {
+        return;
+    }
+    uint64_t payload = tt_pack_payload(move,
+                                       tt_score_to_store(score, ply),
+                                       depth,
+                                       bound,
+                                       g_hce_tt_generation);
+    atomic_store_explicit(&entry->payload, payload, memory_order_relaxed);
+    atomic_store_explicit(&entry->key, key, memory_order_release);
 }
 
 static bool should_stop(HceSearchContext *ctx) {
@@ -1358,11 +1409,9 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
 }
 
 // Lazy SMP helper: searches the same root with its own context and a shared
-// transposition table. Its result is discarded — the TT entries it writes are
-// the payload. Helpers exit via the shared stop flag when the main search is
-// done. TT access is deliberately unsynchronized: a torn entry can only yield
-// a wrong-scored or garbage move, and moves from the TT are always matched
-// against the position's own legal move list before use, never played raw.
+// transposition table. Its result is discarded; the race-free TT entries it
+// writes are the payload. Helpers exit via the shared stop flag when the main
+// search is done.
 #define HCE_MAX_THREADS 8
 
 typedef struct SmpHelperArgs {

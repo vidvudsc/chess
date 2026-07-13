@@ -268,18 +268,11 @@ def score_for_player(record: GameRecord, player_name: str) -> float:
     return 0.5
 
 
-def summarize_vs_baseline(records: List[GameRecord], baseline_name: str, candidate_name: str) -> Dict[str, object]:
-    scores = [
-        score_for_player(record, candidate_name)
-        for record in records
-        if {record.white, record.black} == {baseline_name, candidate_name}
-    ]
+def summarize_score_samples(scores: List[float]) -> Dict[str, object]:
     n = len(scores)
     if n == 0:
         return {
-            "baseline": baseline_name,
-            "candidate": candidate_name,
-            "games": 0,
+            "samples": 0,
             "score_fraction": 0.0,
             "points": 0.0,
             "elo_diff": None,
@@ -323,9 +316,7 @@ def summarize_vs_baseline(records: List[GameRecord], baseline_name: str, candida
             p_value_one_sided = 0.5
 
     return {
-        "baseline": baseline_name,
-        "candidate": candidate_name,
-        "games": n,
+        "samples": n,
         "points": sum(scores),
         "score_fraction": mean,
         "elo_diff": elo_diff,
@@ -334,6 +325,47 @@ def summarize_vs_baseline(records: List[GameRecord], baseline_name: str, candida
         "probability_better": probability_better,
         "z_score": z_score,
         "p_value_one_sided": p_value_one_sided,
+    }
+
+
+def paired_position_scores(records: List[GameRecord], candidate_name: str) -> List[float]:
+    ordered = sorted(records, key=lambda record: record.index)
+    scores: List[float] = []
+    i = 0
+    while i + 1 < len(ordered):
+        first = ordered[i]
+        second = ordered[i + 1]
+        colors_swapped = first.white == second.black and first.black == second.white
+        if first.start_fen == second.start_fen and colors_swapped:
+            pair_points = (
+                score_for_player(first, candidate_name) +
+                score_for_player(second, candidate_name)
+            )
+            scores.append(pair_points / 2.0)
+            i += 2
+        else:
+            i += 1
+    return scores
+
+
+def summarize_vs_baseline(records: List[GameRecord], baseline_name: str, candidate_name: str) -> Dict[str, object]:
+    head_to_head = [
+        record
+        for record in records
+        if {record.white, record.black} == {baseline_name, candidate_name}
+    ]
+    game_stats = summarize_score_samples([
+        score_for_player(record, candidate_name)
+        for record in head_to_head
+    ])
+    pair_stats = summarize_score_samples(paired_position_scores(head_to_head, candidate_name))
+    return {
+        "baseline": baseline_name,
+        "candidate": candidate_name,
+        "games": game_stats.pop("samples"),
+        **game_stats,
+        "paired_positions": pair_stats.pop("samples"),
+        "paired": pair_stats,
     }
 
 
@@ -956,6 +988,18 @@ def main() -> int:
                 f"score={row['points']:.1f}/{row['games']} "
                 f"elo={elo_text} ci95={ci_text} P(better)={prob_text}"
             )
+            paired = row.get("paired", {})
+            if row.get("paired_positions", 0) > 0:
+                pair_ci = "n/a"
+                if paired.get("elo_ci_low") is not None and paired.get("elo_ci_high") is not None:
+                    pair_ci = f"[{paired['elo_ci_low']:+.1f}, {paired['elo_ci_high']:+.1f}]"
+                pair_prob = "n/a"
+                if paired.get("probability_better") is not None:
+                    pair_prob = f"{paired['probability_better'] * 100.0:.1f}%"
+                print(
+                    f"  {'paired positions':<16} n={row['paired_positions']} "
+                    f"ci95={pair_ci} P(better)={pair_prob}"
+                )
 
     out_path = Path(args.out).expanduser() if args.out else None
     if out_path is None:

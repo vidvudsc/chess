@@ -1,5 +1,7 @@
 #include "chess_ai.h"
 
+#include <stdatomic.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "hce_internal.h"
@@ -11,21 +13,47 @@ static ChessAiBackend g_chess_ai_backend = CHESS_AI_BACKEND_CLASSIC;
 #define NN_EVAL_CACHE_SIZE (1u << NN_EVAL_CACHE_BITS)
 #define NN_EVAL_CACHE_MASK (NN_EVAL_CACHE_SIZE - 1u)
 
-typedef struct NnEvalCacheEntry {
-    uint64_t key;
-    int score_cp_stm;
-    bool valid;
-} NnEvalCacheEntry;
+#define EVAL_CACHE_TAG_BITS (64u - NN_EVAL_CACHE_BITS)
+#define EVAL_CACHE_TAG_MASK ((1ULL << EVAL_CACHE_TAG_BITS) - 1ULL)
+#define EVAL_CACHE_SCORE_SHIFT EVAL_CACHE_TAG_BITS
+#define EVAL_CACHE_VALID (1ULL << 62)
 
-static NnEvalCacheEntry g_nn_eval_cache[NN_EVAL_CACHE_SIZE];
+typedef atomic_uint_fast64_t EvalCacheEntry;
+
+static EvalCacheEntry g_nn_eval_cache[NN_EVAL_CACHE_SIZE];
+
+static uint64_t eval_cache_pack(uint64_t key, int score_cp_stm) {
+    return EVAL_CACHE_VALID |
+           ((key >> NN_EVAL_CACHE_BITS) & EVAL_CACHE_TAG_MASK) |
+           ((uint64_t)(uint16_t)(int16_t)score_cp_stm << EVAL_CACHE_SCORE_SHIFT);
+}
+
+static bool eval_cache_probe(const EvalCacheEntry *entry, uint64_t key, int *score_out) {
+    uint64_t packed = atomic_load_explicit(entry, memory_order_relaxed);
+    uint64_t tag = (key >> NN_EVAL_CACHE_BITS) & EVAL_CACHE_TAG_MASK;
+    if ((packed & EVAL_CACHE_VALID) == 0 ||
+        (packed & EVAL_CACHE_TAG_MASK) != tag) {
+        return false;
+    }
+    if (score_out != NULL) {
+        *score_out = (int)(int16_t)((packed >> EVAL_CACHE_SCORE_SHIFT) & 0xFFFFULL);
+    }
+    return true;
+}
+
+static void eval_cache_store(EvalCacheEntry *entry, uint64_t key, int score_cp_stm) {
+    atomic_store_explicit(entry, eval_cache_pack(key, score_cp_stm), memory_order_relaxed);
+}
 
 static void nn_eval_cache_clear(void) {
-    memset(g_nn_eval_cache, 0, sizeof(g_nn_eval_cache));
+    for (size_t i = 0; i < NN_EVAL_CACHE_SIZE; ++i) {
+        atomic_store_explicit(&g_nn_eval_cache[i], 0, memory_order_relaxed);
+    }
 }
 
 // Same idea for the classic HCE eval: it is a pure function of the position,
 // so transposed/re-visited nodes can reuse the score.
-static NnEvalCacheEntry g_hce_eval_cache[NN_EVAL_CACHE_SIZE];
+static EvalCacheEntry g_hce_eval_cache[NN_EVAL_CACHE_SIZE];
 
 void chess_ai_warmup(void) {
     hce_init_tables();
@@ -36,27 +64,25 @@ int engine_eval_cp_stm(const GameState *state) {
         return 0;
     }
     if (g_chess_ai_backend == CHESS_AI_BACKEND_NN && nn_eval_is_loaded()) {
-        NnEvalCacheEntry *entry = &g_nn_eval_cache[state->zobrist_hash & NN_EVAL_CACHE_MASK];
-        if (entry->valid && entry->key == state->zobrist_hash) {
-            return entry->score_cp_stm;
+        EvalCacheEntry *entry = &g_nn_eval_cache[state->zobrist_hash & NN_EVAL_CACHE_MASK];
+        int cached = 0;
+        if (eval_cache_probe(entry, state->zobrist_hash, &cached)) {
+            return cached;
         }
         int score = nn_eval_cp_stm(state);
-        entry->key = state->zobrist_hash;
-        entry->score_cp_stm = score;
-        entry->valid = true;
+        eval_cache_store(entry, state->zobrist_hash, score);
         return score;
     }
     if (g_chess_ai_backend == CHESS_AI_BACKEND_EXPERIMENTAL) {
         return hce_experimental_eval_cp_stm(state);
     }
-    NnEvalCacheEntry *entry = &g_hce_eval_cache[state->zobrist_hash & NN_EVAL_CACHE_MASK];
-    if (entry->valid && entry->key == state->zobrist_hash) {
-        return entry->score_cp_stm;
+    EvalCacheEntry *entry = &g_hce_eval_cache[state->zobrist_hash & NN_EVAL_CACHE_MASK];
+    int cached = 0;
+    if (eval_cache_probe(entry, state->zobrist_hash, &cached)) {
+        return cached;
     }
     int score = hce_eval_cp_stm(state);
-    entry->key = state->zobrist_hash;
-    entry->score_cp_stm = score;
-    entry->valid = true;
+    eval_cache_store(entry, state->zobrist_hash, score);
     return score;
 }
 
