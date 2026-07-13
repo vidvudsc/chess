@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import sys
@@ -51,6 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rows-per-shard", type=int, default=1_000_000)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=100_000)
+    parser.add_argument("--uncompressed", action="store_true",
+                        help="Write faster, larger .npz shards with np.savez instead of np.savez_compressed.")
     return parser
 
 
@@ -62,11 +65,13 @@ def save_shard(output_dir: Path,
                black_len: list[int],
                stm_white: list[int],
                target: list[float],
-               weight: list[float]) -> dict[str, Any]:
+               weight: list[float],
+               split_bucket: list[int] | None = None,
+               compressed: bool = True) -> dict[str, Any]:
     name = f"features_{shard_index:05d}.npz"
     path = output_dir / name
-    np.savez_compressed(
-        path,
+    savez = np.savez_compressed if compressed else np.savez
+    arrays = dict(
         white=np.asarray(white, dtype=np.uint32),
         white_len=np.asarray(white_len, dtype=np.uint8),
         black=np.asarray(black, dtype=np.uint32),
@@ -75,7 +80,15 @@ def save_shard(output_dir: Path,
         target=np.asarray(target, dtype=np.float32),
         weight=np.asarray(weight, dtype=np.float32),
     )
-    return {"file": name, "rows": len(target)}
+    if split_bucket is not None:
+        arrays["split_bucket"] = np.asarray(split_bucket, dtype=np.uint16)
+    savez(path, **arrays)
+    return {"file": name, "rows": len(target), "compressed": compressed}
+
+
+def split_bucket_for_fen(fen: str, modulus: int = 1000) -> int:
+    digest = hashlib.blake2b(fen.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "little") % modulus
 
 
 def main() -> int:
@@ -89,12 +102,13 @@ def main() -> int:
     stm_white: list[int] = []
     target: list[float] = []
     weight: list[float] = []
+    split_bucket: list[int] = []
     shards: list[dict[str, Any]] = []
     rows = 0
     skipped = 0
 
     def flush() -> None:
-        nonlocal white, white_len, black, black_len, stm_white, target, weight
+        nonlocal white, white_len, black, black_len, stm_white, target, weight, split_bucket
         if not target:
             return
         shards.append(save_shard(
@@ -107,6 +121,8 @@ def main() -> int:
             stm_white,
             target,
             weight,
+            split_bucket,
+            compressed=not args.uncompressed,
         ))
         white = []
         white_len = []
@@ -115,6 +131,7 @@ def main() -> int:
         stm_white = []
         target = []
         weight = []
+        split_bucket = []
 
     with args.input.open("r", encoding="utf-8") as fp:
         for raw in fp:
@@ -141,6 +158,7 @@ def main() -> int:
             stm_white.append(1 if side_white else 0)
             target.append(float(row["target_stm"]))
             weight.append(sample_weight(row))
+            split_bucket.append(split_bucket_for_fen(str(row["fen"])))
             rows += 1
             if len(target) >= args.rows_per_shard:
                 flush()
@@ -154,6 +172,7 @@ def main() -> int:
         "skipped": skipped,
         "max_halfkp_features": MAX_HALFKP_FEATURES,
         "dummy_feature_index": DUMMY_FEATURE_INDEX,
+        "compressed": not args.uncompressed,
         "shards": shards,
     }
     with (args.output_dir / "manifest.json").open("w", encoding="utf-8") as fp:

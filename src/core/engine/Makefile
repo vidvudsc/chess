@@ -19,6 +19,8 @@ SRCS := \
 	$(SRC_DIR)/chess_opening_book.c \
 	$(SRC_DIR)/chess_ai.c \
 	$(SRC_DIR)/nn_eval.c \
+	$(SRC_DIR)/nn_search.c \
+	$(SRC_DIR)/nn_search_support.c \
 	$(SRC_DIR)/hce_eval.c \
 	$(SRC_DIR)/hce_search.c \
 	$(SRC_DIR)/uci_main.c
@@ -38,6 +40,10 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/hce_search.o: $(SRC_DIR)/hce_search.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -O%,$(CFLAGS)) $(HCE_SEARCH_OPT) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_DIR)/nn_search.o: $(SRC_DIR)/nn_search.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(filter-out -O%,$(CFLAGS)) $(HCE_SEARCH_OPT) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 

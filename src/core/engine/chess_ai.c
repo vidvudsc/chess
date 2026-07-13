@@ -6,6 +6,7 @@
 
 #include "hce_internal.h"
 #include "nn_eval.h"
+#include "nn_search.h"
 
 static ChessAiBackend g_chess_ai_backend = CHESS_AI_BACKEND_CLASSIC;
 
@@ -90,7 +91,9 @@ int chess_ai_eval_cp(const GameState *state) {
     if (state == NULL) {
         return 0;
     }
-    int score_stm = hce_probe_deep_eval_cp_stm(state);
+    int score_stm = (g_chess_ai_backend == CHESS_AI_BACKEND_NN && nn_eval_is_loaded())
+        ? nn_search_probe_deep_eval_cp_stm(state)
+        : hce_probe_deep_eval_cp_stm(state);
     return (state->side_to_move == PIECE_WHITE) ? score_stm : -score_stm;
 }
 
@@ -118,6 +121,9 @@ bool chess_ai_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSea
     };
     if (cfg != NULL) {
         local_cfg = *cfg;
+    }
+    if (g_chess_ai_backend == CHESS_AI_BACKEND_NN && nn_eval_is_loaded()) {
+        return nn_search_pick_move(state, &local_cfg, out);
     }
     return hce_pick_move(state, &local_cfg, out);
 }
@@ -234,4 +240,36 @@ bool chess_ai_nn_model_is_loaded(void) {
 
 const char *chess_ai_nn_model_path(void) {
     return nn_eval_model_path();
+}
+
+bool chess_ai_set_nn_leaf_log_path(const char *path) {
+    return nn_search_leaf_log_set_path(path);
+}
+
+const char *chess_ai_nn_leaf_log_path(void) {
+    return nn_search_leaf_log_path();
+}
+
+void chess_ai_set_nn_leaf_log_limit(int limit) {
+    nn_search_leaf_log_set_limit(limit);
+}
+
+int chess_ai_nn_leaf_log_limit(void) {
+    return nn_search_leaf_log_limit();
+}
+
+int chess_ai_nn_leaf_log_count(void) {
+    return nn_search_leaf_log_count();
+}
+
+bool chess_ai_set_nn_search_option(const char *name, int value) {
+    return nn_search_set_option(name, value);
+}
+
+int chess_ai_get_nn_search_option(const char *name) {
+    return nn_search_get_option(name);
+}
+
+void chess_ai_reset_nn_search_options(void) {
+    nn_search_reset_options();
 }

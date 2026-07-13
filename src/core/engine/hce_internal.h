@@ -59,6 +59,14 @@ int hce_eval_tune_features(const GameState *s,
                            HceTuneFeatures *black_out,
                            int *phase_out);
 int engine_eval_cp_stm(const GameState *s);
+bool hce_nn_leaf_log_set_path(const char *path);
+const char *hce_nn_leaf_log_path(void);
+void hce_nn_leaf_log_set_limit(int limit);
+int hce_nn_leaf_log_limit(void);
+int hce_nn_leaf_log_count(void);
+bool hce_nn_search_set_option(const char *name, int value);
+int hce_nn_search_get_option(const char *name);
+void hce_nn_search_reset_options(void);
 int hce_score_search_draw_stm(const GameState *s);
 int hce_qsearch_eval_cp_stm(const GameState *root);
 bool hce_pick_opening_move(const GameState *s, Move *out_move);

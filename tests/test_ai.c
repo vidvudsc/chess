@@ -9,6 +9,7 @@
 #include "chess_ai.h"
 #include "chess_io.h"
 #include "hce_internal.h"
+#include "nn_eval.h"
 
 static void must(bool cond, const char *msg) {
     if (!cond) {
@@ -77,6 +78,23 @@ static void write_tiny_quant_nn_model(const char *path) {
 
     free(acc_weight);
     must(fclose(fp) == 0, "Close tiny quantized NN model");
+}
+
+static void assert_incremental_nn_matches_rebuild(GameState *s, const char *uci) {
+    NnAccumulatorFrame parent;
+    NnAccumulatorFrame incremental;
+    must(nn_eval_build_frame(s, &parent), "Build parent NN accumulator frame");
+
+    Move move;
+    must(chess_move_from_uci(s, uci, &move), "Parse incremental NN test move");
+    must(chess_make_move(s, move), "Make incremental NN test move");
+
+    const UndoRecord *undo = &s->undo_stack[s->ply - 1];
+    must(nn_eval_update_frame(s, undo, &parent, &incremental), "Update NN accumulator frame incrementally");
+
+    int direct_eval = nn_eval_cp_stm(s);
+    int incremental_eval = nn_eval_cp_stm_from_frame(s, &incremental);
+    must(direct_eval == incremental_eval, "Incremental NN frame eval should match full rebuild eval");
 }
 
 int main(void) {
@@ -161,6 +179,9 @@ int main(void) {
     int nn_queen_eval = chess_ai_eval_fast_cp(&s);
     must(nn_queen_eval > nn_bare_eval + 50,
          "Quantized NN accumulator should include non-king piece features");
+    assert_incremental_nn_matches_rebuild(&s, "f1f2");
+    assert_incremental_nn_matches_rebuild(&s, "e8d8");
+    assert_incremental_nn_matches_rebuild(&s, "e1d1");
     must(chess_ai_set_backend(CHESS_AI_BACKEND_CLASSIC), "Classic backend should be restored after NN regression");
 
     must(chess_load_fen(&s, "r1bq1rk1/pp3ppp/2n1pn2/3p4/3P4/2NBPN2/PPQ1BPPP/R4RK1 w - - 2 10", err, sizeof(err)),
@@ -336,6 +357,17 @@ int main(void) {
          "Third occurrence should still be recognized as a draw");
     must(hce_score_search_draw_stm(&s) == 0,
          "Search draw detection should still score true threefold repetition as a draw");
+
+    chess_ai_reset_nn_search_options();
+    must(chess_ai_get_nn_search_option("NNTwofoldDraw") == 1,
+         "NN twofold repetition scoring should default on");
+    must(chess_ai_set_nn_search_option("NNTwofoldDraw", 0),
+         "NN twofold repetition scoring option should accept disabled");
+    must(chess_ai_get_nn_search_option("NNTwofoldDraw") == 0,
+         "NN twofold repetition scoring option should retain disabled state");
+    must(!chess_ai_set_nn_search_option("NNTwofoldDraw", 2),
+         "NN twofold repetition scoring option should reject values above one");
+    chess_ai_reset_nn_search_options();
 
     unlink(temp_book_path);
     unlink(temp_nonstart_book_path);

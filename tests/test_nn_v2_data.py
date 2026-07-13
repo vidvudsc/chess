@@ -14,7 +14,10 @@ from src.core.bot.nn.v2.data import (  # noqa: E402
     convert_flat_eval_row,
     buckets_for_position,
     convert_lichess_eval_row,
+    decompress_dummy_chess_fen,
+    fast_phase_from_fen,
     label_from_eval,
+    material_sanity_ok,
     normalize_fen_key,
 )
 
@@ -128,6 +131,31 @@ def test_convert_flat_eval_row_supports_hf_schema() -> None:
         raise AssertionError(f"unexpected source: {out}")
 
 
+def test_convert_flat_eval_row_supports_dummy_chess_binary_fen() -> None:
+    raw = [
+        1, 138, 192, 118, 193, 139, 155, 188, 11, 187, 192, 188, 27, 172,
+        85, 197, 92, 85, 193, 92, 21, 192, 83, 193, 85, 44, 17, 3, 66,
+        129, 129, 255, 0, 1, 0,
+    ]
+    fen = decompress_dummy_chess_fen(raw)
+    if fen != "rn1qk2r/pbpp1ppp/1p2pn2/4P3/3P4/2P2P2/P1PB2PP/R2QKBNR b KQkq - 0 1":
+        raise AssertionError(f"unexpected decompressed dummy_chess FEN: {fen}")
+
+    out = convert_flat_eval_row(
+        {"fen": raw, "score": 120, "depth": 22, "knodes": 6125},
+        source="hf:theoden8/nnue-chess-dataset",
+        fast=True,
+    )
+    if out is None:
+        raise AssertionError("expected converted dummy_chess row")
+    if out["fen"] != "rn1qk2r/pbpp1ppp/1p2pn2/4P3/3P4/2P2P2/P1PB2PP/R2QKBNR b KQkq -":
+        raise AssertionError(f"unexpected normalized dummy_chess FEN: {out}")
+    if out["cp_stm"] != -120:
+        raise AssertionError(f"score should be white-perspective and flip for black STM: {out}")
+    if out["source"] != "hf:theoden8/nnue-chess-dataset":
+        raise AssertionError(f"unexpected source: {out}")
+
+
 def test_bucket_detects_black_side_and_capture() -> None:
     fen = "4k3/8/8/8/8/8/4q3/4K3 w - - 0 1"
     label = label_from_eval(fen, "-9.00", perspective="white")
@@ -148,6 +176,41 @@ def test_normalize_fen_drops_halfmove_and_fullmove() -> None:
         raise AssertionError(f"expected same normalized key, got {a} vs {b}")
 
 
+def test_fast_phase_handles_partial_hf_fens() -> None:
+    start_like = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -"
+    middlegame = "r2q1rk1/pp2bppp/2n1pn2/2bp4/3P4/2NBPN2/PPQ1BPPP/R4RK1 w - -"
+    endgame = "8/5pk1/6p1/8/8/5PP1/6KP/8 w - -"
+
+    if fast_phase_from_fen(start_like) != "opening":
+        raise AssertionError("full-material partial FEN should classify as opening")
+    if fast_phase_from_fen(middlegame) != "middlegame":
+        raise AssertionError("reduced-material partial FEN should classify as middlegame")
+    if fast_phase_from_fen(endgame) != "endgame":
+        raise AssertionError("queenless low-material partial FEN should classify as endgame")
+
+
+def test_material_sanity_rejects_impossible_promotions() -> None:
+    normal = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -"
+    promoted = "qnbqkbnq/8/8/8/8/8/8/QNBQKBNQ w - -"
+    impossible = "1B1B1B1B/1kB1B1B1/1B1B1B1B/P1B1B1B1/PB1B1B1B/P1B1BKB1/PB1B1B1B/B1B1B1B1 w - -"
+    if not material_sanity_ok(normal):
+        raise AssertionError("normal start position should pass material sanity")
+    if not material_sanity_ok(promoted):
+        raise AssertionError("possible promoted material should pass material sanity")
+    if material_sanity_ok(impossible):
+        raise AssertionError("impossible bishop wall should fail material sanity")
+
+    row = {
+        "fen": impossible,
+        "depth": 55,
+        "knodes": 1000,
+        "cp": 6979,
+        "mate": None,
+    }
+    if convert_flat_eval_row(row, min_depth=18) is not None:
+        raise AssertionError("flat conversion should reject impossible material")
+
+
 def main() -> None:
     test_white_perspective_eval_flips_to_side_to_move()
     test_terminal_labels_override_eval()
@@ -155,8 +218,11 @@ def main() -> None:
     test_convert_lichess_eval_row_adds_targets_and_buckets()
     test_fast_convert_preserves_label_fields()
     test_convert_flat_eval_row_supports_hf_schema()
+    test_convert_flat_eval_row_supports_dummy_chess_binary_fen()
     test_bucket_detects_black_side_and_capture()
     test_normalize_fen_drops_halfmove_and_fullmove()
+    test_fast_phase_handles_partial_hf_fens()
+    test_material_sanity_rejects_impossible_promotions()
     assert_close(label_from_eval("4k3/8/8/8/8/8/8/4KQ2 w - - 0 1", "0.00").value_stm, 0.0)
     print("test_nn_v2_data: OK")
 

@@ -6,14 +6,22 @@
 
 #include "chess_state.h"
 
-#define NN_MAX_ACC_DIM 256u
+#define NN_MAX_ACC_DIM 512u
 
 typedef struct NnAccumulatorFrame {
     bool valid;
     uint64_t key;
     uint16_t non_king_piece_count;
-    int32_t white_acc[NN_MAX_ACC_DIM];
-    int32_t black_acc[NN_MAX_ACC_DIM];
+    union {
+        int32_t white_acc[NN_MAX_ACC_DIM];
+        int16_t white_acc16[NN_MAX_ACC_DIM];
+    };
+    union {
+        int32_t black_acc[NN_MAX_ACC_DIM];
+        int16_t black_acc16[NN_MAX_ACC_DIM];
+    };
+    int32_t white_psqt[32];
+    int32_t black_psqt[32];
 } NnAccumulatorFrame;
 
 bool nn_eval_load_model(const char *path);
@@ -25,6 +33,9 @@ bool nn_eval_update_frame(const GameState *state,
                           const UndoRecord *undo,
                           const NnAccumulatorFrame *parent,
                           NnAccumulatorFrame *frame);
+bool nn_eval_copy_frame(const GameState *state,
+                        const NnAccumulatorFrame *source,
+                        NnAccumulatorFrame *frame);
 int nn_eval_cp_stm_from_frame(const GameState *state, const NnAccumulatorFrame *frame);
 
 #endif
