@@ -4,6 +4,7 @@
 
 #include <limits.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -11,6 +12,9 @@
 #define HCE_TT_BITS 20
 #define HCE_TT_SIZE (1u << HCE_TT_BITS)
 #define HCE_TT_MASK (HCE_TT_SIZE - 1u)
+#define HCE_NN_EVAL_CACHE_BITS 16
+#define HCE_NN_EVAL_CACHE_SIZE (1u << HCE_NN_EVAL_CACHE_BITS)
+#define HCE_NN_EVAL_CACHE_MASK (HCE_NN_EVAL_CACHE_SIZE - 1u)
 
 typedef enum HceTtBound {
     HCE_TT_NONE = 0,
@@ -28,6 +32,35 @@ typedef struct HceTtEntry {
     uint8_t age;
 } HceTtEntry;
 
+typedef struct HceEvalCacheEntry {
+    uint64_t key;
+    int score;
+    bool valid;
+} HceEvalCacheEntry;
+
+typedef struct HceSearchProfile {
+    const char *name;
+    int eval_scale_permille;
+    int qsearch_delta_margin;
+    int static_prune_margin_per_depth;
+    int null_move_base_reduction;
+    int lmr_base_reduction;
+    int lmr_depth_bonus_threshold;
+    int lmr_late_move_threshold;
+    int lmr_good_history_threshold;
+    int lmr_bad_history_threshold;
+    int lmr_backend_adjust;
+    int lmp_max_depth;
+    int lmp_base_moves;
+    int futility_max_depth;
+    int futility_margin_per_depth;
+    int see_prune_max_depth;
+    int see_prune_margin_per_depth;
+    int aspiration_base;
+    int aspiration_depth_scale;
+    int twofold_draw;
+} HceSearchProfile;
+
 typedef struct HceSearchContext {
     int64_t start_ms;
     int64_t deadline_ms;
@@ -35,14 +68,250 @@ typedef struct HceSearchContext {
     bool timed_out;
     uint64_t nodes;
     int max_depth;
+    Move policy_root_moves[CHESS_MAX_MOVES];
+    int policy_root_count;
+    int policy_root_bonus;
+    const HceSearchProfile *profile;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
+    HceEvalCacheEntry nn_eval_cache[HCE_NN_EVAL_CACHE_SIZE];
 } HceSearchContext;
+
+static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
+    .name = "classic",
+    .eval_scale_permille = 1000,
+    .qsearch_delta_margin = 120,
+    .static_prune_margin_per_depth = 90,
+    .null_move_base_reduction = 2,
+    .lmr_base_reduction = 1,
+    .lmr_depth_bonus_threshold = 6,
+    .lmr_late_move_threshold = 6,
+    .lmr_good_history_threshold = 12000,
+    .lmr_bad_history_threshold = -8000,
+    .lmr_backend_adjust = 0,
+    .lmp_max_depth = 0,
+    .lmp_base_moves = 4,
+    .futility_max_depth = 0,
+    .futility_margin_per_depth = 100,
+    .see_prune_max_depth = 0,
+    .see_prune_margin_per_depth = 40,
+    .aspiration_base = 24,
+    .aspiration_depth_scale = 6,
+    .twofold_draw = 0,
+};
+
+static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
+    .name = "nn",
+    .eval_scale_permille = 800,
+    .qsearch_delta_margin = 120,
+    .static_prune_margin_per_depth = 80,
+    .null_move_base_reduction = 1,
+    .lmr_base_reduction = 1,
+    .lmr_depth_bonus_threshold = 6,
+    .lmr_late_move_threshold = 6,
+    .lmr_good_history_threshold = 12000,
+    .lmr_bad_history_threshold = -8000,
+    .lmr_backend_adjust = 0,
+    .lmp_max_depth = 2,
+    .lmp_base_moves = 4,
+    .futility_max_depth = 0,
+    .futility_margin_per_depth = 100,
+    .see_prune_max_depth = 0,
+    .see_prune_margin_per_depth = 40,
+    .aspiration_base = 40,
+    .aspiration_depth_scale = 10,
+    .twofold_draw = 1,
+};
+
+static HceSearchProfile g_hce_search_profile_nn = {
+    .name = "nn",
+    .eval_scale_permille = 800,
+    .qsearch_delta_margin = 120,
+    .static_prune_margin_per_depth = 80,
+    .null_move_base_reduction = 1,
+    .lmr_base_reduction = 1,
+    .lmr_depth_bonus_threshold = 6,
+    .lmr_late_move_threshold = 6,
+    .lmr_good_history_threshold = 12000,
+    .lmr_bad_history_threshold = -8000,
+    .lmr_backend_adjust = 0,
+    .lmp_max_depth = 2,
+    .lmp_base_moves = 4,
+    .futility_max_depth = 0,
+    .futility_margin_per_depth = 100,
+    .see_prune_max_depth = 0,
+    .see_prune_margin_per_depth = 40,
+    .aspiration_base = 40,
+    .aspiration_depth_scale = 10,
+    .twofold_draw = 1,
+};
 
 static HceTtEntry g_hce_tt[HCE_TT_SIZE];
 static uint8_t g_hce_tt_generation = 0;
 static atomic_flag g_hce_lock = ATOMIC_FLAG_INIT;
+static FILE *g_nn_leaf_log_fp = NULL;
+static char g_nn_leaf_log_path[512] = {0};
+static int g_nn_leaf_log_limit = 0;
+static int g_nn_leaf_log_count = 0;
+
+bool hce_nn_leaf_log_set_path(const char *path) {
+    if (g_nn_leaf_log_fp != NULL) {
+        fclose(g_nn_leaf_log_fp);
+        g_nn_leaf_log_fp = NULL;
+    }
+    g_nn_leaf_log_path[0] = '\0';
+    g_nn_leaf_log_count = 0;
+
+    if (path == NULL || path[0] == '\0' || strcmp(path, "off") == 0 || strcmp(path, "none") == 0) {
+        return true;
+    }
+
+    FILE *fp = fopen(path, "w");
+    if (fp == NULL) {
+        return false;
+    }
+    g_nn_leaf_log_fp = fp;
+    snprintf(g_nn_leaf_log_path, sizeof(g_nn_leaf_log_path), "%s", path);
+    return true;
+}
+
+const char *hce_nn_leaf_log_path(void) {
+    return g_nn_leaf_log_path[0] != '\0' ? g_nn_leaf_log_path : NULL;
+}
+
+void hce_nn_leaf_log_set_limit(int limit) {
+    g_nn_leaf_log_limit = limit > 0 ? limit : 0;
+}
+
+int hce_nn_leaf_log_limit(void) {
+    return g_nn_leaf_log_limit;
+}
+
+int hce_nn_leaf_log_count(void) {
+    return g_nn_leaf_log_count;
+}
+
+static bool hce_option_ieq(const char *a, const char *b) {
+    if (a == NULL || b == NULL) {
+        return false;
+    }
+    while (*a != '\0' && *b != '\0') {
+        char ca = *a;
+        char cb = *b;
+        if (ca >= 'A' && ca <= 'Z') {
+            ca = (char)(ca - 'A' + 'a');
+        }
+        if (cb >= 'A' && cb <= 'Z') {
+            cb = (char)(cb - 'A' + 'a');
+        }
+        if (ca != cb) {
+            return false;
+        }
+        ++a;
+        ++b;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static bool hce_nn_search_option_ref(const char *name, int **out) {
+    if (name == NULL || out == NULL) {
+        return false;
+    }
+    if (hce_option_ieq(name, "NNEvalScale") || hce_option_ieq(name, "EvalScale")) {
+        *out = &g_hce_search_profile_nn.eval_scale_permille;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNQDeltaMargin") || hce_option_ieq(name, "QDeltaMargin")) {
+        *out = &g_hce_search_profile_nn.qsearch_delta_margin;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNStaticPruneMargin") || hce_option_ieq(name, "StaticPruneMargin")) {
+        *out = &g_hce_search_profile_nn.static_prune_margin_per_depth;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNNullMoveBaseReduction") || hce_option_ieq(name, "NullMoveBaseReduction")) {
+        *out = &g_hce_search_profile_nn.null_move_base_reduction;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNLmrBackendAdjust") || hce_option_ieq(name, "LmrBackendAdjust")) {
+        *out = &g_hce_search_profile_nn.lmr_backend_adjust;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNLmpMaxDepth") || hce_option_ieq(name, "LmpMaxDepth")) {
+        *out = &g_hce_search_profile_nn.lmp_max_depth;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNLmpBaseMoves") || hce_option_ieq(name, "LmpBaseMoves")) {
+        *out = &g_hce_search_profile_nn.lmp_base_moves;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNFutilityMaxDepth") || hce_option_ieq(name, "FutilityMaxDepth")) {
+        *out = &g_hce_search_profile_nn.futility_max_depth;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNFutilityMargin") || hce_option_ieq(name, "FutilityMargin")) {
+        *out = &g_hce_search_profile_nn.futility_margin_per_depth;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNSeePruneMaxDepth") || hce_option_ieq(name, "SeePruneMaxDepth")) {
+        *out = &g_hce_search_profile_nn.see_prune_max_depth;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNSeePruneMargin") || hce_option_ieq(name, "SeePruneMargin")) {
+        *out = &g_hce_search_profile_nn.see_prune_margin_per_depth;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNAspirationBase") || hce_option_ieq(name, "AspirationBase")) {
+        *out = &g_hce_search_profile_nn.aspiration_base;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNAspirationDepthScale") || hce_option_ieq(name, "AspirationDepthScale")) {
+        *out = &g_hce_search_profile_nn.aspiration_depth_scale;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNTwofoldDraw") || hce_option_ieq(name, "TwofoldDraw")) {
+        *out = &g_hce_search_profile_nn.twofold_draw;
+        return true;
+    }
+    return false;
+}
+
+bool hce_nn_search_set_option(const char *name, int value) {
+    int *field = NULL;
+    if (!hce_nn_search_option_ref(name, &field)) {
+        return false;
+    }
+    if (field == &g_hce_search_profile_nn.eval_scale_permille) {
+        if (value < 100 || value > 3000) {
+            return false;
+        }
+    } else if (field == &g_hce_search_profile_nn.lmr_backend_adjust) {
+        if (value < -4 || value > 4) {
+            return false;
+        }
+    } else if (field == &g_hce_search_profile_nn.twofold_draw) {
+        if (value < 0 || value > 1) {
+            return false;
+        }
+    } else if (value < 0 || value > 10000) {
+        return false;
+    }
+    *field = value;
+    return true;
+}
+
+int hce_nn_search_get_option(const char *name) {
+    int *field = NULL;
+    if (!hce_nn_search_option_ref(name, &field)) {
+        return 0;
+    }
+    return *field;
+}
+
+void hce_nn_search_reset_options(void) {
+    g_hce_search_profile_nn = HCE_SEARCH_PROFILE_NN_DEFAULT;
+}
 
 static int64_t now_ms(void) {
     struct timespec ts;
@@ -67,9 +336,12 @@ static bool search_is_insufficient_material(const GameState *s) {
            !chess_has_mating_material(s, PIECE_BLACK);
 }
 
-static bool search_is_repetition_draw(const GameState *s) {
+static bool search_is_repetition_draw(const GameState *s, int required_occurrences) {
     if (s == NULL || s->hash_history_count <= 0) {
         return false;
+    }
+    if (required_occurrences < 2) {
+        required_occurrences = 2;
     }
 
     uint64_t current = s->zobrist_hash;
@@ -79,19 +351,22 @@ static bool search_is_repetition_draw(const GameState *s) {
     }
 
     // Virtual index of the current position; history may or may not have it
-    // appended depending on how the search state was built.
+    // appended depending on how the search state was built. Count the current
+    // position exactly once, then require two previous same-side occurrences.
     int cur_index = s->hash_history_count;
     if (s->hash_history[cur_index - 1] == current) {
         cur_index -= 1;
     }
 
-    // One prior occurrence scores as a draw inside the search: if the
-    // repetition is bad for us the search avoids it, if it is good we can
-    // force it. Same-side positions sit an even number of plies back, and the
-    // side-to-move zobrist key makes other parities unable to match anyway.
+    int repetitions = 1;
+    // Same-side positions sit an even number of plies back, and the side-to-
+    // move zobrist key makes other parities unable to match anyway.
     for (int i = cur_index - 2; i >= begin; i -= 2) {
         if (s->hash_history[i] == current) {
-            return true;
+            ++repetitions;
+            if (repetitions >= required_occurrences) {
+                return true;
+            }
         }
     }
     return false;
@@ -107,13 +382,13 @@ int hce_score_search_draw_stm(const GameState *s) {
     if (s->halfmove_clock >= 100) {
         return 0;
     }
-    if (search_is_repetition_draw(s)) {
+    if (search_is_repetition_draw(s, 3)) {
         return 0;
     }
     return INT_MIN;
 }
 
-static int score_terminal_stm(const GameState *s, int ply) {
+static int score_terminal_stm(const GameState *s, int ply, const HceSearchContext *ctx) {
     if (s == NULL) {
         return 0;
     }
@@ -133,8 +408,16 @@ static int score_terminal_stm(const GameState *s, int ply) {
         case GAME_RESULT_DRAW_AGREED:
             return 0;
         case GAME_RESULT_ONGOING:
+            if (ctx != NULL && ctx->profile != NULL && ctx->profile->twofold_draw != 0 &&
+                search_is_repetition_draw(s, 2)) {
+                return 0;
+            }
             return hce_score_search_draw_stm(s);
         default:
+            if (ctx != NULL && ctx->profile != NULL && ctx->profile->twofold_draw != 0 &&
+                search_is_repetition_draw(s, 2)) {
+                return 0;
+            }
             return hce_score_search_draw_stm(s);
     }
 }
@@ -228,7 +511,177 @@ static bool search_uses_nn_backend(void) {
     return chess_ai_get_backend() == CHESS_AI_BACKEND_NN && nn_eval_is_loaded();
 }
 
-static int search_eval_cp_stm(const GameState *s, HceSearchContext *ctx, int ply) {
+static const HceSearchProfile *search_profile_for_current_backend(void) {
+    return search_uses_nn_backend() ? &g_hce_search_profile_nn : &HCE_SEARCH_PROFILE_CLASSIC;
+}
+
+static const HceSearchProfile *search_profile(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->profile != NULL) {
+        return ctx->profile;
+    }
+    return search_profile_for_current_backend();
+}
+
+static void search_log_nn_leaf(const GameState *s,
+                               const HceSearchContext *ctx,
+                               int ply,
+                               int depth,
+                               const char *phase,
+                               int score) {
+    if (g_nn_leaf_log_fp == NULL || s == NULL) {
+        return;
+    }
+    if (g_nn_leaf_log_limit > 0 && g_nn_leaf_log_count >= g_nn_leaf_log_limit) {
+        return;
+    }
+
+    char fen[256];
+    chess_export_fen(s, fen, sizeof(fen));
+    fprintf(g_nn_leaf_log_fp,
+            "{\"fen\":\"%s\",\"score_cp\":%d,\"ply\":%d,\"depth\":%d,"
+            "\"phase\":\"%s\",\"nodes\":%llu,\"side_to_move\":\"%c\"}\n",
+            fen,
+            score,
+            ply,
+            depth,
+            phase != NULL ? phase : "search",
+            (unsigned long long)(ctx != NULL ? ctx->nodes : 0ULL),
+            s->side_to_move == PIECE_WHITE ? 'w' : 'b');
+    g_nn_leaf_log_count += 1;
+    if ((g_nn_leaf_log_count & 1023) == 0) {
+        fflush(g_nn_leaf_log_fp);
+    }
+}
+
+static bool search_nn_eval_cache_probe(HceSearchContext *ctx, uint64_t key, int *score_out) {
+    if (ctx == NULL || score_out == NULL) {
+        return false;
+    }
+    HceEvalCacheEntry *entry = &ctx->nn_eval_cache[key & HCE_NN_EVAL_CACHE_MASK];
+    if (!entry->valid || entry->key != key) {
+        return false;
+    }
+    *score_out = entry->score;
+    return true;
+}
+
+static void search_nn_eval_cache_store(HceSearchContext *ctx, uint64_t key, int score) {
+    if (ctx == NULL) {
+        return;
+    }
+    HceEvalCacheEntry *entry = &ctx->nn_eval_cache[key & HCE_NN_EVAL_CACHE_MASK];
+    entry->key = key;
+    entry->score = score;
+    entry->valid = true;
+}
+
+static int search_scale_eval_for_profile(const HceSearchContext *ctx, int score) {
+    const HceSearchProfile *profile = search_profile(ctx);
+    int scale = profile != NULL ? profile->eval_scale_permille : 1000;
+    if (scale == 1000 || score > HCE_MATE_THRESHOLD || score < -HCE_MATE_THRESHOLD) {
+        return score;
+    }
+    int64_t scaled = ((int64_t)score * (int64_t)scale) / 1000;
+    if (scaled > HCE_MATE_THRESHOLD - 1) {
+        return HCE_MATE_THRESHOLD - 1;
+    }
+    if (scaled < -HCE_MATE_THRESHOLD + 1) {
+        return -HCE_MATE_THRESHOLD + 1;
+    }
+    return (int)scaled;
+}
+
+static bool search_ensure_nn_frame(const GameState *s, HceSearchContext *ctx, int ply) {
+    if (s == NULL ||
+        ctx == NULL ||
+        chess_ai_get_backend() != CHESS_AI_BACKEND_NN ||
+        !nn_eval_is_loaded() ||
+        ply < 0 ||
+        ply >= HCE_MAX_PLY) {
+        return false;
+    }
+
+    NnAccumulatorFrame *frame = &ctx->nn_frames[ply];
+    if (frame->valid && frame->key == s->zobrist_hash) {
+        return true;
+    }
+
+    bool ok = false;
+    if (ply > 0 && s->ply > 0) {
+        const UndoRecord *undo = &s->undo_stack[s->ply - 1];
+        const NnAccumulatorFrame *parent = &ctx->nn_frames[ply - 1];
+        if (parent->valid && parent->key == undo->hash_prev) {
+            ok = nn_eval_update_frame(s, undo, parent, frame);
+        }
+    }
+    if (!ok) {
+        ok = nn_eval_build_frame(s, frame);
+    }
+    if (!ok) {
+        frame->valid = false;
+    }
+    return ok;
+}
+
+static void search_prepare_nn_child_frame(const GameState *child,
+                                          HceSearchContext *ctx,
+                                          int parent_ply,
+                                          int child_ply) {
+    if (child == NULL ||
+        ctx == NULL ||
+        chess_ai_get_backend() != CHESS_AI_BACKEND_NN ||
+        !nn_eval_is_loaded() ||
+        parent_ply < 0 ||
+        parent_ply >= HCE_MAX_PLY ||
+        child_ply < 0 ||
+        child_ply >= HCE_MAX_PLY ||
+        child->ply <= 0) {
+        return;
+    }
+
+    NnAccumulatorFrame *child_frame = &ctx->nn_frames[child_ply];
+    const NnAccumulatorFrame *parent = &ctx->nn_frames[parent_ply];
+    const UndoRecord *undo = &child->undo_stack[child->ply - 1];
+    if (!parent->valid || parent->key != undo->hash_prev) {
+        child_frame->valid = false;
+        return;
+    }
+    if (!nn_eval_update_frame(child, undo, parent, child_frame)) {
+        child_frame->valid = false;
+    }
+}
+
+static void search_prepare_nn_null_frame(const GameState *child,
+                                         HceSearchContext *ctx,
+                                         int parent_ply,
+                                         int child_ply) {
+    if (child == NULL ||
+        ctx == NULL ||
+        chess_ai_get_backend() != CHESS_AI_BACKEND_NN ||
+        !nn_eval_is_loaded() ||
+        parent_ply < 0 ||
+        parent_ply >= HCE_MAX_PLY ||
+        child_ply < 0 ||
+        child_ply >= HCE_MAX_PLY) {
+        return;
+    }
+
+    const NnAccumulatorFrame *parent = &ctx->nn_frames[parent_ply];
+    NnAccumulatorFrame *child_frame = &ctx->nn_frames[child_ply];
+    if (!parent->valid) {
+        child_frame->valid = false;
+        return;
+    }
+    if (!nn_eval_copy_frame(child, parent, child_frame)) {
+        child_frame->valid = false;
+    }
+}
+
+static int search_eval_cp_stm(const GameState *s,
+                              HceSearchContext *ctx,
+                              int ply,
+                              int depth,
+                              const char *phase) {
     if (s == NULL) {
         return 0;
     }
@@ -236,31 +689,30 @@ static int search_eval_cp_stm(const GameState *s, HceSearchContext *ctx, int ply
         return engine_eval_cp_stm(s);
     }
     if (ply < 0 || ply >= HCE_MAX_PLY) {
-        return nn_eval_cp_stm(s);
+        int score = search_scale_eval_for_profile(ctx, nn_eval_cp_stm(s));
+        search_log_nn_leaf(s, ctx, ply, depth, phase, score);
+        return score;
     }
 
     NnAccumulatorFrame *frame = &ctx->nn_frames[ply];
-    if (frame->valid && frame->key == s->zobrist_hash) {
-        return nn_eval_cp_stm_from_frame(s, frame);
+    if (!search_ensure_nn_frame(s, ctx, ply)) {
+        int score = search_scale_eval_for_profile(ctx, nn_eval_cp_stm(s));
+        search_log_nn_leaf(s, ctx, ply, depth, phase, score);
+        return score;
     }
 
-    bool ok = false;
-    if (ply == 0 || s->ply == 0) {
-        ok = nn_eval_build_frame(s, frame);
-    } else {
-        const NnAccumulatorFrame *parent = &ctx->nn_frames[ply - 1];
-        const UndoRecord *undo = &s->undo_stack[s->ply - 1];
-        if (parent->valid && parent->key == undo->hash_prev) {
-            ok = nn_eval_update_frame(s, undo, parent, frame);
+    if (frame->valid && frame->key == s->zobrist_hash) {
+        int cached_score = 0;
+        if (search_nn_eval_cache_probe(ctx, s->zobrist_hash, &cached_score)) {
+            search_log_nn_leaf(s, ctx, ply, depth, phase, cached_score);
+            return cached_score;
         }
-        if (!ok) {
-            ok = nn_eval_build_frame(s, frame);
-        }
+        int score = search_scale_eval_for_profile(ctx, nn_eval_cp_stm_from_frame(s, frame));
+        search_nn_eval_cache_store(ctx, s->zobrist_hash, score);
+        search_log_nn_leaf(s, ctx, ply, depth, phase, score);
+        return score;
     }
-    if (!ok) {
-        return nn_eval_cp_stm(s);
-    }
-    return nn_eval_cp_stm_from_frame(s, frame);
+    return search_scale_eval_for_profile(ctx, nn_eval_cp_stm(s));
 }
 
 static int captured_piece_for_move(const GameState *s, Move m) {
@@ -555,6 +1007,32 @@ static void score_moves(const GameState *s,
     }
 }
 
+static void apply_root_policy_scores(int scores[CHESS_MAX_MOVES],
+                                     const Move moves[CHESS_MAX_MOVES],
+                                     int n,
+                                     const HceSearchContext *ctx) {
+    if (ctx == NULL || ctx->policy_root_count <= 0 || ctx->policy_root_bonus <= 0) {
+        return;
+    }
+    int count = ctx->policy_root_count;
+    if (count > CHESS_MAX_MOVES) {
+        count = CHESS_MAX_MOVES;
+    }
+    for (int rank = 0; rank < count; ++rank) {
+        Move hinted = ctx->policy_root_moves[rank];
+        int bonus = ctx->policy_root_bonus * (count - rank);
+        if (bonus <= 0) {
+            bonus = 1;
+        }
+        for (int i = 0; i < n; ++i) {
+            if (moves[i] == hinted) {
+                scores[i] += bonus;
+                break;
+            }
+        }
+    }
+}
+
 static Move pick_next_move(Move moves[CHESS_MAX_MOVES],
                            int scores[CHESS_MAX_MOVES],
                            int start,
@@ -625,18 +1103,19 @@ static void penalize_quiet_history(HceSearchContext *ctx,
     }
 }
 
+
 static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchContext *ctx) {
     if (should_stop(ctx)) {
-        return search_eval_cp_stm(s, ctx, ply);
+        return search_eval_cp_stm(s, ctx, ply, 0, "qsearch_timeout");
     }
 
-    int term = score_terminal_stm(s, ply);
+    int term = score_terminal_stm(s, ply, ctx);
     if (term != INT_MIN) {
         return term;
     }
 
     bool in_check = chess_in_check(s, s->side_to_move);
-    int stand_pat = search_eval_cp_stm(s, ctx, ply);
+    int stand_pat = search_eval_cp_stm(s, ctx, ply, 0, "qsearch");
     if (!in_check) {
         if (stand_pat >= beta) {
             return beta;
@@ -668,7 +1147,7 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
             alpha > -HCE_MATE_THRESHOLD &&
             beta < HCE_MATE_THRESHOLD) {
             int gain = qsearch_move_gain_cp(s, m);
-            int delta_margin = search_uses_nn_backend() ? 160 : 120;
+            int delta_margin = search_profile(ctx)->qsearch_delta_margin;
             if (!move_has_flag(m, MOVE_FLAG_PROMOTION) &&
                 stand_pat + gain + delta_margin <= alpha) {
                 continue;
@@ -685,6 +1164,7 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
             continue;
         }
         ctx->nodes += 1;
+        search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
         int score = -quiescence(s, -beta, -alpha, ply + 1, ctx);
         chess_undo_move(s);
         if (ctx->timed_out) {
@@ -709,15 +1189,15 @@ static int negamax(GameState *s,
                    HceSearchContext *ctx,
                    Move *best_move_out) {
     if (should_stop(ctx)) {
-        return search_eval_cp_stm(s, ctx, ply);
+        return search_eval_cp_stm(s, ctx, ply, depth, "search_timeout");
     }
 
-    int term = score_terminal_stm(s, ply);
+    int term = score_terminal_stm(s, ply, ctx);
     if (term != INT_MIN) {
         return term;
     }
     if (ply >= HCE_MAX_PLY - 1) {
-        return search_eval_cp_stm(s, ctx, ply);
+        return search_eval_cp_stm(s, ctx, ply, depth, "max_ply");
     }
 
     int mate_alpha = -HCE_MATE + ply;
@@ -743,10 +1223,17 @@ static int negamax(GameState *s,
     }
 
     bool in_check = chess_in_check(s, s->side_to_move);
-
+    const HceSearchProfile *profile = search_profile(ctx);
+    bool static_eval_valid = false;
+    int static_eval = 0;
+    if (!in_check &&
+        (depth <= 3 || (profile->futility_max_depth > 0 && depth <= profile->futility_max_depth))) {
+        static_eval = search_eval_cp_stm(s, ctx, ply, depth, "static_eval");
+        static_eval_valid = true;
+    }
     if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
-        int margin = search_uses_nn_backend() ? (110 * depth) : (90 * depth);
-        if (search_eval_cp_stm(s, ctx, ply) >= beta + margin) {
+        int margin = profile->static_prune_margin_per_depth * depth;
+        if (static_eval >= beta + margin) {
             return beta;
         }
     }
@@ -756,7 +1243,7 @@ static int negamax(GameState *s,
         !in_check &&
         beta < HCE_MATE_THRESHOLD &&
         has_non_pawn_material(s, s->side_to_move)) {
-        int reduction = (search_uses_nn_backend() ? 1 : 2) + depth / 4;
+        int reduction = search_profile(ctx)->null_move_base_reduction + depth / 4;
         if (reduction > depth - 1) {
             reduction = depth - 1;
         }
@@ -764,6 +1251,7 @@ static int negamax(GameState *s,
             ctx->nodes += 1;
             NullMoveUndo null_undo;
             make_null_move(s, &null_undo);
+            search_prepare_nn_null_frame(s, ctx, ply, ply + 1);
             int score = -negamax(s,
                                  depth - 1 - reduction,
                                  -beta,
@@ -804,10 +1292,31 @@ static int negamax(GameState *s,
         Move m = pick_next_move(moves, move_scores, i, n);
         bool quiet = is_quiet_move(m);
         bool recapture = is_recapture_move(s, m);
+        if (quiet && !in_check && profile->lmp_max_depth > 0 &&
+            depth <= profile->lmp_max_depth &&
+            searched >= profile->lmp_base_moves + depth * 3) {
+            continue;
+        }
+        if (!quiet && searched > 0 && !in_check &&
+            move_has_flag(m, MOVE_FLAG_CAPTURE) &&
+            !move_has_flag(m, MOVE_FLAG_PROMOTION) &&
+            profile->see_prune_max_depth > 0 && depth <= profile->see_prune_max_depth &&
+            static_exchange_eval(s, m) < -profile->see_prune_margin_per_depth * depth) {
+            continue;
+        }
         if (!chess_make_move_trusted(s, m)) {
             continue;
         }
+        if (quiet && !recapture && searched > 0 && static_eval_valid &&
+            profile->futility_max_depth > 0 && depth <= profile->futility_max_depth &&
+            alpha < HCE_MATE_THRESHOLD &&
+            static_eval + profile->futility_margin_per_depth * depth <= alpha &&
+            !chess_in_check(s, s->side_to_move)) {
+            chess_undo_move(s);
+            continue;
+        }
         ctx->nodes += 1;
+        search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
 
         int extension = search_move_extension(s, m, depth);
 
@@ -821,25 +1330,23 @@ static int negamax(GameState *s,
                 quiet &&
                 depth >= 3 &&
                 searched >= 2) {
-                reduction = 1;
-                if (depth >= 6) {
+                reduction = profile->lmr_base_reduction;
+                if (depth >= profile->lmr_depth_bonus_threshold) {
                     reduction += 1;
                 }
-                if (searched >= 6) {
+                if (searched >= profile->lmr_late_move_threshold) {
                     reduction += 1;
                 }
                 int hist = ctx->history[side][move_from(m)][move_to(m)];
-                if (hist > 12000) {
+                if (hist > profile->lmr_good_history_threshold) {
                     reduction -= 1;
-                } else if (hist < -8000) {
+                } else if (hist < profile->lmr_bad_history_threshold) {
                     reduction += 1;
                 }
                 if (recapture) {
                     reduction -= 1;
                 }
-                if (search_uses_nn_backend()) {
-                    reduction -= 1;
-                }
+                reduction += profile->lmr_backend_adjust;
                 if (reduction < 0) {
                     reduction = 0;
                 }
@@ -890,7 +1397,7 @@ static int negamax(GameState *s,
     }
 
     if (best_score == -HCE_INF) {
-        best_score = in_check ? 0 : search_eval_cp_stm(s, ctx, ply);
+        best_score = in_check ? 0 : search_eval_cp_stm(s, ctx, ply, depth, "search_fallback");
     }
 
     HceTtBound bound = HCE_TT_EXACT;
@@ -928,12 +1435,14 @@ static int search_root(GameState *root,
         if (best_move_out != NULL) {
             *best_move_out = 0;
         }
-        return score_terminal_stm(root, 0);
+        return score_terminal_stm(root, 0, ctx);
     }
 
     (void)tt_probe(root->zobrist_hash, depth, 0, alpha, beta, &tt_move, &tt_score);
+    search_ensure_nn_frame(root, ctx, 0);
     int root_scores[CHESS_MAX_MOVES];
     score_moves(root, root_scores, moves, n, tt_move, ctx, 0);
+    apply_root_policy_scores(root_scores, moves, n, ctx);
 
     for (int i = 0; i < n; ++i) {
         Move m = pick_next_move(moves, root_scores, i, n);
@@ -944,6 +1453,7 @@ static int search_root(GameState *root,
             continue;
         }
         ctx->nodes += 1;
+        search_prepare_nn_child_frame(&child, ctx, 0, 1);
 
         int extension = search_move_extension(&child, m, depth);
         int next_depth = depth - 1 + extension;
@@ -982,7 +1492,7 @@ static int search_root(GameState *root,
     }
 
     if (best_score == -HCE_INF) {
-        best_score = search_eval_cp_stm(root, ctx, 0);
+        best_score = search_eval_cp_stm(root, ctx, 0, depth, "root_fallback");
     }
 
     HceTtBound bound = HCE_TT_EXACT;
@@ -1141,6 +1651,7 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
 
     HceSearchContext ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.profile = search_profile_for_current_backend();
     ctx.start_ms = now_ms();
     int think_ms = (override_ms > 0) ? override_ms : ((cfg != NULL && cfg->think_time_ms > 0) ? cfg->think_time_ms : 120);
     int hard_ms = think_ms;
@@ -1150,6 +1661,16 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     ctx.hard_deadline_ms = ctx.start_ms + hard_ms;
     ctx.deadline_ms = ctx.hard_deadline_ms;
     ctx.max_depth = (override_depth > 0) ? override_depth : ((cfg != NULL && cfg->max_depth > 0) ? cfg->max_depth : 10);
+    if (cfg != NULL && cfg->policy_root_count > 0 && cfg->policy_root_bonus > 0) {
+        ctx.policy_root_count = cfg->policy_root_count;
+        if (ctx.policy_root_count > CHESS_MAX_MOVES) {
+            ctx.policy_root_count = CHESS_MAX_MOVES;
+        }
+        ctx.policy_root_bonus = cfg->policy_root_bonus;
+        memcpy(ctx.policy_root_moves,
+               cfg->policy_root_moves,
+               (size_t)ctx.policy_root_count * sizeof(ctx.policy_root_moves[0]));
+    }
     if (ctx.max_depth > HCE_MAX_DEPTH) {
         ctx.max_depth = HCE_MAX_DEPTH;
     }
@@ -1182,7 +1703,7 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
         }
         Move iter_best = best_move;
         int score = 0;
-        int window = search_uses_nn_backend() ? (32 + depth * 8) : (24 + depth * 6);
+        int window = ctx.profile->aspiration_base + depth * ctx.profile->aspiration_depth_scale;
         int alpha = -HCE_INF;
         int beta = HCE_INF;
         if (depth >= 2 && best_score > -HCE_INF / 2 && best_score < HCE_INF / 2) {
@@ -1238,6 +1759,9 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     out->depth_reached = depth_reached;
     out->nodes = ctx.nodes;
     out->elapsed_ms = (int)(now_ms() - ctx.start_ms);
+    if (g_nn_leaf_log_fp != NULL) {
+        fflush(g_nn_leaf_log_fp);
+    }
     return true;
 }
 
@@ -1245,7 +1769,6 @@ bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchRe
     bool ok;
     hce_lock();
     hce_init_tables();
-    g_hce_tt_generation += 1;
     g_hce_tt_generation += 1;
     ok = run_search(state, cfg, out, 0, 0);
     hce_unlock();

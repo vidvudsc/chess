@@ -209,3 +209,35 @@ bool chess_ai_nn_model_is_loaded(void) {
 const char *chess_ai_nn_model_path(void) {
     return nn_eval_model_path();
 }
+
+bool chess_ai_set_nn_leaf_log_path(const char *path) {
+    return hce_nn_leaf_log_set_path(path);
+}
+
+const char *chess_ai_nn_leaf_log_path(void) {
+    return hce_nn_leaf_log_path();
+}
+
+void chess_ai_set_nn_leaf_log_limit(int limit) {
+    hce_nn_leaf_log_set_limit(limit);
+}
+
+int chess_ai_nn_leaf_log_limit(void) {
+    return hce_nn_leaf_log_limit();
+}
+
+int chess_ai_nn_leaf_log_count(void) {
+    return hce_nn_leaf_log_count();
+}
+
+bool chess_ai_set_nn_search_option(const char *name, int value) {
+    return hce_nn_search_set_option(name, value);
+}
+
+int chess_ai_get_nn_search_option(const char *name) {
+    return hce_nn_search_get_option(name);
+}
+
+void chess_ai_reset_nn_search_options(void) {
+    hce_nn_search_reset_options();
+}

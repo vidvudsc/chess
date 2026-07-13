@@ -1,0 +1,47 @@
+diff --git a/data_loader/_native.py b/data_loader/_native.py
+index 6dc0852..5d8b754 100644
+--- a/data_loader/_native.py
++++ b/data_loader/_native.py
+@@ -203,2 +203,2 @@ class CDataLoaderAPI:
+-type SparseBatchPtr = ctypes._Pointer[SparseBatch]
+-type FenBatchPtr = ctypes._Pointer[FenBatch]
++SparseBatchPtr = ctypes.POINTER(SparseBatch)
++FenBatchPtr = ctypes.POINTER(FenBatch)
+diff --git a/data_loader/cpp/training_data_loader.cpp b/data_loader/cpp/training_data_loader.cpp
+index 7545f52..dca63a4 100644
+--- a/data_loader/cpp/training_data_loader.cpp
++++ b/data_loader/cpp/training_data_loader.cpp
+@@ -19,0 +20,30 @@ using namespace chess;
++// HalfKP layout used by this engine. Black's perspective is mirrored
++// vertically and kings are omitted from the active feature list.
++struct LegacyHalfKPExtractor: IFeatureExtractor {
++    static constexpr int INPUTS = 64 * 10 * 64;
++    static constexpr int MAX_ACTIVE_FEATURES = 30;
++
++    int inputs() const override { return INPUTS; }
++    int max_active_features() const override { return MAX_ACTIVE_FEATURES; }
++
++    std::pair<int, int> fill_features_sparse(const TrainingDataEntry& e,
++                                             int* features,
++                                             Color color) const override {
++        auto king_sq = e.pos.kingSquare(color);
++        if (color == Color::Black)
++            king_sq = king_sq.flippedVertically();
++
++        int written = 0;
++        for (Square sq : e.pos.piecesBB())
++        {
++            const auto piece = e.pos.pieceAt(sq);
++            if (piece.type() == PieceType::King)
++                continue;
++            if (color == Color::Black)
++                sq = sq.flippedVertically();
++            const int plane = ordinal(piece.type()) + (piece.color() == color ? 0 : 5);
++            features[written++] = (ordinal(king_sq) * 10 + plane) * 64 + ordinal(sq);
++        }
++        return {written, INPUTS};
++    }
++};
+@@ -351,0 +382,2 @@ struct ComposedFeatureExtractor: IFeatureExtractor {
++    if (name == "LegacyHalfKP")
++        return std::make_unique<LegacyHalfKPExtractor>();

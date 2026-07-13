@@ -13,6 +13,10 @@ typedef struct UciOptions {
     ChessAiBackend backend;
     char book_file_path[512];
     char nn_model_path[512];
+    char nn_leaf_log_path[512];
+    char policy_root_hints[768];
+    int policy_root_bonus;
+    int nn_leaf_log_limit;
 } UciOptions;
 
 static void uci_search_info_callback(int depth,
@@ -74,6 +78,19 @@ static bool parse_int_token(const char *s, int *out) {
         return false;
     }
     *out = (int)v;
+    return true;
+}
+
+static bool set_nn_search_option_from_uci(const char *name, const char *value) {
+    int parsed = 0;
+    if (!parse_int_token(value, &parsed)) {
+        return false;
+    }
+    if (!chess_ai_set_nn_search_option(name, parsed)) {
+        return false;
+    }
+    printf("info string %s set to %d\n", name, parsed);
+    fflush(stdout);
     return true;
 }
 
@@ -212,7 +229,107 @@ static void parse_setoption(const char *line, UciOptions *opt) {
             }
             fflush(stdout);
         }
+        return;
     }
+
+    if (str_ieq(name_buf, "NNLeafLog")) {
+        if (chess_ai_set_nn_leaf_log_path(value_buf)) {
+            snprintf(opt->nn_leaf_log_path, sizeof(opt->nn_leaf_log_path), "%s", value_buf);
+            printf("info string nn leaf log set to %s\n", value_buf[0] ? value_buf : "off");
+        } else {
+            printf("info string failed to set nn leaf log: %s\n", value_buf);
+        }
+        fflush(stdout);
+        return;
+    }
+
+    if (str_ieq(name_buf, "NNLeafLogLimit")) {
+        int limit = 0;
+        if (parse_int_token(value_buf, &limit) && limit >= 0) {
+            opt->nn_leaf_log_limit = limit;
+            chess_ai_set_nn_leaf_log_limit(limit);
+            printf("info string nn leaf log limit set to %d\n", opt->nn_leaf_log_limit);
+            fflush(stdout);
+        }
+        return;
+    }
+
+    if (str_ieq(name_buf, "NNResetSearch")) {
+        chess_ai_reset_nn_search_options();
+        printf("info string nn search options reset\n");
+        fflush(stdout);
+        return;
+    }
+
+    if (str_ieq(name_buf, "NNEvalScale") ||
+        str_ieq(name_buf, "NNQDeltaMargin") ||
+        str_ieq(name_buf, "NNStaticPruneMargin") ||
+        str_ieq(name_buf, "NNNullMoveBaseReduction") ||
+        str_ieq(name_buf, "NNLmrBackendAdjust") ||
+        str_ieq(name_buf, "NNLmpMaxDepth") ||
+        str_ieq(name_buf, "NNLmpBaseMoves") ||
+        str_ieq(name_buf, "NNFutilityMaxDepth") ||
+        str_ieq(name_buf, "NNFutilityMargin") ||
+        str_ieq(name_buf, "NNSeePruneMaxDepth") ||
+        str_ieq(name_buf, "NNSeePruneMargin") ||
+        str_ieq(name_buf, "NNAspirationBase") ||
+        str_ieq(name_buf, "NNAspirationDepthScale") ||
+        str_ieq(name_buf, "NNTwofoldDraw")) {
+        if (!set_nn_search_option_from_uci(name_buf, value_buf)) {
+            printf("info string failed to set %s to %s\n", name_buf, value_buf);
+            fflush(stdout);
+        }
+        return;
+    }
+
+    if (str_ieq(name_buf, "PolicyRootHints")) {
+        snprintf(opt->policy_root_hints, sizeof(opt->policy_root_hints), "%s", value_buf);
+        printf("info string policy root hints set\n");
+        fflush(stdout);
+        return;
+    }
+
+    if (str_ieq(name_buf, "PolicyRootBonus")) {
+        int bonus = 0;
+        if (parse_int_token(value_buf, &bonus) && bonus >= 0) {
+            opt->policy_root_bonus = bonus;
+            printf("info string policy root bonus set to %d\n", opt->policy_root_bonus);
+            fflush(stdout);
+        }
+        return;
+    }
+}
+
+static int parse_policy_root_hints(const GameState *state, const char *hints, Move out[CHESS_MAX_MOVES]) {
+    if (state == NULL || hints == NULL || out == NULL || hints[0] == '\0') {
+        return 0;
+    }
+    char buf[768];
+    snprintf(buf, sizeof(buf), "%s", hints);
+    char *cursor = buf;
+    char *tok = NULL;
+    int count = 0;
+    while ((tok = next_token(&cursor)) != NULL && count < CHESS_MAX_MOVES) {
+        char *sep = strchr(tok, ':');
+        if (sep != NULL) {
+            *sep = '\0';
+        }
+        Move move = 0;
+        if (!chess_move_from_uci(state, tok, &move)) {
+            continue;
+        }
+        bool duplicate = false;
+        for (int i = 0; i < count; ++i) {
+            if (out[i] == move) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            out[count++] = move;
+        }
+    }
+    return count;
 }
 
 static void apply_moves_uci(GameState *state, char *moves) {
@@ -417,9 +534,12 @@ static void handle_go(GameState *state, const char *line, const UciOptions *opt)
         .think_time_ms = think_ms,
         .hard_time_ms = hard_ms,
         .max_depth = max_depth,
+        .policy_root_count = 0,
+        .policy_root_bonus = opt->policy_root_bonus,
         .info_callback = uci_search_info_callback,
         .info_user_data = NULL,
     };
+    cfg.policy_root_count = parse_policy_root_hints(state, opt->policy_root_hints, cfg.policy_root_moves);
     AiSearchResult res;
     if (!chess_ai_pick_move(state, &cfg, &res) || !res.found_move) {
         printf("bestmove 0000\n");
@@ -492,7 +612,40 @@ static void print_uci_intro(const UciOptions *opt) {
     printf("option name MoveTime type spin default %d min 1 max 10000\n", opt->think_time_ms);
     printf("option name MaxDepth type spin default %d min 1 max 32\n", opt->max_depth);
     printf("option name NNModel type string default auto\n");
+    printf("option name NNLeafLog type string default off\n");
+    printf("option name NNLeafLogLimit type spin default %d min 0 max 100000000\n", opt->nn_leaf_log_limit);
+    printf("option name NNResetSearch type button\n");
+    printf("option name NNEvalScale type spin default %d min 100 max 3000\n",
+           chess_ai_get_nn_search_option("NNEvalScale"));
+    printf("option name NNQDeltaMargin type spin default %d min 0 max 10000\n",
+           chess_ai_get_nn_search_option("NNQDeltaMargin"));
+    printf("option name NNStaticPruneMargin type spin default %d min 0 max 10000\n",
+           chess_ai_get_nn_search_option("NNStaticPruneMargin"));
+    printf("option name NNNullMoveBaseReduction type spin default %d min 0 max 10000\n",
+           chess_ai_get_nn_search_option("NNNullMoveBaseReduction"));
+    printf("option name NNLmrBackendAdjust type spin default %d min -4 max 4\n",
+           chess_ai_get_nn_search_option("NNLmrBackendAdjust"));
+    printf("option name NNLmpMaxDepth type spin default %d min 0 max 8\n",
+           chess_ai_get_nn_search_option("NNLmpMaxDepth"));
+    printf("option name NNLmpBaseMoves type spin default %d min 0 max 100\n",
+           chess_ai_get_nn_search_option("NNLmpBaseMoves"));
+    printf("option name NNFutilityMaxDepth type spin default %d min 0 max 8\n",
+           chess_ai_get_nn_search_option("NNFutilityMaxDepth"));
+    printf("option name NNFutilityMargin type spin default %d min 0 max 10000\n",
+           chess_ai_get_nn_search_option("NNFutilityMargin"));
+    printf("option name NNSeePruneMaxDepth type spin default %d min 0 max 8\n",
+           chess_ai_get_nn_search_option("NNSeePruneMaxDepth"));
+    printf("option name NNSeePruneMargin type spin default %d min 0 max 10000\n",
+           chess_ai_get_nn_search_option("NNSeePruneMargin"));
+    printf("option name NNAspirationBase type spin default %d min 0 max 10000\n",
+           chess_ai_get_nn_search_option("NNAspirationBase"));
+    printf("option name NNAspirationDepthScale type spin default %d min 0 max 10000\n",
+           chess_ai_get_nn_search_option("NNAspirationDepthScale"));
+    printf("option name NNTwofoldDraw type spin default %d min 0 max 1\n",
+           chess_ai_get_nn_search_option("NNTwofoldDraw"));
     printf("option name BookFile type string default auto\n");
+    printf("option name PolicyRootHints type string default \n");
+    printf("option name PolicyRootBonus type spin default %d min 0 max 1000000\n", opt->policy_root_bonus);
     printf("uciok\n");
     fflush(stdout);
 }
@@ -506,6 +659,10 @@ int main(void) {
     opt.backend = CHESS_AI_BACKEND_CLASSIC;
     opt.book_file_path[0] = '\0';
     opt.nn_model_path[0] = '\0';
+    opt.nn_leaf_log_path[0] = '\0';
+    opt.policy_root_hints[0] = '\0';
+    opt.policy_root_bonus = 30000;
+    opt.nn_leaf_log_limit = 0;
 
     reset_start_position(&state);
     chess_ai_warmup();

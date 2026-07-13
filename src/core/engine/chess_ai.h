@@ -27,6 +27,9 @@ typedef struct AiSearchConfig {
     // 0 means hard == soft (strict movetime behavior).
     int hard_time_ms;
     int max_depth;
+    Move policy_root_moves[CHESS_MAX_MOVES];
+    int policy_root_count;
+    int policy_root_bonus;
     AiSearchInfoCallback info_callback;
     void *info_user_data;
 } AiSearchConfig;
@@ -110,5 +113,13 @@ const char *chess_ai_backend_name(ChessAiBackend backend);
 bool chess_ai_set_nn_model_path(const char *path);
 bool chess_ai_nn_model_is_loaded(void);
 const char *chess_ai_nn_model_path(void);
+bool chess_ai_set_nn_leaf_log_path(const char *path);
+const char *chess_ai_nn_leaf_log_path(void);
+void chess_ai_set_nn_leaf_log_limit(int limit);
+int chess_ai_nn_leaf_log_limit(void);
+int chess_ai_nn_leaf_log_count(void);
+bool chess_ai_set_nn_search_option(const char *name, int value);
+int chess_ai_get_nn_search_option(const char *name);
+void chess_ai_reset_nn_search_options(void);
 
 #endif

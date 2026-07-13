@@ -60,7 +60,8 @@ TEST_OBJS := \
 	$(BUILD_DIR)/tests/test_ai.o \
 	$(BUILD_DIR)/tests/test_tactical_regressions.o \
 	$(BUILD_DIR)/tests/perft_main.o \
-	$(BUILD_DIR)/tests/bench_engine.o
+	$(BUILD_DIR)/tests/bench_engine.o \
+	$(BUILD_DIR)/tests/nn_eval_probe.o
 DEPS := $(CORE_OBJS:.o=.d) $(APP_OBJS:.o=.d) $(UCI_OBJ:.o=.d) $(TEST_OBJS:.o=.d)
 
 ICON_SRC := images/chess.png
@@ -70,7 +71,7 @@ CONTENTS_DIR := $(APP_DIR)/Contents
 MACOS_DIR := $(CONTENTS_DIR)/MacOS
 RES_DIR := $(CONTENTS_DIR)/Resources
 
-.PHONY: all run run-bin run-app test test_bot_time test_nn_v2 nn_v2_check_tools nn_v2_fetch_eval nn_v2_build_dataset nn_v2_precompute_features nn_v2_train nn_v2_pipeline arch perft bench uci ai_test_lab snapshot_engine fetch_positions build_testlab_positions opening_book hce_suite hce_testlab umbrel_bundle deploy_umbrel clean icns bundle
+.PHONY: all run run-bin run-app test test_bot_time test_nn_v2 test_nn_policy test_nn_policy_infer nn_policy_train nnue_train_bottleneck512 nnue_train_clipped256 nnue_train_screlu384 nnue_dataset_catalog nn_v2_check_tools nn_v2_fetch_eval nn_v2_build_dataset nn_v2_build_feature_dataset nn_v2_clean_hf_evals nn_v2_precompute_features nn_v2_train nn_v2_pipeline arch perft bench uci ai_test_lab snapshot_engine fetch_positions build_testlab_positions opening_book hce_suite hce_testlab umbrel_bundle deploy_umbrel clean icns bundle
 
 all: $(BIN_DIR)/chess
 
@@ -128,6 +129,9 @@ $(BIN_DIR)/perft: $(CORE_OBJS) $(BUILD_DIR)/tests/perft_main.o | $(BIN_DIR)
 $(BIN_DIR)/bench_engine: $(CORE_OBJS) $(BUILD_DIR)/tests/bench_engine.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(CORE_OBJS) $(BUILD_DIR)/tests/bench_engine.o -o $@ $(LDFLAGS) $(LDLIBS)
 
+$(BIN_DIR)/nn_eval_probe: $(CORE_OBJS) $(BUILD_DIR)/tests/nn_eval_probe.o | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(CORE_OBJS) $(BUILD_DIR)/tests/nn_eval_probe.o -o $@ $(LDFLAGS) $(LDLIBS)
+
 run:
 	$(MAKE) run-bin
 
@@ -142,7 +146,7 @@ else
 	$(MAKE) run-bin
 endif
 
-test: $(BIN_DIR)/test_rules $(BIN_DIR)/test_clock $(BIN_DIR)/test_perft_suite $(BIN_DIR)/test_ai $(BIN_DIR)/test_tactical_regressions test_bot_time test_nn_v2
+test: $(BIN_DIR)/test_rules $(BIN_DIR)/test_clock $(BIN_DIR)/test_perft_suite $(BIN_DIR)/test_ai $(BIN_DIR)/test_tactical_regressions test_bot_time test_nn_v2 test_nn_policy test_nn_policy_infer
 	./$(BIN_DIR)/test_rules
 	./$(BIN_DIR)/test_clock
 	./$(BIN_DIR)/test_perft_suite
@@ -153,9 +157,33 @@ test_bot_time:
 	python3 tests/test_bot_time_management.py
 
 test_nn_v2: $(BIN_DIR)/chess_uci
+	python3 tests/test_nn_features.py
 	python3 tests/test_nn_v2_data.py
 	python3 tests/test_nn_v2_build_dataset.py
+	python3 tests/test_nn_v2_build_feature_dataset.py
+	python3 tests/test_nn_v2_clean_hf_evals.py
 	python3 tests/test_nn_v2_train_smoke.py
+
+test_nn_policy:
+	python3 tests/test_nn_policy_train_smoke.py
+
+test_nn_policy_infer:
+	python3 -m pytest tests/test_nn_policy_infer.py
+
+nn_policy_train:
+	python3 $(SRC_BOT_DIR)/nn/train_policy.py $(ARGS)
+
+nnue_train_bottleneck512:
+	python3 $(SRC_BOT_DIR)/nn/v2/train_value.py --arch bottleneck-head --feature-dim 512 --bottleneck-dim 16 --hidden-dim 32 $(ARGS)
+
+nnue_train_clipped256:
+	python3 $(SRC_BOT_DIR)/nn/v2/train_value.py --arch bottleneck-head-crelu --feature-dim 256 --bottleneck-dim 32 --hidden-dim 32 --cp-scale 400 $(ARGS)
+
+nnue_train_screlu384:
+	python3 $(SRC_BOT_DIR)/nn/v2/train_value.py --arch bottleneck-head-screlu --feature-dim 384 --bottleneck-dim 48 --hidden-dim 32 --cp-scale 400 $(ARGS)
+
+nnue_dataset_catalog:
+	python3 $(SRC_BOT_DIR)/nn/v2/dataset_catalog.py $(ARGS)
 
 nn_v2_check_tools:
 	python3 $(SRC_BOT_DIR)/nn/v2/fetch_eval_data.py --check-tools
@@ -165,6 +193,12 @@ nn_v2_fetch_eval:
 
 nn_v2_build_dataset:
 	python3 $(SRC_BOT_DIR)/nn/v2/build_dataset.py $(ARGS)
+
+nn_v2_build_feature_dataset:
+	python3 $(SRC_BOT_DIR)/nn/v2/build_feature_dataset.py $(ARGS)
+
+nn_v2_clean_hf_evals:
+	python3 $(SRC_BOT_DIR)/nn/v2/clean_hf_evals.py $(ARGS)
 
 nn_v2_precompute_features:
 	python3 $(SRC_BOT_DIR)/nn/v2/precompute_features.py $(ARGS)
