@@ -121,6 +121,27 @@ make deploy_umbrel ARGS="user@host /target/path"
 The deployment helper also uploads `current/nn_eval.bin` when present, so the
 same packaged engine can run either backend through configuration.
 
+Umbrel keeps the Lichess token and machine-specific values in `chessbot.env`;
+application code always comes from a versioned local/Git release. Start from
+`src/core/bot/umbrel.env.example` and keep these shared-box defaults unless the
+hardware changes:
+
+```dotenv
+LICHESS_BOT_BACKEND=classic
+LICHESS_BOT_MAX_GAMES=3
+LICHESS_BOT_MAX_BOT_GAMES=2
+LICHESS_BOT_MAX_HUMAN_GAMES=1
+LICHESS_BOT_ENGINE_THREADS=auto
+LICHESS_BOT_PONDER=1
+```
+
+`auto` keeps steady-state search allocation within four threads: three for one
+game, two each for two games, and `2+1+1` for three. Pondering drops to one
+thread and only runs while a single game is active, leaving capacity for the
+rest of the Umbrel. On deployment, the managed systemd drop-in launches the
+current release without command-line policy overrides, so `chessbot.env`
+remains authoritative. The token stays only on Umbrel and is never packaged.
+
 ## Screenshots
 
 | | |

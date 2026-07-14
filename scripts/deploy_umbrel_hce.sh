@@ -113,6 +113,21 @@ if [[ -f "$ROOT/current/opening_book.txt" ]]; then
 fi
 
 if systemctl --user cat chessbot.service >/dev/null 2>&1; then
+  # Keep runtime policy in chessbot.env. Older installations carried game
+  # limits in an ad-hoc ExecStart override, which silently won over env values
+  # and made a clean release behave differently from its checked-in example.
+  if [[ -f "$ROOT/chessbot.env" ]]; then
+    DROPIN_DIR="$HOME/.config/systemd/user/chessbot.service.d"
+    mkdir -p "$DROPIN_DIR"
+    cat > "$DROPIN_DIR/zz-chessbot-managed.conf" <<DROPIN
+[Service]
+WorkingDirectory=$ROOT
+EnvironmentFile=$ROOT/chessbot.env
+ExecStart=
+ExecStart=/usr/bin/python3 $ROOT/current/run.py
+DROPIN
+    systemctl --user daemon-reload
+  fi
   systemctl --user restart chessbot.service
 fi
 

@@ -24,6 +24,8 @@ DEFAULT_LOG_MAX_BYTES = 20 * 1024 * 1024
 DEFAULT_LOG_KEEP_FILES = 5
 MOVE_POST_MAX_ATTEMPTS = 4
 LICHESS_STANDARD_SPEEDS = {"ultrabullet", "bullet", "blitz", "rapid", "classical"}
+AUTO_ENGINE_THREAD_BUDGET = 4
+AUTO_ENGINE_SOLO_THREADS = 3
 
 
 def rotate_log_file(path: Path, max_bytes: int, keep_files: int) -> None:
@@ -296,8 +298,17 @@ def load_build_info(here: Path) -> Dict[str, str]:
 class LichessApi:
     def __init__(self, token: str, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
-        self.session = requests.Session()
-        self.session.headers.update({"Authorization": f"Bearer {token}"})
+        self.token = token
+        self._sessions = threading.local()
+
+    @property
+    def session(self) -> requests.Session:
+        session = getattr(self._sessions, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update({"Authorization": f"Bearer {self.token}"})
+            self._sessions.session = session
+        return session
 
     def _url(self, path: str) -> str:
         if not path.startswith("/"):
@@ -446,6 +457,7 @@ class BotRunner:
                 f"think_time={cfg.think_time:.2f}s "
                 f"max_depth={cfg.max_depth if cfg.max_depth > 0 else 'engine-default'} "
                 f"max_games={cfg.max_games} bot_slots={cfg.max_bot_games} human_slots={cfg.max_human_games} "
+                f"engine_threads={cfg.engine_threads} ponder={cfg.ponder} "
                 f"accept_bots={cfg.accept_bots} accept_humans={cfg.accept_humans} "
                 f"accept_speeds={','.join(cfg.accept_speeds) if cfg.accept_speeds else 'all'}"
             ),
@@ -758,26 +770,36 @@ class BotRunner:
             threading.Thread(target=self._maintain_bot_pairings, daemon=True).start()
         log_event("main", "listening for Lichess events")
         for event in self.api.stream_events("/api/stream/event", reconnect=True):
-            etype = event.get("type")
-            if etype == "challenge":
-                self._handle_challenge(event.get("challenge", {}))
-            elif etype == "gameStart":
-                game_id = event.get("game", {}).get("id")
-                if game_id:
-                    self._start_game_thread(game_id)
-            elif etype == "gameFinish":
-                game_id = event.get("game", {}).get("id")
-                if game_id:
-                    self._mark_game_done(game_id, source="event")
-            elif etype in {"challengeCanceled", "challengeDeclined"}:
-                challenge = event.get("challenge", {}) or event
-                challenge_id = challenge.get("id")
-                if challenge_id:
-                    cooldown_s = 900.0 if etype == "challengeDeclined" else 300.0
-                    self._release_pending_slot(challenge_id, cooldown_s)
-                log_event("event", f"received {etype}{' id=' + challenge_id if challenge_id else ''}")
-            elif etype is not None:
-                log_event("event", f"received {etype}")
+            try:
+                self._dispatch_event(event)
+            except Exception as exc:
+                etype = event.get("type") if isinstance(event, dict) else type(event).__name__
+                log_event("event", f"handler failed type={etype or 'unknown'}: {exc}")
+
+    def _dispatch_event(self, event: dict) -> None:
+        if not isinstance(event, dict):
+            raise TypeError(f"expected event object, got {type(event).__name__}")
+
+        etype = event.get("type")
+        if etype == "challenge":
+            self._handle_challenge(event.get("challenge", {}))
+        elif etype == "gameStart":
+            game_id = event.get("game", {}).get("id")
+            if game_id:
+                self._start_game_thread(game_id)
+        elif etype == "gameFinish":
+            game_id = event.get("game", {}).get("id")
+            if game_id:
+                self._mark_game_done(game_id, source="event")
+        elif etype in {"challengeCanceled", "challengeDeclined"}:
+            challenge = event.get("challenge", {}) or event
+            challenge_id = challenge.get("id")
+            if challenge_id:
+                cooldown_s = 900.0 if etype == "challengeDeclined" else 300.0
+                self._release_pending_slot(challenge_id, cooldown_s)
+            log_event("event", f"received {etype}{' id=' + challenge_id if challenge_id else ''}")
+        elif etype is not None:
+            log_event("event", f"received {etype}")
 
     def _handle_challenge(self, challenge: dict) -> None:
         cid = challenge.get("id")
@@ -1026,6 +1048,10 @@ class BotRunner:
         with self.lock:
             return sum(1 for game in self.active_games.values() if game.slot_kind == "bot")
 
+    def _active_game_count(self) -> int:
+        with self.lock:
+            return len(self.active_games)
+
     def _compute_move_budget(self,
                              board: chess.Board,
                              state: dict,
@@ -1089,29 +1115,46 @@ class BotRunner:
             budget = 0.01
         return budget, remaining, increment
 
-    def _engine_threads_for_new_game(self) -> int:
+    @staticmethod
+    def _auto_thread_allocations(game_ids: List[str]) -> Dict[str, int]:
+        ordered_ids = list(game_ids)
+        if not ordered_ids:
+            return {}
+
+        allocations = {game_id: 1 for game_id in ordered_ids}
+        remaining = max(0, AUTO_ENGINE_THREAD_BUDGET - len(ordered_ids))
+        while remaining > 0:
+            changed = False
+            for game_id in ordered_ids:
+                if allocations[game_id] >= AUTO_ENGINE_SOLO_THREADS:
+                    continue
+                allocations[game_id] += 1
+                remaining -= 1
+                changed = True
+                if remaining == 0:
+                    break
+            if not changed:
+                break
+        return allocations
+
+    def _engine_threads_for_game(self, game_id: str) -> int:
         raw = (self.cfg.engine_threads or "1").strip().lower()
         if raw != "auto":
             try:
                 return max(1, min(8, int(raw)))
             except ValueError:
                 return 1
-        # Auto policy for a SHARED 4-core/8-thread box: the bot never takes
-        # more than half the hardware (4 threads total across all games), so
-        # the other services on the machine always keep the rest.
-        #   1 game -> 3 threads, 2 games -> 2 each, 3+ games -> 1 each.
-        with self.lock:
-            active = len(self.active_games)
-        if active <= 1:
-            return 3
-        if active == 2:
-            return 2
-        return 1
 
-    def _configure_engine(self, engine: chess.engine.SimpleEngine) -> None:
+        with self.lock:
+            allocations = self._auto_thread_allocations(list(self.active_games))
+        return allocations.get(game_id, 1)
+
+    def _configure_engine(self, engine: chess.engine.SimpleEngine, game_id: str) -> Optional[int]:
         options: dict = {}
+        configured_threads: Optional[int] = None
         if "Threads" in engine.options:
-            options["Threads"] = self._engine_threads_for_new_game()
+            configured_threads = self._engine_threads_for_game(game_id)
+            options["Threads"] = configured_threads
         if self.cfg.backend == "nn" and "NNModel" in engine.options and self.cfg.nn_model_path:
             options["NNModel"] = self.cfg.nn_model_path
         if "Backend" in engine.options:
@@ -1125,6 +1168,22 @@ class BotRunner:
         if options:
             engine.configure(options)
         log_event("engine", f"configured options: {options if options else '(none)'}")
+        return configured_threads
+
+    def _refresh_engine_threads(
+        self,
+        engine: chess.engine.SimpleEngine,
+        game_id: str,
+        configured_threads: Optional[int],
+        pondering: bool = False,
+    ) -> Optional[int]:
+        if "Threads" not in engine.options:
+            return configured_threads
+        desired = 1 if pondering else self._engine_threads_for_game(game_id)
+        if desired != configured_threads:
+            engine.configure({"Threads": desired})
+            log_event("engine", f"threads {configured_threads or '?'} -> {desired}", game_id)
+        return desired
 
     @staticmethod
     def _request_status_code(exc: requests.RequestException) -> Optional[int]:
@@ -1436,9 +1495,10 @@ class BotRunner:
             return
 
         try:
-            self._configure_engine(engine)
+            configured_threads = self._configure_engine(engine, game_id)
         except Exception as exc:
             log_event("engine", f"option setup failed: {exc}", game_id)
+            configured_threads = None
 
         initial_fen = "startpos"
         my_color: Optional[bool] = None
@@ -1467,15 +1527,16 @@ class BotRunner:
             ponder_handle = None
 
         def ponder_start(pos: chess.Board):
-            nonlocal ponder_handle
+            nonlocal ponder_handle, configured_threads
             ponder_stop()
             if not self.cfg.ponder or pos.is_game_over():
                 return
-            # Pondering keeps a core busy on opponent time; on a shared box
-            # only do it when this is the lone active game.
-            if self._active_bot_games() > 1:
+            if self._active_game_count() != 1:
                 return
             try:
+                configured_threads = self._refresh_engine_threads(
+                    engine, game_id, configured_threads, pondering=True
+                )
                 ponder_handle = engine.analysis(pos, chess.engine.Limit(time=300.0))
             except Exception as exc:
                 log_event("ponder", f"start failed: {exc}", game_id)
@@ -1598,6 +1659,9 @@ class BotRunner:
 
                 ponder_stop()
                 try:
+                    configured_threads = self._refresh_engine_threads(
+                        engine, game_id, configured_threads
+                    )
                     result_move, result_info = self._analyse_move(
                         engine,
                         board,
@@ -1742,8 +1806,8 @@ def parse_args() -> BotConfig:
     parser.add_argument("--think-time", type=float, default=0.35, help="Think time per move in seconds")
     parser.add_argument("--max-depth", type=int, default=0, help="Optional depth cap (0 = engine default)")
     parser.add_argument("--engine-threads", default=os.environ.get("LICHESS_BOT_ENGINE_THREADS", "1"),
-                        help="Engine search threads per game: a number, or 'auto' to give a lone "
-                             "game 4 threads and 2 when other games are active (box has 8 hw threads)")
+                        help="Engine search threads per game: a number, or 'auto' to share a "
+                             "four-thread budget as 3, 2+2, or 2+1+1")
     parser.add_argument("--ponder", action="store_true", default=ponder_default,
                         help="Search the position on the opponent's time to warm the engine's "
                              "transposition table (needs an engine with working UCI stop)")

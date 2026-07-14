@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import threading
 
 import chess
 
@@ -258,6 +259,61 @@ def test_dead_game_stream_errors_do_not_retry_forever() -> None:
     assert not LichessApi._should_stop_stream_retry("/api/stream/event", 404)
 
 
+def test_lichess_api_sessions_are_thread_local() -> None:
+    api = LichessApi("test-token", "https://example.invalid")
+    main_session = api.session
+    worker_sessions = []
+
+    worker = threading.Thread(target=lambda: worker_sessions.append(api.session))
+    worker.start()
+    worker.join()
+
+    assert api.session is main_session
+    assert len(worker_sessions) == 1
+    assert worker_sessions[0] is not main_session
+    assert worker_sessions[0].headers["Authorization"] == "Bearer test-token"
+
+
+def test_auto_threads_share_four_thread_budget() -> None:
+    assert BotRunner._auto_thread_allocations(["a"]) == {"a": 3}
+    assert BotRunner._auto_thread_allocations(["a", "b"]) == {"a": 2, "b": 2}
+    assert BotRunner._auto_thread_allocations(["a", "b", "c"]) == {
+        "a": 2,
+        "b": 1,
+        "c": 1,
+    }
+    four_games = BotRunner._auto_thread_allocations(["a", "b", "c", "d"])
+    assert four_games == {"a": 1, "b": 1, "c": 1, "d": 1}
+    assert sum(four_games.values()) == 4
+
+
+def test_event_handler_failure_does_not_stop_main_stream() -> None:
+    class FakeApi:
+        @staticmethod
+        def stream_events(path: str, reconnect: bool = True):
+            assert path == "/api/stream/event"
+            assert reconnect
+            yield {"type": "broken"}
+            yield {"type": "healthy"}
+
+    class FakeConfig:
+        seek_specs = []
+
+    runner = object.__new__(BotRunner)
+    runner.api = FakeApi()
+    runner.cfg = FakeConfig()
+    handled = []
+
+    def dispatch(event: dict) -> None:
+        if event["type"] == "broken":
+            raise RuntimeError("synthetic handler failure")
+        handled.append(event["type"])
+
+    runner._dispatch_event = dispatch
+    runner.run()
+    assert handled == ["healthy"]
+
+
 def test_incoming_speed_filter_defaults_to_all_speeds() -> None:
     assert BotRunner._incoming_speed_allowed("bullet", [])
     assert BotRunner._incoming_speed_allowed("ultraBullet", [])
@@ -289,6 +345,9 @@ def main() -> None:
     test_increment_rapid_does_not_burn_base_clock()
     test_low_clock_panic_budget_stays_small()
     test_dead_game_stream_errors_do_not_retry_forever()
+    test_lichess_api_sessions_are_thread_local()
+    test_auto_threads_share_four_thread_budget()
+    test_event_handler_failure_does_not_stop_main_stream()
     test_incoming_speed_filter_defaults_to_all_speeds()
     test_incoming_speed_filter_limits_fast_challenges()
     print("test_bot_time_management: OK")
