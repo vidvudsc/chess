@@ -43,6 +43,12 @@ Only changes developed after that commit count toward the campaign target.
   62.0/120, +11.6 Elo, paired P=70.6%; reverted.
 - Use Threads=4 instead of Threads=3 for a solo game: 29.5/60, -5.8 Elo,
   paired P=42.8%; the deployed 3/2/1 allocation remains unchanged.
+- Conservative losing-capture SEE pruning: 27.5/60, -29.0 Elo, paired
+  P=15.9%; reverted.
+- PV-only internal iterative deepening: 28.5/60, -17.4 Elo, paired P=29.7%;
+  reverted.
+- Game-outcome-fitted endgame bishop pair (`0/+48`): 29.0/60, -11.6 Elo,
+  paired P=35.5%; reverted.
 
 All playing-code candidates above were reverted. The repeated 60-to-120
 collapses reinforce the requirement for 240-game confirmation before any Elo

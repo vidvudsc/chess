@@ -1,7 +1,30 @@
 # HCE Experiments
 
+## 2026-07-16: Post-clock Elo follow-up
+Status: all candidates rejected; engine restored exactly.
+
+Three isolated candidates were tested against `6427d05` at fixed 120ms with
+paired colors and fresh seeds. Each passed the full regression suite and HCE
+position suite before match play:
+
+- Conservative shallow SEE pruning of clearly losing captures reduced
+  depth-10 nodes by 9.4%, but scored 27.5/60 (`-29.0` Elo), paired
+  P(better)=15.9% (`current/see_capture_prune_60g.json`).
+- PV-only internal iterative deepening preserved 29/30 depth-10 best moves and
+  reduced nodes by 0.7%, but scored 28.5/60 (`-17.4` Elo), paired
+  P(better)=29.7% (`current/iid_pv_60g.json`).
+- A game-outcome fit consistently preferred an endgame-only bishop-pair bonus
+  near `0/+48` over the previously rejected `+24/+28` shape. It still scored
+  29.0/60 (`-11.6` Elo), paired P(better)=35.5%
+  (`current/eg_bishop_pair_60g.json`).
+
+Conclusion: node reduction and held-out Texel loss remain unreliable promotion
+signals. All playing code was reverted; the next evaluation campaign needs a
+larger, game-grouped dataset rather than another scalar term selected from the
+same 27,156 positions.
+
 ## 2026-07-16: Spend live clock surplus
-Status: kept locally; not yet deployed.
+Status: committed and pushed; not yet deployed.
 
 The first 120 VidBot games after the managed Umbrel deployment showed that
 losses ended with a median 73 seconds in bullet, 158 seconds in blitz, and 465
