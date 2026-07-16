@@ -26,6 +26,7 @@ MOVE_POST_MAX_ATTEMPTS = 4
 LICHESS_STANDARD_SPEEDS = {"ultrabullet", "bullet", "blitz", "rapid", "classical"}
 AUTO_ENGINE_THREAD_BUDGET = 4
 AUTO_ENGINE_SOLO_THREADS = 3
+MOVE_BUDGET_INCREMENT_SHARE = 0.80
 
 
 def rotate_log_file(path: Path, max_bytes: int, keep_files: int) -> None:
@@ -144,6 +145,24 @@ class SeekSpec:
             "variant": self.variant,
             "color": self.color,
         }
+
+
+@dataclass(frozen=True)
+class TimeBudgetBand:
+    max_initial_seconds: float
+    no_increment_cap: float
+    increment_base: float
+    increment_scale: float
+    increment_cap: float
+
+
+TIME_BUDGET_BANDS = (
+    TimeBudgetBand(60.0, 0.60, 1.0, 1.00, 4.0),
+    TimeBudgetBand(120.0, 1.10, 1.0, 1.00, 4.0),
+    TimeBudgetBand(300.0, 4.50, 2.0, 1.25, 8.0),
+    TimeBudgetBand(600.0, 8.00, 5.0, 0.90, 14.0),
+    TimeBudgetBand(float("inf"), 10.00, 7.0, 1.00, 18.0),
+)
 
 
 @dataclass
@@ -1007,32 +1026,27 @@ class BotRunner:
             return 0.90
         return 1.0
 
+    @staticmethod
+    def _time_budget_band(initial_s: float) -> TimeBudgetBand:
+        for band in TIME_BUDGET_BANDS:
+            if initial_s <= band.max_initial_seconds:
+                return band
+        return TIME_BUDGET_BANDS[-1]
+
     @classmethod
     def _hard_cap_seconds(cls,
                           initial_s: float,
                           increment_s: float,
                           remaining_s: float,
                           active_bot_games: int) -> float:
-        if initial_s <= 120.0:
-            if increment_s > 0.0:
-                hard_cap = min(4.0, 1.0 + increment_s)
-            else:
-                hard_cap = 0.60 if initial_s <= 60.0 else 1.10
-        elif initial_s <= 300.0:
-            if increment_s > 0.0:
-                hard_cap = min(8.0, 2.0 + increment_s * 1.25)
-            else:
-                hard_cap = 4.50
-        elif initial_s <= 600.0:
-            if increment_s > 0.0:
-                hard_cap = min(14.0, 5.0 + increment_s * 0.90)
-            else:
-                hard_cap = 8.0
+        band = cls._time_budget_band(initial_s)
+        if increment_s > 0.0:
+            hard_cap = min(
+                band.increment_cap,
+                band.increment_base + increment_s * band.increment_scale,
+            )
         else:
-            if increment_s > 0.0:
-                hard_cap = min(18.0, 7.0 + increment_s)
-            else:
-                hard_cap = 10.0
+            hard_cap = band.no_increment_cap
 
         hard_cap *= cls._concurrency_scale(active_bot_games)
 
@@ -1080,7 +1094,7 @@ class BotRunner:
         else:
             horizon_scale = 1.80
         horizon = max(20.0, float(moves_to_go) * horizon_scale)
-        budget = usable / horizon + increment * 0.80
+        budget = usable / horizon + increment * MOVE_BUDGET_INCREMENT_SHARE
 
         legal_count = board.legal_moves.count()
         queens = len(board.pieces(chess.QUEEN, chess.WHITE)) + len(board.pieces(chess.QUEEN, chess.BLACK))

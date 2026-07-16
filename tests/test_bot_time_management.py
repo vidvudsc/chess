@@ -102,6 +102,31 @@ def test_bullet_no_increment_budget_is_capped() -> None:
     assert_close(budget, 0.60)
 
 
+def test_hard_caps_cover_time_control_boundaries() -> None:
+    cases = (
+        (60.0, 0.0, 0.60),
+        (60.0, 1.0, 2.00),
+        (61.0, 0.0, 1.10),
+        (120.0, 2.0, 3.00),
+        (121.0, 0.0, 4.50),
+        (300.0, 3.0, 5.75),
+        (301.0, 0.0, 8.00),
+        (600.0, 10.0, 14.00),
+        (601.0, 0.0, 10.00),
+        (900.0, 10.0, 17.00),
+        (900.0, 20.0, 18.00),
+    )
+
+    for initial_s, increment_s, expected in cases:
+        actual = BotRunner._hard_cap_seconds(
+            initial_s,
+            increment_s,
+            remaining_s=initial_s,
+            active_bot_games=1,
+        )
+        assert_close(actual, expected)
+
+
 def test_blitz_increment_budget_respects_hard_cap() -> None:
     runner = object.__new__(BotRunner)
     board = chess.Board()
@@ -336,6 +361,7 @@ def main() -> None:
     test_game_state_uses_fallback_only_for_missing_values()
     test_missing_env_opening_book_falls_back_to_packaged_book()
     test_bullet_no_increment_budget_is_capped()
+    test_hard_caps_cover_time_control_boundaries()
     test_blitz_increment_budget_respects_hard_cap()
     test_concurrency_scales_time_budget()
     test_rapid_no_increment_uses_available_clock()
