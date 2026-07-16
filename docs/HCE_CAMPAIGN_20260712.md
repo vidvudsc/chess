@@ -37,6 +37,12 @@ Only changes developed after that commit count toward the campaign target.
 - Strongly regularized Stockfish-distilled king PST: +52.5 Elo at the
   deterministic Threads=1 60g screen, then 58.5/120, -8.7 Elo, paired
   P=35.8%; reverted.
+- Extend passed-pawn moves to the sixth or seventh rank: 32.0/60, +23.2 Elo,
+  paired P=78.2%; below gate and reverted.
+- Restrict that extension to seventh-rank passers: +34.9 Elo at 60g, then
+  62.0/120, +11.6 Elo, paired P=70.6%; reverted.
+- Use Threads=4 instead of Threads=3 for a solo game: 29.5/60, -5.8 Elo,
+  paired P=42.8%; the deployed 3/2/1 allocation remains unchanged.
 
 All playing-code candidates above were reverted. The repeated 60-to-120
 collapses reinforce the requirement for 240-game confirmation before any Elo

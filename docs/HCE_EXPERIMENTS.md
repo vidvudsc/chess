@@ -1,5 +1,24 @@
 # HCE Experiments
 
+## 2026-07-16: Spend live clock surplus
+Status: kept locally; not yet deployed.
+
+The first 120 VidBot games after the managed Umbrel deployment showed that
+losses ended with a median 73 seconds in bullet, 158 seconds in blitz, and 465
+seconds in rapid. Every game ended normally rather than on time, so the bot was
+preserving clock that could no longer improve the result.
+
+Raised increment usage from 65% to 80% and increased the time-control hard
+caps by roughly 25-33%. The reserve calculation, low-clock panic caps,
+concurrency scaling, three-thread solo limit, and four-thread total budget are
+unchanged. Full-budget simulations retain 146 seconds after an 80-move 10+0
+game and 252 seconds after a 90-move 10+10 game.
+
+On the same middlegame position with Threads=3, the new 1+1 allowance completed
+depth 17 instead of 16, the 3+2 allowance completed depth 18 instead of 17,
+and the 10+0 allowance searched 13.8M nodes instead of 10.0M. `make test` and
+the HCE position suite pass completely.
+
 ## 2026-07-12: Lazy SMP + opponent-time pondering
 Status: SMP confirmed and committed; pondering confirmed at 60g, 120g running.
 

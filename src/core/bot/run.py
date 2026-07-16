@@ -1015,24 +1015,24 @@ class BotRunner:
                           active_bot_games: int) -> float:
         if initial_s <= 120.0:
             if increment_s > 0.0:
-                hard_cap = min(3.0, 0.75 + increment_s * 0.85)
+                hard_cap = min(4.0, 1.0 + increment_s)
             else:
-                hard_cap = 0.50 if initial_s <= 60.0 else 0.90
+                hard_cap = 0.60 if initial_s <= 60.0 else 1.10
         elif initial_s <= 300.0:
             if increment_s > 0.0:
-                hard_cap = min(6.0, 1.50 + increment_s)
+                hard_cap = min(8.0, 2.0 + increment_s * 1.25)
             else:
-                hard_cap = 3.50
+                hard_cap = 4.50
         elif initial_s <= 600.0:
             if increment_s > 0.0:
-                hard_cap = min(10.0, 4.0 + increment_s * 0.60)
-            else:
-                hard_cap = 6.0
-        else:
-            if increment_s > 0.0:
-                hard_cap = min(12.0, 5.0 + increment_s * 0.70)
+                hard_cap = min(14.0, 5.0 + increment_s * 0.90)
             else:
                 hard_cap = 8.0
+        else:
+            if increment_s > 0.0:
+                hard_cap = min(18.0, 7.0 + increment_s)
+            else:
+                hard_cap = 10.0
 
         hard_cap *= cls._concurrency_scale(active_bot_games)
 
@@ -1080,7 +1080,7 @@ class BotRunner:
         else:
             horizon_scale = 1.80
         horizon = max(20.0, float(moves_to_go) * horizon_scale)
-        budget = usable / horizon + increment * 0.65
+        budget = usable / horizon + increment * 0.80
 
         legal_count = board.legal_moves.count()
         queens = len(board.pieces(chess.QUEEN, chess.WHITE)) + len(board.pieces(chess.QUEEN, chess.BLACK))

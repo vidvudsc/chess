@@ -99,7 +99,7 @@ def test_bullet_no_increment_budget_is_capped() -> None:
 
     assert_close(remaining, 60.0)
     assert_close(increment, 0.0)
-    assert_close(budget, 0.50)
+    assert_close(budget, 0.60)
 
 
 def test_blitz_increment_budget_respects_hard_cap() -> None:
@@ -118,7 +118,7 @@ def test_blitz_increment_budget_respects_hard_cap() -> None:
 
     assert_close(remaining, 180.0)
     assert_close(increment, 2.0)
-    assert_close(budget, 3.5)
+    assert_close(budget, 4.5)
 
 
 def test_concurrency_scales_time_budget() -> None:
@@ -147,7 +147,7 @@ def test_concurrency_scales_time_budget() -> None:
 
     if not busy_budget < solo_budget:
         raise AssertionError(f"expected concurrency to lower budget, got solo={solo_budget} busy={busy_budget}")
-    assert_close(busy_budget, 2.8)
+    assert_close(busy_budget, 3.6)
 
 
 def test_rapid_no_increment_uses_available_clock() -> None:
@@ -159,7 +159,7 @@ def test_rapid_no_increment_uses_available_clock() -> None:
         board, state, chess.WHITE, 600.0, 0.0, 2.5, 1
     )
 
-    assert_close(budget, 6.0)
+    assert_close(budget, 8.0)
 
 
 def test_rapid_increment_can_spend_up_to_increment() -> None:
@@ -174,8 +174,8 @@ def test_rapid_increment_can_spend_up_to_increment() -> None:
         board, state, chess.WHITE, 600.0, 10.0, 5.0, 3
     )
 
-    assert_close(solo_budget, 10.0)
-    assert_close(busy_budget, 8.0)
+    assert_close(solo_budget, 14.0)
+    assert_close(busy_budget, 11.2)
 
 
 def test_long_rapid_has_larger_but_bounded_budget() -> None:
@@ -187,7 +187,7 @@ def test_long_rapid_has_larger_but_bounded_budget() -> None:
         board, state, chess.WHITE, 900.0, 10.0, 5.0, 1
     )
 
-    assert_close(budget, 12.0)
+    assert_close(budget, 17.0)
 
 
 def test_rapid_budget_preserves_clock_over_long_game() -> None:
@@ -207,11 +207,11 @@ def test_rapid_budget_preserves_clock_over_long_game() -> None:
         )
         remaining -= budget
 
-    if remaining < 150.0:
+    if remaining < 140.0:
         raise AssertionError(f"10+0 policy exhausted its long-game reserve: {remaining}")
 
 
-def test_increment_rapid_does_not_burn_base_clock() -> None:
+def test_increment_rapid_spends_surplus_without_exhausting_base() -> None:
     runner = object.__new__(BotRunner)
     board = chess.Board()
     remaining = 600.0
@@ -228,8 +228,8 @@ def test_increment_rapid_does_not_burn_base_clock() -> None:
         )
         remaining = remaining - budget + 10.0
 
-    if remaining < 590.0:
-        raise AssertionError(f"10+10 policy burned its base clock: {remaining}")
+    if not 180.0 <= remaining < 590.0:
+        raise AssertionError(f"10+10 policy did not use its base clock safely: {remaining}")
 
 
 def test_low_clock_panic_budget_stays_small() -> None:
@@ -342,7 +342,7 @@ def main() -> None:
     test_rapid_increment_can_spend_up_to_increment()
     test_long_rapid_has_larger_but_bounded_budget()
     test_rapid_budget_preserves_clock_over_long_game()
-    test_increment_rapid_does_not_burn_base_clock()
+    test_increment_rapid_spends_surplus_without_exhausting_base()
     test_low_clock_panic_budget_stays_small()
     test_dead_game_stream_errors_do_not_retry_forever()
     test_lichess_api_sessions_are_thread_local()
