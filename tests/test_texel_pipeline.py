@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = ROOT / "scripts" / "texel_build_dataset.py"
 TUNE_SCRIPT = ROOT / "scripts" / "texel_tune.py"
 APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_tune.py"
+REMOTE_PIPELINE_SCRIPT = ROOT / "scripts" / "run_hce_v2_remote_pipeline.py"
 
 
 def load_module(path: Path, name: str):
@@ -151,10 +152,54 @@ def test_tunedump_rejects_misaligned_groups() -> None:
         assert not groups_out_path.exists()
 
 
+def test_remote_pipeline_uses_coordinate_median() -> None:
+    pipeline = load_module(REMOTE_PIPELINE_SCRIPT, "hce_v2_remote_pipeline_test")
+    first = [0] * pipeline.N_TUNED
+    second = [0] * pipeline.N_TUNED
+    third = [0] * pipeline.N_TUNED
+    first[pipeline.V2_START] = 19
+    second[pipeline.V2_START] = 11
+    third[pipeline.V2_START] = 13
+    median = pipeline.median_vector([first, second, third])
+    assert median[pipeline.V2_START] == 13
+
+
+def test_remote_pipeline_summarizes_paired_match() -> None:
+    pipeline = load_module(REMOTE_PIPELINE_SCRIPT, "hce_v2_match_summary_test")
+    report = {
+        "head_to_head": [{
+            "candidate": "cand",
+            "games": 120,
+            "points": 64.0,
+            "elo_diff": 23.2,
+            "elo_ci_low": -20.0,
+            "elo_ci_high": 66.0,
+            "probability_better": 0.85,
+            "paired_positions": 60,
+            "paired": {
+                "elo_diff": 29.0,
+                "elo_ci_low": -12.0,
+                "elo_ci_high": 70.0,
+                "probability_better": 0.91,
+            },
+        }],
+        "standings": [
+            {"name": "cand", "engine_failures": 0},
+            {"name": "base", "engine_failures": 0},
+        ],
+    }
+    summary = pipeline.summarize_match(report, expected_games=120)
+    assert summary["elo_diff"] == 23.2
+    assert summary["paired_probability_better"] == 0.91
+    assert summary["engine_failures"] == 0
+
+
 if __name__ == "__main__":
     test_grouped_split_has_no_game_leakage()
     test_dataset_group_sidecar_stays_aligned()
     test_apply_tune_accepts_previous_vector_shapes()
     test_hce_v2_feature_detectors()
     test_tunedump_rejects_misaligned_groups()
+    test_remote_pipeline_uses_coordinate_median()
+    test_remote_pipeline_summarizes_paired_match()
     print("test_texel_pipeline: OK")
