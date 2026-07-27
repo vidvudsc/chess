@@ -475,13 +475,24 @@ def main() -> int:
         default=12.0,
         help="How long to wait for the independently scheduled self-play task.",
     )
+    parser.add_argument(
+        "--resume-from-median",
+        action="store_true",
+        help="Use the saved median tune and run only candidate tests and Elo gates.",
+    )
     args = parser.parse_args()
     pipeline = Pipeline(args.selfplay_timeout_hours)
     try:
-        pipeline.wait_for_selfplay()
-        pipeline.build_grouped_corpus()
-        pipeline.dump_quiet_features()
-        pipeline.tune_median_candidate()
+        if args.resume_from_median:
+            median_path = LAB / "v2_median_tuned.txt"
+            if not median_path.exists():
+                raise RuntimeError(f"missing saved median tune: {median_path}")
+            pipeline.mark("resumed_from_median", tuned_file=str(median_path))
+        else:
+            pipeline.wait_for_selfplay()
+            pipeline.build_grouped_corpus()
+            pipeline.dump_quiet_features()
+            pipeline.tune_median_candidate()
         pipeline.build_and_test_candidate()
         pipeline.run_elo_gates()
     except BaseException as exc:
