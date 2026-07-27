@@ -172,7 +172,11 @@ class Pipeline:
         )
 
     def dump_quiet_features(self) -> None:
-        self.run(["make", "bin/chess_uci", "-j6"], "build_feature_engine")
+        # A prior candidate run may leave a tuned hce_eval.o newer than the
+        # restored zero-weight source. Force compilation so feature labels and
+        # baseline_tune.log always describe the same engine.
+        self.run(["make", "-B", "bin/chess_uci", "-j6"],
+                 "build_feature_engine")
         feature_engine = LAB / executable_name("feature_engine")
         shutil.copy2(ROOT / "bin" / executable_name("chess_uci"), feature_engine)
         command = (
@@ -248,15 +252,18 @@ class Pipeline:
                 ],
                 "apply_v2_median",
             )
-            self.run(["make", "bin/chess_uci", "-j6"], "build_candidate")
+            self.run(["make", "-B", "bin/chess_uci", "-j6"],
+                     "build_candidate")
             candidate = LAB / executable_name("candidate_v2")
             shutil.copy2(ROOT / "bin" / executable_name("chess_uci"), candidate)
             self.verify_candidate(candidate)
             self.run(["make", "test"], "candidate_make_test")
             self.run(["make", "hce_suite"], "candidate_hce_suite")
         finally:
-            shutil.copy2(source_backup, eval_source)
-        self.run(["make", "bin/chess_uci", "-j6"], "restore_zero_weight_build")
+            shutil.copyfile(source_backup, eval_source)
+            os.utime(eval_source, None)
+            self.run(["make", "-B", "bin/chess_uci", "-j6"],
+                     "restore_zero_weight_build")
         self.mark(
             "candidate_tests",
             exact_reconstruction=True,
