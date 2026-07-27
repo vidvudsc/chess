@@ -272,7 +272,9 @@ class Pipeline:
             limit=5000,
         )
         features = LAB / "candidate_verify_features.txt"
-        command = f"tunedumpall {sample_positions} {features}\nquit\n"
+        # The tuner consumes the exact 833-column feature contract. tunedumpall
+        # appends a diagnostic qsearch-delta column, so use the quiet dump here.
+        command = f"tunedump {sample_positions} {features}\nquit\n"
         self.run([str(candidate)], "candidate_verify_tunedump", input_text=command)
         self.run(
             [
