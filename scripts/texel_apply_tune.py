@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Apply a TUNED weight line from texel_tune.py to hce_eval.c.
 
-Reads the machine-readable `TUNED ...` line (803 integers):
-    35 scalars (established terms, residual scales, and pawn activity)
+Reads the machine-readable `TUNED ...` line (815 integers):
+    47 scalars (established terms, pawn activity, and HCE-v2 structure)
     384 mg PST values (K, Q, B, N, R, P each 64 squares)
     384 eg PST values
 
@@ -16,7 +16,8 @@ import re
 import sys
 from pathlib import Path
 
-N_SCALAR = 35
+N_CURRENT_SCALAR = 35
+N_SCALAR = 47
 N_PST = 6 * 64
 PST_PIECES = 6
 
@@ -27,13 +28,16 @@ def parse_tuned_line(line):
         parts = parts[1:]
     vals = [int(x) for x in parts]
     expected = N_SCALAR + 2 * N_PST
+    current_expected = N_CURRENT_SCALAR + 2 * N_PST
     legacy_expected = 21 + 2 * N_PST
     if len(vals) == legacy_expected:
         extra_defaults = [
             100, 100, -100, -100, -100, -100, -100, -100,
             0, 0, 0, 0, 0, 0,
         ]
-        vals = vals[:21] + extra_defaults + vals[21:]
+        vals = vals[:21] + extra_defaults + [0] * 12 + vals[21:]
+    elif len(vals) == current_expected:
+        vals = vals[:N_CURRENT_SCALAR] + [0] * 12 + vals[N_CURRENT_SCALAR:]
     if len(vals) != expected:
         raise SystemExit(f"expected {expected} tuned integers, got {len(vals)}")
     return vals
@@ -66,6 +70,12 @@ def patch_eval_c(path, vals):
     (pawn_push_mg, pawn_push_eg,
      pawn_threat_minor_mg, pawn_threat_minor_eg,
      pawn_threat_major_mg, pawn_threat_major_eg) = scalar[29:35]
+    (connected_pawn_mg, connected_pawn_eg,
+     phalanx_pawn_mg, phalanx_pawn_eg,
+     backward_pawn_mg, backward_pawn_eg,
+     knight_outpost_mg, knight_outpost_eg,
+     bishop_pair_mg, bishop_pair_eg,
+     rook_behind_passer_mg, rook_behind_passer_eg) = scalar[35:47]
 
     # Piece enum order in engine: KING=0, QUEEN=1, BISHOP=2, KNIGHT=3, ROOK=4, PAWN=5.
     # Scalar order from tuner: mat_q, mat_n, mat_b, mat_r, mat_p.
@@ -171,6 +181,30 @@ def patch_eval_c(path, vals):
         "k_pawn_threat_major_eg": pawn_threat_major_eg,
     }
     for name, value in pawn_values.items():
+        text, replaced = re.subn(
+            rf"static const int {name} = -?\d+;",
+            f"static const int {name} = {value};",
+            text,
+            count=1,
+        )
+        if replaced != 1:
+            raise SystemExit(f"failed to patch {name} in {path}")
+
+    v2_values = {
+        "k_connected_pawn_mg": connected_pawn_mg,
+        "k_connected_pawn_eg": connected_pawn_eg,
+        "k_phalanx_pawn_mg": phalanx_pawn_mg,
+        "k_phalanx_pawn_eg": phalanx_pawn_eg,
+        "k_backward_pawn_mg": backward_pawn_mg,
+        "k_backward_pawn_eg": backward_pawn_eg,
+        "k_knight_outpost_mg": knight_outpost_mg,
+        "k_knight_outpost_eg": knight_outpost_eg,
+        "k_bishop_pair_mg": bishop_pair_mg,
+        "k_bishop_pair_eg": bishop_pair_eg,
+        "k_rook_behind_passer_mg": rook_behind_passer_mg,
+        "k_rook_behind_passer_eg": rook_behind_passer_eg,
+    }
+    for name, value in v2_values.items():
         text, replaced = re.subn(
             rf"static const int {name} = -?\d+;",
             f"static const int {name} = {value};",

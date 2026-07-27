@@ -47,6 +47,12 @@ typedef struct HceTuneFeatures {
     int pawn_pushes;            // pawns with an unobstructed single push
     int pawn_threat_minor;      // enemy bishops/knights attacked by pawns
     int pawn_threat_major;      // enemy rooks/queens attacked by pawns
+    int connected_pawns;        // pawns defended by another pawn
+    int phalanx_pawns;          // pawns beside a friendly pawn on the same rank
+    int backward_pawns;         // pawns whose advance is unsafe and unsupported
+    int knight_outposts;        // pawn-supported knights immune to enemy pawns
+    int bishop_pair;            // one when the side owns at least two bishops
+    int rook_behind_passer;     // rooks supporting a clear own passer from behind
     int pst[PIECE_TYPE_COUNT][64];  // piece-square counts (view side, mirrored for black)
     int residual_mg;            // summed mg of all non-tuned terms
     int residual_eg;            // summed eg of all non-tuned terms

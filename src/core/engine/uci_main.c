@@ -720,11 +720,17 @@ static void print_uci_intro(const UciOptions *opt) {
 //   5 material counts q/n/b/r/p, isolated, doubled, 4 mobility counts n/b/r/q,
 //   rook_open, rook_semi, passed_mg, passed_eg, king_mg, king_eg, hanging,
 //   queen_mg, queen_eg, pawn_pushes, pawn_threat_minor, pawn_threat_major,
+//   connected_pawns, phalanx_pawns, backward_pawns, knight_outposts,
+//   bishop_pair, rook_behind_passer,
 //   6*64 piece-square counts (K,Q,B,N,R,P by square, king always zero),
 //   residual_mg, residual_eg.
 // Positions are kept only if |static_eval - qsearch_eval| < 50 cp so the label
 // reflects the static evaluation rather than a pending tactical sequence.
-static int run_tune_dump(const char *infile, const char *outfile, bool quiet_only) {
+static int run_tune_dump(const char *infile,
+                         const char *outfile,
+                         const char *groups_infile,
+                         const char *groups_outfile,
+                         bool quiet_only) {
     FILE *fin = fopen(infile, "r");
     if (fin == NULL) {
         printf("info string tunedump: cannot open %s\n", infile);
@@ -735,6 +741,24 @@ static int run_tune_dump(const char *infile, const char *outfile, bool quiet_onl
         fclose(fin);
         printf("info string tunedump: cannot open %s\n", outfile);
         return 1;
+    }
+    FILE *groups_in = NULL;
+    FILE *groups_out = NULL;
+    if (groups_infile != NULL && groups_outfile != NULL) {
+        groups_in = fopen(groups_infile, "r");
+        groups_out = fopen(groups_outfile, "w");
+        if (groups_in == NULL || groups_out == NULL) {
+            if (groups_in != NULL) {
+                fclose(groups_in);
+            }
+            if (groups_out != NULL) {
+                fclose(groups_out);
+            }
+            fclose(fin);
+            fclose(fout);
+            printf("info string tunedump: cannot open group sidecars\n");
+            return 1;
+        }
     }
 
     MatchConfig cfg = {
@@ -748,8 +772,16 @@ static int run_tune_dump(const char *infile, const char *outfile, bool quiet_onl
     chess_init(&st, &cfg);
 
     char line[512];
+    char group_line[256];
     long ok = 0, bad = 0, noisy = 0;
+    bool group_error = false;
     while (fgets(line, sizeof(line), fin) != NULL) {
+        if (groups_in != NULL &&
+            fgets(group_line, sizeof(group_line), groups_in) == NULL) {
+            printf("info string tunedump: group sidecar ended early\n");
+            group_error = true;
+            break;
+        }
         char *semi = strchr(line, ';');
         if (semi == NULL) {
             continue;
@@ -775,13 +807,16 @@ static int run_tune_dump(const char *infile, const char *outfile, bool quiet_onl
         // White old scalar features.
         fprintf(fout,
                 " %d %d %d %d %d %d %d %d %d %d %d %d %d"
-                " %d %d %d %d %d %d %d %d %d %d %d %d",
+                " %d %d %d %d %d %d %d %d %d %d %d %d"
+                " %d %d %d %d %d %d",
                 w.mat[PIECE_QUEEN], w.mat[PIECE_KNIGHT], w.mat[PIECE_BISHOP],
                 w.mat[PIECE_ROOK], w.mat[PIECE_PAWN], w.isolated, w.doubled,
                 w.mob_n, w.mob_b, w.mob_r, w.mob_q, w.rook_open, w.rook_semi,
                 w.passed_mg, w.passed_eg, w.king_mg, w.king_eg, w.hanging,
                 w.queen_mg, w.queen_eg,
                 w.pawn_pushes, w.pawn_threat_minor, w.pawn_threat_major,
+                w.connected_pawns, w.phalanx_pawns, w.backward_pawns,
+                w.knight_outposts, w.bishop_pair, w.rook_behind_passer,
                 w.residual_mg, w.residual_eg);
         // White PST counts.
         for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
@@ -792,13 +827,16 @@ static int run_tune_dump(const char *infile, const char *outfile, bool quiet_onl
         // Black old scalar features.
         fprintf(fout,
                 " %d %d %d %d %d %d %d %d %d %d %d %d %d"
-                " %d %d %d %d %d %d %d %d %d %d %d %d",
+                " %d %d %d %d %d %d %d %d %d %d %d %d"
+                " %d %d %d %d %d %d",
                 b.mat[PIECE_QUEEN], b.mat[PIECE_KNIGHT], b.mat[PIECE_BISHOP],
                 b.mat[PIECE_ROOK], b.mat[PIECE_PAWN], b.isolated, b.doubled,
                 b.mob_n, b.mob_b, b.mob_r, b.mob_q, b.rook_open, b.rook_semi,
                 b.passed_mg, b.passed_eg, b.king_mg, b.king_eg, b.hanging,
                 b.queen_mg, b.queen_eg,
                 b.pawn_pushes, b.pawn_threat_minor, b.pawn_threat_major,
+                b.connected_pawns, b.phalanx_pawns, b.backward_pawns,
+                b.knight_outposts, b.bishop_pair, b.rook_behind_passer,
                 b.residual_mg, b.residual_eg);
         // Black PST counts.
         for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
@@ -811,14 +849,35 @@ static int run_tune_dump(const char *infile, const char *outfile, bool quiet_onl
         } else {
             fprintf(fout, " %d\n", qsearch_stm - static_stm);
         }
+        if (groups_out != NULL) {
+            fputs(group_line, groups_out);
+            if (strchr(group_line, '\n') == NULL) {
+                fputc('\n', groups_out);
+            }
+        }
         ok += 1;
+    }
+    if (!group_error && groups_in != NULL &&
+        fgets(group_line, sizeof(group_line), groups_in) != NULL) {
+        printf("info string tunedump: group sidecar has extra rows\n");
+        group_error = true;
     }
     fclose(fin);
     fclose(fout);
+    if (groups_in != NULL) {
+        fclose(groups_in);
+    }
+    if (groups_out != NULL) {
+        fclose(groups_out);
+    }
+    if (group_error) {
+        remove(outfile);
+        remove(groups_outfile);
+    }
     printf("info string tunedump: wrote %ld positions (%ld bad FEN, %ld noisy skipped)\n",
            ok, bad, noisy);
     fflush(stdout);
-    return 0;
+    return group_error ? 1 : 0;
 }
 
 static void *search_thread_main(void *arg) {
@@ -927,10 +986,18 @@ int main(void) {
             search_thread_join();
             char inpath[256] = {0};
             char outpath[256] = {0};
-            if (sscanf(line + 9, "%255s %255s", inpath, outpath) == 2) {
-                run_tune_dump(inpath, outpath, true);
+            char groups_inpath[256] = {0};
+            char groups_outpath[256] = {0};
+            int parsed = sscanf(line + 9, "%255s %255s %255s %255s",
+                                inpath, outpath, groups_inpath, groups_outpath);
+            if (parsed == 2) {
+                run_tune_dump(inpath, outpath, NULL, NULL, true);
+            } else if (parsed == 4) {
+                run_tune_dump(inpath, outpath,
+                              groups_inpath, groups_outpath, true);
             } else {
-                printf("info string usage: tunedump <infile> <outfile>\n");
+                printf("info string usage: tunedump <infile> <outfile> "
+                       "[<groups-in> <groups-out>]\n");
                 fflush(stdout);
             }
             continue;
@@ -938,10 +1005,18 @@ int main(void) {
         if (starts_with(line, "tunedumpall ")) {
             char inpath[256] = {0};
             char outpath[256] = {0};
-            if (sscanf(line + 12, "%255s %255s", inpath, outpath) == 2) {
-                run_tune_dump(inpath, outpath, false);
+            char groups_inpath[256] = {0};
+            char groups_outpath[256] = {0};
+            int parsed = sscanf(line + 12, "%255s %255s %255s %255s",
+                                inpath, outpath, groups_inpath, groups_outpath);
+            if (parsed == 2) {
+                run_tune_dump(inpath, outpath, NULL, NULL, false);
+            } else if (parsed == 4) {
+                run_tune_dump(inpath, outpath,
+                              groups_inpath, groups_outpath, false);
             } else {
-                printf("info string usage: tunedumpall <infile> <outfile>\n");
+                printf("info string usage: tunedumpall <infile> <outfile> "
+                       "[<groups-in> <groups-out>]\n");
                 fflush(stdout);
             }
             continue;

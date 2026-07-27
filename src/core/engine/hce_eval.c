@@ -505,6 +505,80 @@ static bool square_supported_by_pawn(const GameState *s, int side, int sq) {
     return (s->bb[side][PIECE_PAWN] & g_pawn_attacks[side ^ 1][sq]) != 0;
 }
 
+static bool is_phalanx_pawn(const GameState *s, int side, int sq) {
+    int file = square_file(sq);
+    uint64_t adjacent = 0;
+    if (file > 0) {
+        adjacent |= 1ULL << (sq - 1);
+    }
+    if (file < 7) {
+        adjacent |= 1ULL << (sq + 1);
+    }
+    return (adjacent & s->bb[side][PIECE_PAWN]) != 0;
+}
+
+static bool is_backward_pawn(const GameState *s, int side, int sq) {
+    if (is_isolated_pawn(s, side, sq) || is_passed_pawn(s, side, sq)) {
+        return false;
+    }
+    int front_sq = sq + ((side == PIECE_WHITE) ? 8 : -8);
+    if (front_sq < 0 || front_sq >= 64 ||
+        s->sq_piece[front_sq] != PIECE_NONE ||
+        !square_supported_by_pawn(s, side ^ 1, front_sq)) {
+        return false;
+    }
+
+    int rank = square_rank(sq);
+    uint64_t neighbors = s->bb[side][PIECE_PAWN] &
+                         g_neighbor_file_masks[square_file(sq)];
+    while (neighbors != 0) {
+        int neighbor_rank = square_rank(chess_pop_lsb(&neighbors));
+        if ((side == PIECE_WHITE && neighbor_rank <= rank) ||
+            (side == PIECE_BLACK && neighbor_rank >= rank)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool is_knight_outpost(const GameState *s, int side, int sq) {
+    int view = (side == PIECE_WHITE) ? sq : mirror_sq(sq);
+    int view_rank = square_rank(view);
+    if (view_rank < 3 || view_rank > 5 ||
+        !square_supported_by_pawn(s, side, sq)) {
+        return false;
+    }
+    uint64_t enemy_challengers =
+        g_passed_masks[side][sq] &
+        g_neighbor_file_masks[square_file(sq)] &
+        s->bb[side ^ 1][PIECE_PAWN];
+    return enemy_challengers == 0;
+}
+
+static bool rook_supports_passer(const GameState *s, int side, int rook_sq) {
+    int file = square_file(rook_sq);
+    int rook_rank = square_rank(rook_sq);
+    uint64_t pawns = s->bb[side][PIECE_PAWN] & g_file_masks[file];
+    while (pawns != 0) {
+        int pawn_sq = chess_pop_lsb(&pawns);
+        int pawn_rank = square_rank(pawn_sq);
+        bool pawn_ahead = (side == PIECE_WHITE) ? pawn_rank > rook_rank
+                                                : pawn_rank < rook_rank;
+        if (!pawn_ahead || !is_passed_pawn(s, side, pawn_sq)) {
+            continue;
+        }
+        int step = (side == PIECE_WHITE) ? 8 : -8;
+        uint64_t between = 0;
+        for (int sq = rook_sq + step; sq != pawn_sq; sq += step) {
+            between |= 1ULL << sq;
+        }
+        if ((between & s->occ_all) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Union of all squares attacked by `side`, with and without the king's
 // attacks. Computed once per eval_side call and reused by the tactical
 // penalty terms so they only pay for full attacker sets on attacked squares.
@@ -834,6 +908,7 @@ typedef struct EvalSideTerms {
     EvalTermPair rook_files;
     EvalTermPair mobility;
     EvalTermPair pawn_activity;
+    EvalTermPair positional_structure;
     EvalTermPair king_safety_penalty;
     EvalTermPair hanging_penalty;
     EvalTermPair queen_trap_penalty;
@@ -853,6 +928,18 @@ static const int k_pawn_threat_minor_mg = 0;
 static const int k_pawn_threat_minor_eg = 0;
 static const int k_pawn_threat_major_mg = 0;
 static const int k_pawn_threat_major_eg = 0;
+static const int k_connected_pawn_mg = 0;
+static const int k_connected_pawn_eg = 0;
+static const int k_phalanx_pawn_mg = 0;
+static const int k_phalanx_pawn_eg = 0;
+static const int k_backward_pawn_mg = 0;
+static const int k_backward_pawn_eg = 0;
+static const int k_knight_outpost_mg = 0;
+static const int k_knight_outpost_eg = 0;
+static const int k_bishop_pair_mg = 0;
+static const int k_bishop_pair_eg = 0;
+static const int k_rook_behind_passer_mg = 0;
+static const int k_rook_behind_passer_eg = 0;
 
 #define HCE_PAWN_CACHE_BITS 16u
 #define HCE_PAWN_CACHE_SIZE (1u << HCE_PAWN_CACHE_BITS)
@@ -864,6 +951,7 @@ typedef struct PawnEvalTerms {
     EvalTermPair pawn_structure;
     EvalTermPair passed_pawns;
     EvalTermPair pawn_activity;
+    EvalTermPair positional_structure;
 } PawnEvalTerms;
 
 typedef struct PawnEvalCacheEntry {
@@ -922,6 +1010,24 @@ static void compute_pawn_eval_terms(const GameState *s, int side, PawnEvalTerms 
         }
         if (is_doubled_pawn(s, side, sq)) {
             eval_term_add(&out->pawn_structure, -20, -15);
+        }
+        if ((k_connected_pawn_mg != 0 || k_connected_pawn_eg != 0) &&
+            square_supported_by_pawn(s, side, sq)) {
+            eval_term_add(&out->positional_structure,
+                          k_connected_pawn_mg,
+                          k_connected_pawn_eg);
+        }
+        if ((k_phalanx_pawn_mg != 0 || k_phalanx_pawn_eg != 0) &&
+            is_phalanx_pawn(s, side, sq)) {
+            eval_term_add(&out->positional_structure,
+                          k_phalanx_pawn_mg,
+                          k_phalanx_pawn_eg);
+        }
+        if ((k_backward_pawn_mg != 0 || k_backward_pawn_eg != 0) &&
+            is_backward_pawn(s, side, sq)) {
+            eval_term_add(&out->positional_structure,
+                          k_backward_pawn_mg,
+                          k_backward_pawn_eg);
         }
         if (!is_passed_pawn(s, side, sq)) {
             continue;
@@ -989,6 +1095,7 @@ static int eval_side(const GameState *s,
         terms.pawn_structure = pawn_terms->pawn_structure;
         terms.passed_pawns = pawn_terms->passed_pawns;
         terms.pawn_activity = pawn_terms->pawn_activity;
+        terms.positional_structure = pawn_terms->positional_structure;
     } else {
         uint64_t enemy_pawns_scan = s->bb[enemy][PIECE_PAWN];
         while (enemy_pawns_scan != 0) {
@@ -1033,14 +1140,47 @@ static int eval_side(const GameState *s,
                     }
                     if (is_isolated_pawn(s, side, sq)) {
                         eval_term_add(&terms.pawn_structure, -16, -16);
-                    if (feat != NULL) {
-                        feat->isolated += 1;
+                        if (feat != NULL) {
+                            feat->isolated += 1;
                         }
                     }
                     if (is_doubled_pawn(s, side, sq)) {
                         eval_term_add(&terms.pawn_structure, -20, -15);
-                    if (feat != NULL) {
-                        feat->doubled += 1;
+                        if (feat != NULL) {
+                            feat->doubled += 1;
+                        }
+                    }
+                    if ((feat != NULL ||
+                         k_connected_pawn_mg != 0 ||
+                         k_connected_pawn_eg != 0) &&
+                        square_supported_by_pawn(s, side, sq)) {
+                        eval_term_add(&terms.positional_structure,
+                                      k_connected_pawn_mg,
+                                      k_connected_pawn_eg);
+                        if (feat != NULL) {
+                            feat->connected_pawns += 1;
+                        }
+                    }
+                    if ((feat != NULL ||
+                         k_phalanx_pawn_mg != 0 ||
+                         k_phalanx_pawn_eg != 0) &&
+                        is_phalanx_pawn(s, side, sq)) {
+                        eval_term_add(&terms.positional_structure,
+                                      k_phalanx_pawn_mg,
+                                      k_phalanx_pawn_eg);
+                        if (feat != NULL) {
+                            feat->phalanx_pawns += 1;
+                        }
+                    }
+                    if ((feat != NULL ||
+                         k_backward_pawn_mg != 0 ||
+                         k_backward_pawn_eg != 0) &&
+                        is_backward_pawn(s, side, sq)) {
+                        eval_term_add(&terms.positional_structure,
+                                      k_backward_pawn_mg,
+                                      k_backward_pawn_eg);
+                        if (feat != NULL) {
+                            feat->backward_pawns += 1;
                         }
                     }
                     if (is_passed_pawn(s, side, sq)) {
@@ -1077,6 +1217,17 @@ static int eval_side(const GameState *s,
                     break;
                 case PIECE_KNIGHT: {
                     eval_term_add(&terms.piece_square, k_knight_pst[view], k_knight_pst_eg[view]);
+                    if ((feat != NULL ||
+                         k_knight_outpost_mg != 0 ||
+                         k_knight_outpost_eg != 0) &&
+                        is_knight_outpost(s, side, sq)) {
+                        eval_term_add(&terms.positional_structure,
+                                      k_knight_outpost_mg,
+                                      k_knight_outpost_eg);
+                        if (feat != NULL) {
+                            feat->knight_outposts += 1;
+                        }
+                    }
                     break;
                 }
                 case PIECE_BISHOP: {
@@ -1099,6 +1250,17 @@ static int eval_side(const GameState *s,
                             feat->rook_semi += 1;
                         }
                     }
+                    if ((feat != NULL ||
+                         k_rook_behind_passer_mg != 0 ||
+                         k_rook_behind_passer_eg != 0) &&
+                        rook_supports_passer(s, side, sq)) {
+                        eval_term_add(&terms.positional_structure,
+                                      k_rook_behind_passer_mg,
+                                      k_rook_behind_passer_eg);
+                        if (feat != NULL) {
+                            feat->rook_behind_passer += 1;
+                        }
+                    }
                     break;
                 }
                 case PIECE_QUEEN:
@@ -1110,6 +1272,16 @@ static int eval_side(const GameState *s,
                 default:
                     break;
             }
+        }
+    }
+
+    if ((feat != NULL || k_bishop_pair_mg != 0 || k_bishop_pair_eg != 0) &&
+        chess_count_bits(s->bb[side][PIECE_BISHOP]) >= 2) {
+        eval_term_add(&terms.positional_structure,
+                      k_bishop_pair_mg,
+                      k_bishop_pair_eg);
+        if (feat != NULL) {
+            feat->bishop_pair = 1;
         }
     }
 
@@ -1165,7 +1337,9 @@ static int eval_side(const GameState *s,
 
     if (out_breakdown != NULL) {
         out_breakdown->material = eval_term_blend(terms.material, phase);
-        out_breakdown->piece_square = eval_term_blend(terms.piece_square, phase);
+        out_breakdown->piece_square =
+            eval_term_blend(terms.piece_square, phase) +
+            eval_term_blend(terms.positional_structure, phase);
         out_breakdown->pawn_structure = eval_term_blend(terms.pawn_structure, phase);
         out_breakdown->passed_pawns = eval_term_blend(terms.passed_pawns, phase);
         out_breakdown->rook_files = eval_term_blend(terms.rook_files, phase);
@@ -1183,6 +1357,7 @@ static int eval_side(const GameState *s,
                    terms.rook_files.mg +
                    terms.mobility.mg +
                    terms.pawn_activity.mg +
+                   terms.positional_structure.mg +
                    terms.king_safety_penalty.mg +
                    terms.hanging_penalty.mg +
                    terms.queen_trap_penalty.mg;
@@ -1193,6 +1368,7 @@ static int eval_side(const GameState *s,
                    terms.rook_files.eg +
                    terms.mobility.eg +
                    terms.pawn_activity.eg +
+                   terms.positional_structure.eg +
                    terms.king_safety_penalty.eg +
                    terms.hanging_penalty.eg +
                    terms.queen_trap_penalty.eg;
@@ -1206,12 +1382,14 @@ static int eval_side(const GameState *s,
                        terms.pawn_structure.mg + terms.rook_files.mg +
                        terms.mobility.mg + terms.passed_pawns.mg +
                        terms.pawn_activity.mg +
+                       terms.positional_structure.mg +
                        terms.king_safety_penalty.mg + terms.hanging_penalty.mg +
                        terms.queen_trap_penalty.mg;
         int tuned_eg = terms.material.eg + terms.piece_square.eg +
                        terms.pawn_structure.eg + terms.rook_files.eg +
                        terms.mobility.eg + terms.passed_pawns.eg +
                        terms.pawn_activity.eg +
+                       terms.positional_structure.eg +
                        terms.king_safety_penalty.eg + terms.hanging_penalty.eg +
                        terms.queen_trap_penalty.eg;
         feat->residual_mg = total_mg - tuned_mg;

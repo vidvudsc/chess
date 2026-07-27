@@ -10,6 +10,7 @@ positions per game so a single long game does not dominate.
 Usage:
     texel_build_dataset.py --pgn games.pgn --out data.txt [--skip-opening 10]
                            [--skip-tail 6] [--per-game 10] [--drop-forfeit]
+                           [--groups-out groups.txt]
 """
 import argparse
 import sys
@@ -30,56 +31,73 @@ def main() -> int:
                     help="Max sampled positions per game (evenly spaced).")
     ap.add_argument("--drop-forfeit", action="store_true",
                     help="Drop games decided on time (noisy labels).")
+    ap.add_argument("--drop-max-plies", action="store_true",
+                    help="Drop self-play games force-labelled draw at max plies.")
+    ap.add_argument("--groups-out",
+                    help="Optional sidecar with one game ID per emitted position.")
+    ap.add_argument("--group-prefix", default="game",
+                    help="Prefix for sidecar game IDs when combining PGNs.")
     args = ap.parse_args()
 
     result_map = {"1-0": 1.0, "0-1": 0.0, "1/2-1/2": 0.5}
     games = 0
     kept = 0
     positions = 0
-    with open(args.pgn, encoding="utf-8", errors="replace") as fin, \
-            open(args.out, "w", encoding="utf-8") as fout:
-        while True:
-            game = chess.pgn.read_game(fin)
-            if game is None:
-                break
-            games += 1
-            res = game.headers.get("Result", "*")
-            if res not in result_map:
-                continue
-            if args.drop_forfeit and game.headers.get("Termination") == "Time forfeit":
-                continue
-            label = result_map[res]
-
-            board = game.board()
-            moves = list(game.mainline_moves())
-            n = len(moves)
-            # Candidate ply indices (position AFTER playing moves[0..i-1]).
-            lo = args.skip_opening
-            hi = n - args.skip_tail
-            if hi <= lo:
-                continue
-
-            # Collect quiet candidate FENs across the game, then evenly sample.
-            candidates = []
-            for i, mv in enumerate(moves):
-                board.push(mv)
-                ply = i + 1
-                if ply < lo or ply > hi:
+    groups_out = (open(args.groups_out, "w", encoding="utf-8")
+                  if args.groups_out else None)
+    try:
+        with open(args.pgn, encoding="utf-8", errors="replace") as fin, \
+                open(args.out, "w", encoding="utf-8") as fout:
+            while True:
+                game = chess.pgn.read_game(fin)
+                if game is None:
+                    break
+                games += 1
+                res = game.headers.get("Result", "*")
+                if res not in result_map:
                     continue
-                if board.is_check():
+                if args.drop_forfeit and game.headers.get("Termination") == "Time forfeit":
                     continue
-                candidates.append(board.fen())
-            if not candidates:
-                continue
-            kept += 1
-            if len(candidates) <= args.per_game:
-                chosen = candidates
-            else:
-                step = len(candidates) / args.per_game
-                chosen = [candidates[int(k * step)] for k in range(args.per_game)]
-            for fen in chosen:
-                fout.write(f"{fen};{label}\n")
-                positions += 1
+                if args.drop_max_plies and game.headers.get("Termination") == "max_plies":
+                    continue
+                label = result_map[res]
+
+                board = game.board()
+                moves = list(game.mainline_moves())
+                n = len(moves)
+                # Candidate ply indices (position AFTER playing moves[0..i-1]).
+                lo = args.skip_opening
+                hi = n - args.skip_tail
+                if hi <= lo:
+                    continue
+
+                # Collect quiet candidate FENs across the game, then evenly sample.
+                candidates = []
+                for i, mv in enumerate(moves):
+                    board.push(mv)
+                    ply = i + 1
+                    if ply < lo or ply > hi:
+                        continue
+                    if board.is_check():
+                        continue
+                    candidates.append(board.fen())
+                if not candidates:
+                    continue
+                kept += 1
+                if len(candidates) <= args.per_game:
+                    chosen = candidates
+                else:
+                    step = len(candidates) / args.per_game
+                    chosen = [candidates[int(k * step)] for k in range(args.per_game)]
+                group_id = f"{args.group_prefix}-{games}"
+                for fen in chosen:
+                    fout.write(f"{fen};{label}\n")
+                    if groups_out is not None:
+                        groups_out.write(group_id + "\n")
+                    positions += 1
+    finally:
+        if groups_out is not None:
+            groups_out.close()
 
     print(f"games read       : {games}", file=sys.stderr)
     print(f"games kept       : {kept}", file=sys.stderr)

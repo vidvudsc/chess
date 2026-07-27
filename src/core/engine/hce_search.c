@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #define HCE_TT_BITS 20
 #define HCE_TT_SIZE (1u << HCE_TT_BITS)
@@ -73,9 +76,13 @@ static bool hce_search_stop_requested(void) {
 }
 
 static int64_t now_ms(void) {
+#ifdef _WIN32
+    return (int64_t)GetTickCount64();
+#else
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
     return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
+#endif
 }
 
 // Log-based late-move-reduction base table, indexed by [depth][move number].

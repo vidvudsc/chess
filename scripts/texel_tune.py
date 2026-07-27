@@ -4,13 +4,15 @@
 Input: the file produced by `chess_uci`'s `tunedump` command, one line per
 quiet position:
 
-    <label> <phase> <eval_true> <white 409 feats> <black 409 feats>
+    <label> <phase> <eval_true> <white 415 feats> <black 415 feats>
 
-where each 399-feature block is:
+where each 415-feature block is:
     mat_q mat_n mat_b mat_r mat_p isolated doubled
     mob_n mob_b mob_r mob_q rook_open rook_semi
     passed_mg passed_eg king_mg king_eg hanging queen_mg queen_eg
     pawn_pushes pawn_threat_minor pawn_threat_major
+    connected_pawns phalanx_pawns backward_pawns knight_outposts
+    bishop_pair rook_behind_passer
     pst[K,Q,B,N,R,P][64] flattened
     residual_mg residual_eg
 
@@ -30,13 +32,15 @@ import numpy as np
 
 # Number of scalar (material + positional) features and per-side layout.
 N_BASE_SCALAR = 21
-N_EXTRA_SCALAR = 14
+N_CURRENT_SCALAR = 35
+N_V2_SCALAR = 12
+N_EXTRA_SCALAR = (N_CURRENT_SCALAR - N_BASE_SCALAR) + N_V2_SCALAR
 N_SCALAR = N_BASE_SCALAR + N_EXTRA_SCALAR
-SIDE_OLD = 25
+SIDE_OLD = 31
 PST_PIECES = 6
 PST_SQUARES = 64
 N_PST = PST_PIECES * PST_SQUARES
-N_PARAMS = N_SCALAR + 2 * N_PST  # 789
+N_PARAMS = N_SCALAR + 2 * N_PST  # 815
 
 # Current engine PST tables (from src/core/engine/hce_eval.c).
 K_PAWN_PST = np.array([
@@ -144,7 +148,13 @@ PARAM_NAMES = (
      "queen_mg_scale", "queen_eg_scale",
      "pawn_push_mg", "pawn_push_eg",
      "pawn_threat_minor_mg", "pawn_threat_minor_eg",
-     "pawn_threat_major_mg", "pawn_threat_major_eg"]
+     "pawn_threat_major_mg", "pawn_threat_major_eg",
+     "connected_pawn_mg", "connected_pawn_eg",
+     "phalanx_pawn_mg", "phalanx_pawn_eg",
+     "backward_pawn_mg", "backward_pawn_eg",
+     "knight_outpost_mg", "knight_outpost_eg",
+     "bishop_pair_mg", "bishop_pair_eg",
+     "rook_behind_passer_mg", "rook_behind_passer_eg"]
     + [f"pst{p}_{s}_mg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
     + [f"pst{p}_{s}_eg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
 )
@@ -162,6 +172,12 @@ _SCALAR_DEFAULTS = np.array([
     0, 0,                        # pawn push mg/eg
     0, 0,                        # pawn threat vs minor mg/eg
     0, 0,                        # pawn threat vs major mg/eg
+    0, 0,                        # connected pawn mg/eg
+    0, 0,                        # phalanx pawn mg/eg
+    0, 0,                        # backward pawn mg/eg
+    0, 0,                        # knight outpost mg/eg
+    0, 0,                        # bishop pair mg/eg
+    0, 0,                        # rook behind passer mg/eg
 ], dtype=np.float64)
 
 DEFAULTS = np.concatenate([
@@ -180,7 +196,9 @@ F_KINGMG, F_KINGEG = 15, 16
 F_HANGING = 17
 F_QUEENMG, F_QUEENEG = 18, 19
 F_PAWN_PUSH, F_PAWN_THREAT_MINOR, F_PAWN_THREAT_MAJOR = 20, 21, 22
-F_RESMG, F_RESEG = 23, 24
+F_CONNECTED, F_PHALANX, F_BACKWARD = 23, 24, 25
+F_KNIGHT_OUTPOST, F_BISHOP_PAIR, F_ROOK_BEHIND_PASSER = 26, 27, 28
+F_RESMG, F_RESEG = 29, 30
 
 
 def trunc_div24(a):
@@ -196,7 +214,12 @@ def trunc_div100(a):
 
 
 def build(feats_path):
-    raw = np.atleast_2d(np.loadtxt(feats_path))
+    raw = np.atleast_2d(np.loadtxt(feats_path, dtype=np.float32))
+    expected_columns = 3 + 2 * (SIDE_OLD + N_PST)
+    if raw.shape[1] != expected_columns:
+        raise ValueError(
+            f"feature dump has {raw.shape[1]} columns, expected "
+            f"{expected_columns}; regenerate it with the current tunedump")
     label = raw[:, 0].astype(np.float64)
     phase = raw[:, 1].astype(np.int64)
     eval_true = raw[:, 2].astype(np.int64)
@@ -206,10 +229,11 @@ def build(feats_path):
     return label, phase, eval_true, w, b
 
 
-def split_side(side):
+def split_side(side, dtype=np.int64):
     """Return (old_scalar, pst) from a side feature vector."""
-    old = side[:, :SIDE_OLD].astype(np.int64)
-    pst = side[:, SIDE_OLD:].astype(np.int64).reshape(-1, PST_PIECES, PST_SQUARES)
+    old = side[:, :SIDE_OLD].astype(dtype, copy=False)
+    pst = side[:, SIDE_OLD:].astype(dtype, copy=False).reshape(
+        -1, PST_PIECES, PST_SQUARES)
     return old, pst
 
 
@@ -238,6 +262,12 @@ def side_totals_int(side, phase, theta):
           old[:, F_PAWN_PUSH] * scalar[29] +
           old[:, F_PAWN_THREAT_MINOR] * scalar[31] +
           old[:, F_PAWN_THREAT_MAJOR] * scalar[33] +
+          old[:, F_CONNECTED] * scalar[35] +
+          old[:, F_PHALANX] * scalar[37] +
+          old[:, F_BACKWARD] * scalar[39] +
+          old[:, F_KNIGHT_OUTPOST] * scalar[41] +
+          old[:, F_BISHOP_PAIR] * scalar[43] +
+          old[:, F_ROOK_BEHIND_PASSER] * scalar[45] +
           old[:, F_RESMG]).astype(np.int64)
     eg = (mat + ps_eg +
           old[:, F_ISO] * scalar[6] + old[:, F_DBL] * scalar[8] +
@@ -251,6 +281,12 @@ def side_totals_int(side, phase, theta):
           old[:, F_PAWN_PUSH] * scalar[30] +
           old[:, F_PAWN_THREAT_MINOR] * scalar[32] +
           old[:, F_PAWN_THREAT_MAJOR] * scalar[34] +
+          old[:, F_CONNECTED] * scalar[36] +
+          old[:, F_PHALANX] * scalar[38] +
+          old[:, F_BACKWARD] * scalar[40] +
+          old[:, F_KNIGHT_OUTPOST] * scalar[42] +
+          old[:, F_BISHOP_PAIR] * scalar[44] +
+          old[:, F_ROOK_BEHIND_PASSER] * scalar[46] +
           old[:, F_RESEG]).astype(np.int64)
     return trunc_div24(mg * phase + eg * (24 - phase))
 
@@ -258,15 +294,15 @@ def side_totals_int(side, phase, theta):
 def design_matrix(phase, w, b):
     """X (N x N_PARAMS) and c (N,) so eval_white_float ~= X @ theta + c."""
     n = w.shape[0]
-    ph = phase.astype(np.float64)
+    ph = phase.astype(np.float32)
     mgw = ph / 24.0
     egw = (24.0 - ph) / 24.0
-    w_old, w_pst = split_side(w)
-    b_old, b_pst = split_side(b)
-    d_old = (w_old - b_old).astype(np.float64)
-    d_pst = (w_pst - b_pst).astype(np.float64).reshape(n, N_PST)
+    w_old, w_pst = split_side(w, np.float32)
+    b_old, b_pst = split_side(b, np.float32)
+    d_old = (w_old - b_old).astype(np.float32)
+    d_pst = (w_pst - b_pst).astype(np.float32).reshape(n, N_PST)
 
-    X = np.zeros((n, N_PARAMS), dtype=np.float64)
+    X = np.zeros((n, N_PARAMS), dtype=np.float32)
     # Material: phase-independent.
     X[:, 0] = d_old[:, F_MATQ]
     X[:, 1] = d_old[:, F_MATN]
@@ -304,12 +340,67 @@ def design_matrix(phase, w, b):
     X[:, 32] = d_old[:, F_PAWN_THREAT_MINOR] * egw
     X[:, 33] = d_old[:, F_PAWN_THREAT_MAJOR] * mgw
     X[:, 34] = d_old[:, F_PAWN_THREAT_MAJOR] * egw
+    X[:, 35] = d_old[:, F_CONNECTED] * mgw
+    X[:, 36] = d_old[:, F_CONNECTED] * egw
+    X[:, 37] = d_old[:, F_PHALANX] * mgw
+    X[:, 38] = d_old[:, F_PHALANX] * egw
+    X[:, 39] = d_old[:, F_BACKWARD] * mgw
+    X[:, 40] = d_old[:, F_BACKWARD] * egw
+    X[:, 41] = d_old[:, F_KNIGHT_OUTPOST] * mgw
+    X[:, 42] = d_old[:, F_KNIGHT_OUTPOST] * egw
+    X[:, 43] = d_old[:, F_BISHOP_PAIR] * mgw
+    X[:, 44] = d_old[:, F_BISHOP_PAIR] * egw
+    X[:, 45] = d_old[:, F_ROOK_BEHIND_PASSER] * mgw
+    X[:, 46] = d_old[:, F_ROOK_BEHIND_PASSER] * egw
     # PST mg/eg.
     X[:, N_SCALAR:N_SCALAR + N_PST] = d_pst * mgw[:, None]
     X[:, N_SCALAR + N_PST:] = d_pst * egw[:, None]
 
     c = d_old[:, F_RESMG] * mgw + d_old[:, F_RESEG] * egw
     return X, c
+
+
+def grouped_split(groups, val_frac, seed):
+    """Return train/validation rows while keeping every game indivisible."""
+    groups = np.asarray(groups)
+    if groups.ndim != 1:
+        raise ValueError("groups must be one-dimensional")
+    unique = np.unique(groups)
+    if len(unique) < 2:
+        raise ValueError("grouped validation needs at least two games")
+    rng = np.random.default_rng(seed)
+    rng.shuffle(unique)
+    nval_groups = min(len(unique) - 1,
+                      max(1, int(round(len(unique) * val_frac))))
+    is_val = np.isin(groups, unique[:nval_groups])
+    return np.flatnonzero(~is_val), np.flatnonzero(is_val)
+
+
+def load_groups(path, expected_rows):
+    with open(path, "r", encoding="utf-8") as fp:
+        groups = np.array([line.strip() for line in fp if line.strip()])
+    if len(groups) != expected_rows:
+        raise ValueError(
+            f"group sidecar has {len(groups)} rows, expected {expected_rows}")
+    return groups
+
+
+def verify_reconstruction(w, b, phase, eval_true, defaults, batch_size=8192):
+    """Verify the integer feature contract without huge int64 copies."""
+    mismatches = []
+    for start in range(0, len(phase), batch_size):
+        stop = min(start + batch_size, len(phase))
+        wt = side_totals_int(w[start:stop], phase[start:stop], defaults)
+        bt = side_totals_int(b[start:stop], phase[start:stop], defaults)
+        eval_white = wt - bt
+        bad = np.flatnonzero(
+            np.abs(eval_true[start:stop] - 12) != np.abs(eval_white))
+        if len(bad):
+            room = 5 - len(mismatches)
+            mismatches.extend((bad[:room] + start).tolist())
+        if len(mismatches) >= 5:
+            break
+    return mismatches
 
 
 def sigmoid(z):
@@ -323,11 +414,18 @@ def load_tuned_defaults(path):
         raise SystemExit(f"no TUNED line found in {path}")
     values = np.array([int(value) for value in lines[-1].split()[1:]], dtype=np.float64)
     old_params = N_BASE_SCALAR + 2 * N_PST
+    current_params = N_CURRENT_SCALAR + 2 * N_PST
     if len(values) == old_params:
         values = np.concatenate([
             values[:N_BASE_SCALAR],
             _SCALAR_DEFAULTS[N_BASE_SCALAR:],
             values[N_BASE_SCALAR:],
+        ])
+    elif len(values) == current_params:
+        values = np.concatenate([
+            values[:N_CURRENT_SCALAR],
+            np.zeros(N_V2_SCALAR, dtype=np.float64),
+            values[N_CURRENT_SCALAR:],
         ])
     if len(values) != N_PARAMS:
         raise SystemExit(f"expected {N_PARAMS} values in {path}, got {len(values)}")
@@ -354,6 +452,8 @@ def main():
     ap.add_argument("--lr", type=float, default=2.0)
     ap.add_argument("--val-frac", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--groups",
+                    help="One game ID per feature row for leakage-free validation.")
     ap.add_argument("--l2", type=float, default=3.0,
                     help="L2 pull toward defaults (relative), tames overfit.")
     ap.add_argument("--anchor-pawn", action="store_true", default=True,
@@ -367,6 +467,8 @@ def main():
                          "queen-trap scales; freeze established scalars/PSTs.")
     ap.add_argument("--only-new-features", action="store_true",
                     help="Tune only pawn activity/threat weights.")
+    ap.add_argument("--only-v2-features", action="store_true",
+                    help="Tune only the new pawn/minor/rook structure weights.")
     ap.add_argument("--out-c", help="Optional path to write tuned PST/material C snippet.")
     ap.add_argument("--initial-tuned-file",
                     help="Use the last TUNED line in this file as the exact current defaults.")
@@ -380,15 +482,15 @@ def main():
     print(f"positions: {n}", file=sys.stderr)
 
     # (1) Exact integer verification against the engine's own eval.
-    wt = side_totals_int(w, phase, defaults)
-    bt = side_totals_int(b, phase, defaults)
-    eval_white = wt - bt
-    mism = np.sum(np.abs(eval_true - 12) != np.abs(eval_white))
-    print(f"verify: |eval_true-12| != |recon| on {mism}/{n} rows", file=sys.stderr)
-    if mism > 0:
-        bad = np.where(np.abs(eval_true - 12) != np.abs(eval_white))[0][:5]
+    bad = verify_reconstruction(w, b, phase, eval_true, defaults)
+    print(f"verify: |eval_true-12| != |recon| on "
+          f"{'at least ' if bad else ''}{len(bad)}/{n} rows", file=sys.stderr)
+    if bad:
         for i in bad:
-            print(f"  row {i}: true={eval_true[i]} recon_white={eval_white[i]}",
+            wt = side_totals_int(w[i:i + 1], phase[i:i + 1], defaults)
+            bt = side_totals_int(b[i:i + 1], phase[i:i + 1], defaults)
+            eval_white = int(wt[0] - bt[0])
+            print(f"  row {i}: true={eval_true[i]} recon_white={eval_white}",
                   file=sys.stderr)
         print("ABORT: feature reconstruction is not exact.", file=sys.stderr)
         return 1
@@ -398,10 +500,19 @@ def main():
     # Linear design for float tuning.
     X, c = design_matrix(phase, w, b)
     y = label
-    rng = np.random.default_rng(args.seed)
-    idx = rng.permutation(n)
-    nval = int(n * args.val_frac)
-    val, tr = idx[:nval], idx[nval:]
+    if args.groups:
+        groups = load_groups(args.groups, n)
+        tr, val = grouped_split(groups, args.val_frac, args.seed)
+        print(f"split: {len(np.unique(groups[tr]))} train games, "
+              f"{len(np.unique(groups[val]))} validation games",
+              file=sys.stderr)
+    else:
+        rng = np.random.default_rng(args.seed)
+        idx = rng.permutation(n)
+        nval = max(1, int(n * args.val_frac))
+        val, tr = idx[:nval], idx[nval:]
+        print("warning: row-random split; pass --groups for game-held-out validation",
+              file=sys.stderr)
 
     theta = defaults.copy()
     evals_tr = X[tr] @ theta + c[tr]
@@ -416,8 +527,10 @@ def main():
     b1, b2, eps = 0.9, 0.999, 1e-8
     Xtr, ctr, ytr = X[tr], c[tr], y[tr]
     ntr = len(tr)
-    if args.only_new_features:
-        active = np.arange(N_BASE_SCALAR + 8, N_SCALAR)
+    if args.only_v2_features:
+        active = np.arange(N_CURRENT_SCALAR, N_SCALAR)
+    elif args.only_new_features:
+        active = np.arange(N_BASE_SCALAR + 8, N_CURRENT_SCALAR)
     elif args.only_extra_scalars:
         active = np.arange(N_BASE_SCALAR, N_SCALAR)
     elif args.freeze_material:
@@ -482,8 +595,15 @@ def write_c_snippet(path, rounded):
         fp.write("// Tuned HCE tables (machine-generated).\n")
         fp.write("const int hce_piece_value[PIECE_TYPE_COUNT] = {\n")
         fp.write("    0,\n")
-        for i, name in enumerate(["QUEEN", "BISHOP", "KNIGHT", "ROOK", "PAWN"]):
-            fp.write(f"    {mat[i]:4d},  // {name}\n")
+        piece_values = [
+            (mat[0], "QUEEN"),
+            (mat[2], "BISHOP"),
+            (mat[1], "KNIGHT"),
+            (mat[3], "ROOK"),
+            (mat[4], "PAWN"),
+        ]
+        for value, name in piece_values:
+            fp.write(f"    {value:4d},  // {name}\n")
         fp.write("};\n\n")
         _write_table(fp, "k_king_mid_pst", pst_mg[0])
         _write_table(fp, "k_king_end_pst", pst_eg[0])

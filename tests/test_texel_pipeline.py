@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Regression tests for game-grouped HCE Texel data and validation splits."""
+
+import importlib.util
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+BUILD_SCRIPT = ROOT / "scripts" / "texel_build_dataset.py"
+TUNE_SCRIPT = ROOT / "scripts" / "texel_tune.py"
+APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_tune.py"
+
+
+def load_module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_grouped_split_has_no_game_leakage() -> None:
+    tune = load_module(TUNE_SCRIPT, "texel_tune_test")
+    groups = np.array(["a", "a", "b", "b", "c", "c", "d", "d"])
+    train, val = tune.grouped_split(groups, val_frac=0.25, seed=7)
+    assert len(train) + len(val) == len(groups)
+    assert set(groups[train]).isdisjoint(set(groups[val]))
+    assert len(set(groups[val])) == 1
+
+
+def test_dataset_group_sidecar_stays_aligned() -> None:
+    pgn = """[Event "g1"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 1-0
+
+[Event "g2"]
+[Result "0-1"]
+
+1. d4 d5 2. c4 e6 3. Nc3 Nf6 4. Bg5 Be7 5. e3 O-O 0-1
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pgn_path = tmp_path / "games.pgn"
+        data_path = tmp_path / "positions.txt"
+        groups_path = tmp_path / "groups.txt"
+        pgn_path.write_text(pgn, encoding="utf-8")
+        subprocess.run(
+            [
+                sys.executable, str(BUILD_SCRIPT),
+                "--pgn", str(pgn_path),
+                "--out", str(data_path),
+                "--groups-out", str(groups_path),
+                "--group-prefix", "fixture",
+                "--skip-opening", "2",
+                "--skip-tail", "1",
+                "--per-game", "3",
+            ],
+            check=True,
+        )
+        positions = data_path.read_text(encoding="utf-8").splitlines()
+        groups = groups_path.read_text(encoding="utf-8").splitlines()
+        assert len(positions) == len(groups) == 6
+        assert groups[:3] == ["fixture-1"] * 3
+        assert groups[3:] == ["fixture-2"] * 3
+
+
+def test_apply_tune_accepts_previous_vector_shapes() -> None:
+    apply_tune = load_module(APPLY_SCRIPT, "texel_apply_tune_test")
+    for scalar_count in (21, 35, 47):
+        values = [0] * (scalar_count + 2 * 6 * 64)
+        parsed = apply_tune.parse_tuned_line(
+            "TUNED " + " ".join(str(value) for value in values))
+        assert len(parsed) == 47 + 2 * 6 * 64
+        if scalar_count < 47:
+            assert parsed[35:47] == [0] * 12
+
+
+def test_hce_v2_feature_detectors() -> None:
+    tune = load_module(TUNE_SCRIPT, "texel_tune_feature_test")
+    fixtures = [
+        # A supported pawn chain plus adjacent pawns on the fourth rank.
+        "7k/8/8/8/3PPP2/2P5/8/7K w - - 0 1",
+        # White d3 is backward: c4 is ahead and black e5 controls d4.
+        "7k/8/8/4p3/2P5/3P4/8/7K w - - 0 1",
+        # Pawn-supported d5 knight and two bishops.
+        "7k/8/8/3N4/2P5/8/BB6/7K w - - 0 1",
+        # Rook on d2 is behind a clear passed pawn on d5.
+        "7k/8/8/3P4/8/8/3R4/7K w - - 0 1",
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        positions_path = tmp_path / "positions.txt"
+        features_path = tmp_path / "features.txt"
+        positions_path.write_text(
+            "".join(f"{fen};0.5\n" for fen in fixtures),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [str(ROOT / "bin" / "chess_uci")],
+            input=(
+                f"tunedump {positions_path} {features_path}\n"
+                "quit\n"
+            ),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        _, _, _, white, _ = tune.build(features_path)
+        assert len(white) == len(fixtures)
+        old, _ = tune.split_side(white)
+
+        assert old[0, tune.F_CONNECTED] >= 1
+        assert old[0, tune.F_PHALANX] >= 2
+        assert old[1, tune.F_BACKWARD] == 1
+        assert old[2, tune.F_KNIGHT_OUTPOST] == 1
+        assert old[2, tune.F_BISHOP_PAIR] == 1
+        assert old[3, tune.F_ROOK_BEHIND_PASSER] == 1
+
+
+def test_tunedump_rejects_misaligned_groups() -> None:
+    fen = "7k/8/8/8/8/8/8/7K w - - 0 1"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        positions_path = tmp_path / "positions.txt"
+        groups_in_path = tmp_path / "groups-in.txt"
+        features_path = tmp_path / "features.txt"
+        groups_out_path = tmp_path / "groups-out.txt"
+        positions_path.write_text(
+            f"{fen};0.5\n{fen};0.5\n",
+            encoding="utf-8",
+        )
+        groups_in_path.write_text("game-1\n", encoding="utf-8")
+        completed = subprocess.run(
+            [str(ROOT / "bin" / "chess_uci")],
+            input=(
+                f"tunedump {positions_path} {features_path} "
+                f"{groups_in_path} {groups_out_path}\n"
+                "quit\n"
+            ),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        assert "group sidecar ended early" in completed.stdout
+        assert not features_path.exists()
+        assert not groups_out_path.exists()
+
+
+if __name__ == "__main__":
+    test_grouped_split_has_no_game_leakage()
+    test_dataset_group_sidecar_stays_aligned()
+    test_apply_tune_accepts_previous_vector_shapes()
+    test_hce_v2_feature_detectors()
+    test_tunedump_rejects_misaligned_groups()
+    print("test_texel_pipeline: OK")

@@ -73,7 +73,7 @@ CONTENTS_DIR := $(APP_DIR)/Contents
 MACOS_DIR := $(CONTENTS_DIR)/MacOS
 RES_DIR := $(CONTENTS_DIR)/Resources
 
-.PHONY: all run run-bin run-app test test_bot_time test_nn_v2 test_nn_policy test_nn_policy_infer nn_policy_train nnue_train_bottleneck512 nnue_train_clipped256 nnue_train_screlu384 nnue_dataset_catalog nn_v2_check_tools nn_v2_fetch_eval nn_v2_build_dataset nn_v2_build_feature_dataset nn_v2_clean_hf_evals nn_v2_precompute_features nn_v2_train nn_v2_pipeline arch perft bench uci ai_test_lab snapshot_engine fetch_positions build_testlab_positions opening_book hce_suite hce_testlab umbrel_bundle deploy_umbrel clean icns bundle
+.PHONY: all run run-bin run-app test test_bot_time test_texel test_nn_v2 test_nn_policy test_nn_policy_infer nn_policy_train nnue_train_bottleneck512 nnue_train_clipped256 nnue_train_screlu384 nnue_dataset_catalog nn_v2_check_tools nn_v2_fetch_eval nn_v2_build_dataset nn_v2_build_feature_dataset nn_v2_clean_hf_evals nn_v2_precompute_features nn_v2_train nn_v2_pipeline arch perft bench uci ai_test_lab snapshot_engine fetch_positions build_testlab_positions opening_book hce_suite hce_testlab umbrel_bundle deploy_umbrel clean icns bundle
 
 all: $(BIN_DIR)/chess
 
@@ -151,7 +151,7 @@ else
 	$(MAKE) run-bin
 endif
 
-test: $(BIN_DIR)/test_rules $(BIN_DIR)/test_clock $(BIN_DIR)/test_perft_suite $(BIN_DIR)/test_ai $(BIN_DIR)/test_tactical_regressions test_bot_time test_nn_v2 test_nn_policy test_nn_policy_infer
+test: $(BIN_DIR)/test_rules $(BIN_DIR)/test_clock $(BIN_DIR)/test_perft_suite $(BIN_DIR)/test_ai $(BIN_DIR)/test_tactical_regressions test_bot_time test_texel test_nn_v2 test_nn_policy test_nn_policy_infer
 	./$(BIN_DIR)/test_rules
 	./$(BIN_DIR)/test_clock
 	./$(BIN_DIR)/test_perft_suite
@@ -160,6 +160,9 @@ test: $(BIN_DIR)/test_rules $(BIN_DIR)/test_clock $(BIN_DIR)/test_perft_suite $(
 
 test_bot_time:
 	python3 tests/test_bot_time_management.py
+
+test_texel: $(BIN_DIR)/chess_uci
+	python3 tests/test_texel_pipeline.py
 
 test_nn_v2: $(BIN_DIR)/chess_uci
 	python3 tests/test_nn_features.py
