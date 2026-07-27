@@ -98,15 +98,26 @@ class Pipeline:
         exit_path = LAB / "selfplay.exit"
         pgn_path = LAB / "selfplay_25000.pgn"
         deadline = time.monotonic() + self.timeout_seconds
-        while not exit_path.exists():
+        while True:
+            if exit_path.exists():
+                raw_exit = exit_path.read_text(
+                    encoding="utf-8", errors="replace").strip()
+                if raw_exit:
+                    if raw_exit != "0":
+                        raise RuntimeError(f"self-play exited with {raw_exit!r}")
+                    break
+                # cmd.exe opens the redirection target before executing `echo`.
+                # If the watcher lands in that tiny window, the complete PGN is
+                # a stronger success signal than the still-empty handoff file.
+                if pgn_path.exists() and count_pgn_games(pgn_path) == 25000:
+                    log("self-play exit file was empty, but the 25,000-game "
+                        "PGN is complete")
+                    break
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"self-play did not finish within {self.timeout_seconds / 3600:.1f}h")
             log("waiting for HCEV2Selfplay to write selfplay.exit")
             time.sleep(30)
-        raw_exit = exit_path.read_text(encoding="utf-8", errors="replace").strip()
-        if raw_exit != "0":
-            raise RuntimeError(f"self-play exited with {raw_exit!r}")
         if not pgn_path.exists() or pgn_path.stat().st_size == 0:
             raise RuntimeError("self-play reported success but produced no PGN")
         games = count_pgn_games(pgn_path)
