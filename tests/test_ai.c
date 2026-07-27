@@ -18,6 +18,39 @@ static void must(bool cond, const char *msg) {
     }
 }
 
+static void make_temp_path(char *out,
+                           size_t out_size,
+                           const char *stem,
+                           const char *suffix) {
+    const char *temp_dir = getenv("TMPDIR");
+    if (temp_dir == NULL || temp_dir[0] == '\0') {
+        temp_dir = getenv("TEMP");
+    }
+    if (temp_dir == NULL || temp_dir[0] == '\0') {
+        temp_dir = getenv("TMP");
+    }
+    if (temp_dir == NULL || temp_dir[0] == '\0') {
+        temp_dir = ".";
+    }
+
+    size_t temp_dir_len = strlen(temp_dir);
+    const char *separator =
+        temp_dir_len > 0 &&
+                (temp_dir[temp_dir_len - 1] == '/' ||
+                 temp_dir[temp_dir_len - 1] == '\\')
+            ? ""
+            : "/";
+    int written = snprintf(out,
+                           out_size,
+                           "%s%s%s_%ld%s",
+                           temp_dir,
+                           separator,
+                           stem,
+                           (long)getpid(),
+                           suffix);
+    must(written > 0 && (size_t)written < out_size, "Build temporary test path");
+}
+
 static void write_tiny_quant_nn_model(const char *path) {
     enum {
         halfkp_dim = 64 * 10 * 64,
@@ -115,8 +148,8 @@ int main(void) {
     };
     AiSearchResult result;
 
-    char temp_book_path[256];
-    snprintf(temp_book_path, sizeof(temp_book_path), "/tmp/chess_test_book_%ld.txt", (long)getpid());
+    char temp_book_path[512];
+    make_temp_path(temp_book_path, sizeof(temp_book_path), "chess_test_book", ".txt");
     FILE *book_fp = fopen(temp_book_path, "w");
     must(book_fp != NULL, "Create temporary opening book");
     must(fputs("Test Opening|e2e4 e7e5 g1f3\n", book_fp) >= 0, "Write temporary curated opening line");
@@ -166,8 +199,8 @@ int main(void) {
     must(engine_res.score_cp_white == chess_ai_eval_cp(&s),
          "Unified engine API deep eval should match direct deep eval");
 
-    char temp_nn_path[256];
-    snprintf(temp_nn_path, sizeof(temp_nn_path), "/tmp/chess_test_nn_%ld.bin", (long)getpid());
+    char temp_nn_path[512];
+    make_temp_path(temp_nn_path, sizeof(temp_nn_path), "chess_test_nn", ".bin");
     write_tiny_quant_nn_model(temp_nn_path);
     must(chess_ai_set_nn_model_path(temp_nn_path), "Load tiny quantized NN model");
     must(chess_ai_set_backend(CHESS_AI_BACKEND_NN), "NN backend should be selectable with loaded model");
@@ -204,8 +237,11 @@ int main(void) {
     must(chess_ai_pick_move(&s, &ai_cfg, &result), "AI should produce move in endgame");
     must(chess_is_move_legal(&s, result.best_move), "AI endgame move must be legal");
 
-    char temp_nonstart_book_path[256];
-    snprintf(temp_nonstart_book_path, sizeof(temp_nonstart_book_path), "/tmp/chess_test_nonstart_book_%ld.txt", (long)getpid());
+    char temp_nonstart_book_path[512];
+    make_temp_path(temp_nonstart_book_path,
+                   sizeof(temp_nonstart_book_path),
+                   "chess_test_nonstart_book",
+                   ".txt");
     book_fp = fopen(temp_nonstart_book_path, "w");
     must(book_fp != NULL, "Create temporary non-start opening book");
     must(fputs("Problem Line|d2d4 d7d5\n", book_fp) >= 0, "Write temporary non-start opening line");
