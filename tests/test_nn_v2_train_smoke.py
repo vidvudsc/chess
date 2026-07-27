@@ -16,7 +16,8 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parents[1]
 TRAIN = ROOT / "src" / "core" / "bot" / "nn" / "v2" / "train_value.py"
 PRECOMPUTE = ROOT / "src" / "core" / "bot" / "nn" / "v2" / "precompute_features.py"
-UCI = ROOT / "bin" / "chess_uci"
+UCI = ROOT / "bin" / ("chess_uci.exe" if sys.platform == "win32"
+                      else "chess_uci")
 
 
 POSITIONS = [
