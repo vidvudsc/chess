@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,9 @@ import chess.engine
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ENGINE = ROOT / "bin" / "chess_uci"
+DEFAULT_ENGINE = ROOT / "bin" / (
+    "chess_uci.exe" if sys.platform == "win32" else "chess_uci"
+)
 DEFAULT_SUITE = ROOT / "data" / "positions" / "hce_position_suite.jsonl"
 
 
