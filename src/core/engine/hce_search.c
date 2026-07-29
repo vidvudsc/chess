@@ -55,6 +55,8 @@ typedef struct HceSearchContext {
     int lmp_max_depth;
     int q_delta_margin;
     int q_see_threshold;
+    int aspiration_base;
+    int aspiration_depth_scale;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
@@ -445,6 +447,17 @@ static int ctx_q_delta_margin(const HceSearchContext *ctx) {
         return ctx->q_delta_margin;
     }
     return search_uses_nn_backend() ? 160 : 120;
+}
+
+static int ctx_aspiration_window(const HceSearchContext *ctx, int depth) {
+    if (search_uses_nn_backend()) {
+        return 32 + depth * 8;
+    }
+    int base = (ctx != NULL && ctx->aspiration_base > 0) ?
+        ctx->aspiration_base : 24;
+    int scale = (ctx != NULL && ctx->aspiration_depth_scale > 0) ?
+        ctx->aspiration_depth_scale : 6;
+    return base + depth * scale;
 }
 
 static int search_eval_cp_stm(const GameState *s, HceSearchContext *ctx, int ply) {
@@ -1452,6 +1465,8 @@ static bool run_search(const GameState *state,
         ctx.lmp_max_depth = cfg->hce_lmp_max_depth;
         ctx.q_delta_margin = cfg->hce_q_delta_margin;
         ctx.q_see_threshold = cfg->hce_q_see_threshold;
+        ctx.aspiration_base = cfg->hce_aspiration_base;
+        ctx.aspiration_depth_scale = cfg->hce_aspiration_depth_scale;
     }
     Move best_move = legal[0];
     int best_score = -HCE_INF;
@@ -1482,7 +1497,7 @@ static bool run_search(const GameState *state,
         }
         Move iter_best = best_move;
         int score = 0;
-        int window = search_uses_nn_backend() ? (32 + depth * 8) : (24 + depth * 6);
+        int window = ctx_aspiration_window(&ctx, depth);
         int alpha = -HCE_INF;
         int beta = HCE_INF;
         if (depth >= 2 && best_score > -HCE_INF / 2 && best_score < HCE_INF / 2) {
