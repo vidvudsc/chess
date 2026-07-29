@@ -21,6 +21,17 @@ DEFAULT_ENGINE = ROOT / "bin" / (
 DEFAULT_SUITE = ROOT / "data" / "positions" / "hce_position_suite.jsonl"
 
 
+def parse_uci_option(text: str) -> tuple[str, str]:
+    if "=" not in text:
+        raise argparse.ArgumentTypeError("--uci-option requires NAME=VALUE")
+    name, value = text.split("=", 1)
+    name = name.strip()
+    value = value.strip()
+    if not name or not value:
+        raise argparse.ArgumentTypeError("--uci-option requires NAME=VALUE")
+    return name, value
+
+
 def load_suite(path: Path) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as f:
@@ -49,6 +60,18 @@ def configure_engine(engine: chess.engine.SimpleEngine, args: argparse.Namespace
         options["MaxDepth"] = args.default_max_depth
     if args.nn_model and "NNModel" in engine.options:
         options["NNModel"] = str(args.nn_model)
+    option_lookup = {name.lower(): name for name in engine.options}
+    for raw_name, raw_value in args.uci_option:
+        resolved_name = option_lookup.get(raw_name.lower(), raw_name)
+        option_def = engine.options.get(resolved_name)
+        if option_def is None:
+            raise SystemExit(f"engine option not found: {raw_name}")
+        try:
+            options[resolved_name] = option_def.parse(raw_value)
+        except Exception as exc:
+            raise SystemExit(
+                f"failed to parse {raw_name}={raw_value!r}: {exc}"
+            ) from exc
     if options:
         engine.configure(options)
 
@@ -115,6 +138,14 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nn-model", type=Path)
     parser.add_argument("--default-think-ms", type=int, default=120)
     parser.add_argument("--default-max-depth", type=int, default=10)
+    parser.add_argument(
+        "--uci-option",
+        type=parse_uci_option,
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="Set an additional engine option; may be repeated.",
+    )
     parser.add_argument("--out", type=Path)
     parser.add_argument("--fail-fast", action="store_true")
     return parser
@@ -158,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         "engine": str(engine_path),
         "suite": str(suite_path),
         "backend": args.backend,
+        "uci_options": dict(args.uci_option),
         "case_count": len(rows),
         "failed": failed,
         "elapsed_ms": elapsed_ms,
