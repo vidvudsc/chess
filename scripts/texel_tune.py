@@ -48,6 +48,7 @@ PST_SQUARES = 64
 N_PST = PST_PIECES * PST_SQUARES
 N_PARAMS = N_SCALAR + 2 * N_PST  # 827
 N_MOBILITY_SHAPE = 8
+N_KING_PRESSURE = 2
 
 # Current engine PST tables (from src/core/engine/hce_eval.c).
 K_PAWN_PST = np.array([
@@ -241,18 +242,28 @@ def trunc_div100(a):
 def build(feats_path):
     raw = np.atleast_2d(np.loadtxt(feats_path, dtype=np.float32))
     base_side = SIDE_OLD + N_PST
-    base_columns = 3 + 2 * base_side
-    extended_side = base_side + N_MOBILITY_SHAPE
-    extended_columns = 3 + 2 * extended_side
-    if raw.shape[1] not in (base_columns, extended_columns):
+    supported_side_sizes = (
+        base_side,
+        base_side + N_MOBILITY_SHAPE,
+        base_side + N_MOBILITY_SHAPE + N_KING_PRESSURE,
+    )
+    side_feats = next(
+        (
+            candidate
+            for candidate in supported_side_sizes
+            if raw.shape[1] == 3 + 2 * candidate
+        ),
+        None,
+    )
+    if side_feats is None:
+        supported_columns = [3 + 2 * size for size in supported_side_sizes]
         raise ValueError(
             f"feature dump has {raw.shape[1]} columns, expected "
-            f"{base_columns} or {extended_columns}; regenerate it with "
+            f"one of {supported_columns}; regenerate it with "
             "a compatible tunedump")
     label = raw[:, 0].astype(np.float64)
     phase = raw[:, 1].astype(np.int64)
     eval_true = raw[:, 2].astype(np.int64)
-    side_feats = extended_side if raw.shape[1] == extended_columns else base_side
     w = raw[:, 3:3 + base_side]
     b_start = 3 + side_feats
     b = raw[:, b_start:b_start + base_side]

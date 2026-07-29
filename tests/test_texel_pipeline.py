@@ -15,6 +15,11 @@ TUNE_SCRIPT = ROOT / "scripts" / "texel_tune.py"
 APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_tune.py"
 MOBILITY_TUNE_SCRIPT = ROOT / "scripts" / "texel_tune_mobility_shape.py"
 MOBILITY_APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_mobility_shape.py"
+KING_TUNE_SCRIPT = ROOT / "scripts" / "texel_tune_king_pressure.py"
+KING_APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_king_pressure.py"
+KING_PIPELINE_SCRIPT = (
+    ROOT / "scripts" / "run_hce_king_pressure_pipeline.py"
+)
 THREAT_RECOVERY_SCRIPT = (
     ROOT / "scripts" / "run_hce_threat_recovery_sweep.py"
 )
@@ -263,6 +268,62 @@ def test_apply_mobility_shape_updates_all_constants() -> None:
             assert f"static const int k_{name} = {value};" in patched
 
 
+def test_hce_king_pressure_feature_detectors() -> None:
+    tune = load_module(
+        KING_TUNE_SCRIPT,
+        "texel_tune_king_pressure_feature_test",
+    )
+    fen = "k6r/8/2b5/8/8/8/8/7K w - - 0 1"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        positions_path = tmp_path / "positions.txt"
+        features_path = tmp_path / "features.txt"
+        positions_path.write_text(f"{fen};0.5\n", encoding="utf-8")
+        subprocess.run(
+            [str(ROOT / "bin" / "chess_uci")],
+            input=f"tunedumpall {positions_path} {features_path}\nquit\n",
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        _, _, _, _, white_counts, _, _ = tune.load_features(features_path)
+        assert white_counts[0, 0] == 3
+        assert white_counts[0, 1] == 1
+
+
+def test_apply_king_pressure_updates_all_constants() -> None:
+    apply_pressure = load_module(
+        KING_APPLY_SCRIPT,
+        "texel_apply_king_pressure_test",
+    )
+    values = [-8, -3, -5, -2]
+    with tempfile.TemporaryDirectory() as tmp:
+        eval_copy = Path(tmp) / "hce_eval.c"
+        eval_copy.write_text(
+            (ROOT / "src" / "core" / "engine" / "hce_eval.c").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        apply_pressure.patch_eval_c(eval_copy, values)
+        patched = eval_copy.read_text(encoding="utf-8")
+        for name, value in zip(apply_pressure.PARAMETER_NAMES, values):
+            assert f"static const int k_{name} = {value};" in patched
+
+
+def test_king_pressure_pipeline_uses_coordinate_median() -> None:
+    pipeline = load_module(
+        KING_PIPELINE_SCRIPT,
+        "hce_king_pressure_pipeline_test",
+    )
+    vectors = [
+        [-8, -3, -4, -2],
+        [-5, -7, -6, -1],
+        [-7, -4, -3, -5],
+    ]
+    assert pipeline.coordinate_median(vectors) == [-7, -4, -4, -2]
+
+
 def test_threat_recovery_scales_only_safe_push_weights() -> None:
     recovery = load_module(
         THREAT_RECOVERY_SCRIPT,
@@ -407,6 +468,9 @@ if __name__ == "__main__":
     test_hce_v3_threat_feature_detectors()
     test_hce_mobility_shape_feature_detectors()
     test_apply_mobility_shape_updates_all_constants()
+    test_hce_king_pressure_feature_detectors()
+    test_apply_king_pressure_updates_all_constants()
+    test_king_pressure_pipeline_uses_coordinate_median()
     test_threat_recovery_scales_only_safe_push_weights()
     test_tunedump_rejects_misaligned_groups()
     test_remote_pipeline_uses_coordinate_median()

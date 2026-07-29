@@ -67,6 +67,8 @@ typedef struct HceTuneFeatures {
     int active_mob_b;           // bishops with at least eight mobility squares
     int active_mob_r;           // rooks with at least ten mobility squares
     int active_mob_q;           // queens with at least fourteen mobility squares
+    int king_ring_coverage;     // king-zone squares attacked by enemy non-kings
+    int king_ring_double;       // king-zone squares attacked at least twice
     int pst[PIECE_TYPE_COUNT][64];  // piece-square counts (view side, mirrored for black)
     int residual_mg;            // summed mg of all non-tuned terms
     int residual_eg;            // summed eg of all non-tuned terms

@@ -587,6 +587,7 @@ typedef struct AttackUnions {
     uint64_t non_king[PIECE_COLOR_COUNT];
     uint64_t pawn[PIECE_COLOR_COUNT];
     uint64_t piece[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
+    uint64_t double_non_king[PIECE_COLOR_COUNT];
     int mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int restricted_mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int active_mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
@@ -594,6 +595,14 @@ typedef struct AttackUnions {
 } AttackUnions;
 
 static bool mobility_shape_enabled(void);
+static bool king_pressure_enabled(void);
+
+static void record_attack_multiplicity(uint64_t attacks,
+                                       uint64_t *attacked_once,
+                                       uint64_t *attacked_twice) {
+    *attacked_twice |= *attacked_once & attacks;
+    *attacked_once |= attacks;
+}
 
 static void record_mobility_shape(AttackUnions *out,
                                   int side,
@@ -631,7 +640,7 @@ static void record_mobility_shape(AttackUnions *out,
 
 static void compute_attack_unions(const GameState *s,
                                   AttackUnions *out,
-                                  bool collect_mobility_shape) {
+                                  bool collect_extended_features) {
     memset(out, 0, sizeof(*out));
     for (int side = PIECE_WHITE; side <= PIECE_BLACK; ++side) {
         int enemy_king_sq = chess_find_king_square(s, side ^ 1);
@@ -644,10 +653,20 @@ static void compute_attack_unions(const GameState *s,
                          : (((pawns & ~g_file_masks[0]) >> 9) | ((pawns & ~g_file_masks[7]) >> 7));
         out->pawn[side] = a;
         out->piece[side][PIECE_PAWN] = a;
+        uint64_t attacked_once = 0;
+        uint64_t attacked_twice = 0;
         uint64_t pawn_scan = pawns;
         while (pawn_scan != 0) {
             int sq = chess_pop_lsb(&pawn_scan);
-            if ((g_pawn_attacks[side][sq] & enemy_king_zone) != 0) {
+            uint64_t attacks = g_pawn_attacks[side][sq];
+            if (collect_extended_features) {
+                record_attack_multiplicity(
+                    attacks,
+                    &attacked_once,
+                    &attacked_twice
+                );
+            }
+            if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 1;
             }
         }
@@ -659,8 +678,13 @@ static void compute_attack_unions(const GameState *s,
             a |= attacks;
             out->piece[side][PIECE_KNIGHT] |= attacks;
             out->mobility[side][PIECE_KNIGHT] += mobility;
-            if (collect_mobility_shape) {
+            if (collect_extended_features) {
                 record_mobility_shape(out, side, PIECE_KNIGHT, mobility);
+                record_attack_multiplicity(
+                    attacks,
+                    &attacked_once,
+                    &attacked_twice
+                );
             }
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 2;
@@ -674,8 +698,13 @@ static void compute_attack_unions(const GameState *s,
             a |= attacks;
             out->piece[side][PIECE_BISHOP] |= attacks;
             out->mobility[side][PIECE_BISHOP] += mobility;
-            if (collect_mobility_shape) {
+            if (collect_extended_features) {
                 record_mobility_shape(out, side, PIECE_BISHOP, mobility);
+                record_attack_multiplicity(
+                    attacks,
+                    &attacked_once,
+                    &attacked_twice
+                );
             }
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 2;
@@ -689,8 +718,13 @@ static void compute_attack_unions(const GameState *s,
             a |= attacks;
             out->piece[side][PIECE_ROOK] |= attacks;
             out->mobility[side][PIECE_ROOK] += mobility;
-            if (collect_mobility_shape) {
+            if (collect_extended_features) {
                 record_mobility_shape(out, side, PIECE_ROOK, mobility);
+                record_attack_multiplicity(
+                    attacks,
+                    &attacked_once,
+                    &attacked_twice
+                );
             }
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 3;
@@ -705,14 +739,20 @@ static void compute_attack_unions(const GameState *s,
             a |= attacks;
             out->piece[side][PIECE_QUEEN] |= attacks;
             out->mobility[side][PIECE_QUEEN] += mobility;
-            if (collect_mobility_shape) {
+            if (collect_extended_features) {
                 record_mobility_shape(out, side, PIECE_QUEEN, mobility);
+                record_attack_multiplicity(
+                    attacks,
+                    &attacked_once,
+                    &attacked_twice
+                );
             }
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 5;
             }
         }
         out->non_king[side] = a;
+        out->double_non_king[side] = attacked_twice;
         uint64_t king = s->bb[side][PIECE_KING];
         while (king != 0) {
             uint64_t attacks = g_king_attacks[chess_pop_lsb(&king)];
@@ -1032,6 +1072,7 @@ typedef struct EvalSideTerms {
     EvalTermPair pawn_activity;
     EvalTermPair positional_structure;
     EvalTermPair positional_threats;
+    EvalTermPair king_pressure;
     EvalTermPair king_safety_penalty;
     EvalTermPair hanging_penalty;
     EvalTermPair queen_trap_penalty;
@@ -1091,6 +1132,10 @@ static const int k_active_mob_r_mg = 0;
 static const int k_active_mob_r_eg = 0;
 static const int k_active_mob_q_mg = 0;
 static const int k_active_mob_q_eg = 0;
+static const int k_king_ring_coverage_mg = 0;
+static const int k_king_ring_coverage_eg = 0;
+static const int k_king_ring_double_mg = 0;
+static const int k_king_ring_double_eg = 0;
 
 static bool mobility_shape_enabled(void) {
     return
@@ -1102,6 +1147,14 @@ static bool mobility_shape_enabled(void) {
         k_active_mob_b_mg != 0 || k_active_mob_b_eg != 0 ||
         k_active_mob_r_mg != 0 || k_active_mob_r_eg != 0 ||
         k_active_mob_q_mg != 0 || k_active_mob_q_eg != 0;
+}
+
+static bool king_pressure_enabled(void) {
+    return
+        k_king_ring_coverage_mg != 0 ||
+        k_king_ring_coverage_eg != 0 ||
+        k_king_ring_double_mg != 0 ||
+        k_king_ring_double_eg != 0;
 }
 
 #define HCE_PAWN_CACHE_BITS 16u
@@ -1551,6 +1604,33 @@ static int eval_side(const GameState *s,
         }
     }
 
+    if (feat != NULL || king_pressure_enabled()) {
+        int king_sq = chess_find_king_square(s, side);
+        int coverage = 0;
+        int double_coverage = 0;
+        if (king_sq >= 0) {
+            uint64_t king_zone =
+                g_king_attacks[king_sq] | (1ULL << king_sq);
+            coverage = chess_count_bits(
+                attack_unions->non_king[enemy] & king_zone
+            );
+            double_coverage = chess_count_bits(
+                attack_unions->double_non_king[enemy] & king_zone
+            );
+        }
+        eval_term_add(
+            &terms.king_pressure,
+            coverage * k_king_ring_coverage_mg +
+                double_coverage * k_king_ring_double_mg,
+            coverage * k_king_ring_coverage_eg +
+                double_coverage * k_king_ring_double_eg
+        );
+        if (feat != NULL) {
+            feat->king_ring_coverage = coverage;
+            feat->king_ring_double = double_coverage;
+        }
+    }
+
     int king_danger = king_safety_penalty(s, side, attack_unions);
     int hanging = hanging_piece_penalty(s, side, attack_unions);
     int queen_trap = queen_trap_penalty(s, side, attack_unions);
@@ -1585,7 +1665,9 @@ static int eval_side(const GameState *s,
         out_breakdown->pawn_activity =
             eval_term_blend(terms.pawn_activity, phase) +
             eval_term_blend(terms.positional_threats, phase);
-        out_breakdown->king_safety_penalty = -eval_term_blend(terms.king_safety_penalty, phase);
+        out_breakdown->king_safety_penalty =
+            -eval_term_blend(terms.king_safety_penalty, phase) -
+            eval_term_blend(terms.king_pressure, phase);
         out_breakdown->hanging_penalty = -eval_term_blend(terms.hanging_penalty, phase);
         out_breakdown->queen_trap_penalty = -eval_term_blend(terms.queen_trap_penalty, phase);
     }
@@ -1599,6 +1681,7 @@ static int eval_side(const GameState *s,
                    terms.pawn_activity.mg +
                    terms.positional_structure.mg +
                    terms.positional_threats.mg +
+                   terms.king_pressure.mg +
                    terms.king_safety_penalty.mg +
                    terms.hanging_penalty.mg +
                    terms.queen_trap_penalty.mg;
@@ -1611,6 +1694,7 @@ static int eval_side(const GameState *s,
                    terms.pawn_activity.eg +
                    terms.positional_structure.eg +
                    terms.positional_threats.eg +
+                   terms.king_pressure.eg +
                    terms.king_safety_penalty.eg +
                    terms.hanging_penalty.eg +
                    terms.queen_trap_penalty.eg;
@@ -1626,6 +1710,7 @@ static int eval_side(const GameState *s,
                        terms.pawn_activity.mg +
                        terms.positional_structure.mg +
                        terms.positional_threats.mg +
+                       terms.king_pressure.mg +
                        terms.king_safety_penalty.mg + terms.hanging_penalty.mg +
                        terms.queen_trap_penalty.mg;
         int tuned_eg = terms.material.eg + terms.piece_square.eg +
@@ -1634,6 +1719,7 @@ static int eval_side(const GameState *s,
                        terms.pawn_activity.eg +
                        terms.positional_structure.eg +
                        terms.positional_threats.eg +
+                       terms.king_pressure.eg +
                        terms.king_safety_penalty.eg + terms.hanging_penalty.eg +
                        terms.queen_trap_penalty.eg;
         feat->residual_mg = total_mg - tuned_mg;
@@ -1650,7 +1736,11 @@ int hce_eval_cp_stm(const GameState *s) {
 
     int phase = phase_value(s);
     AttackUnions attack_unions;
-    compute_attack_unions(s, &attack_unions, mobility_shape_enabled());
+    compute_attack_unions(
+        s,
+        &attack_unions,
+        mobility_shape_enabled() || king_pressure_enabled()
+    );
     int white = eval_side(s, PIECE_WHITE, phase, &attack_unions, NULL, NULL);
     int black = eval_side(s, PIECE_BLACK, phase, &attack_unions, NULL, NULL);
     int cp_white = white - black;
@@ -1697,7 +1787,11 @@ bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out) {
     memset(out, 0, sizeof(*out));
     out->phase = phase_value(s);
     AttackUnions attack_unions;
-    compute_attack_unions(s, &attack_unions, mobility_shape_enabled());
+    compute_attack_unions(
+        s,
+        &attack_unions,
+        mobility_shape_enabled() || king_pressure_enabled()
+    );
     out->white.total = eval_side(s, PIECE_WHITE, out->phase, &attack_unions, &out->white, NULL);
     out->black.total = eval_side(s, PIECE_BLACK, out->phase, &attack_unions, &out->black, NULL);
     out->score_cp_white = out->white.total - out->black.total;
