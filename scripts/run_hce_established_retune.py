@@ -108,6 +108,11 @@ def copy_first_lines(source: Path, destination: Path, limit: int) -> None:
         raise RuntimeError(f"no rows copied from {source}")
 
 
+def count_nonempty_lines(path: Path) -> int:
+    with path.open("r", encoding="utf-8", errors="replace") as source:
+        return sum(1 for line in source if line.strip())
+
+
 def probability(result: dict) -> float:
     paired = result.get("paired_probability_better")
     if paired is not None:
@@ -158,14 +163,64 @@ class Retune:
             log("waiting for check-extension sweep")
             time.sleep(30)
 
-    def tune(self) -> Path:
-        features = LAB / "combined_features.txt"
-        groups = LAB / "combined_groups.txt"
+    def prepare_feature_corpus(self) -> tuple[Path, Path, Path]:
+        positions = LAB / "combined_positions.txt"
+        raw_groups = LAB / "combined_groups_raw.txt"
         initial = LAB / "baseline_tune.log"
-        for path in (features, groups, initial):
+        for path in (positions, raw_groups, initial):
             if not path.exists():
                 raise RuntimeError(f"missing tuning input: {path}")
 
+        feature_engine = SWEEP / executable_name("established_feature_engine")
+        features = SWEEP / "established_features.txt"
+        groups = SWEEP / "established_groups.txt"
+
+        run(["make", "-B", "bin/chess_uci", "-j5"], "build_feature_engine")
+        shutil.copy2(
+            ROOT / "bin" / executable_name("chess_uci"),
+            feature_engine,
+        )
+        command = (
+            f"tunedump {positions} {features} {raw_groups} {groups}\n"
+            "quit\n"
+        )
+        run([str(feature_engine)], "dump_feature_corpus", input_text=command)
+
+        feature_rows = count_nonempty_lines(features)
+        group_rows = count_nonempty_lines(groups)
+        if feature_rows != group_rows:
+            raise RuntimeError(
+                f"fresh feature/group mismatch: {feature_rows} vs {group_rows}"
+            )
+        if feature_rows < 50000:
+            raise RuntimeError(
+                f"fresh quiet filter produced only {feature_rows} positions"
+            )
+
+        run(
+            [
+                sys.executable,
+                "scripts/texel_tune.py",
+                "--feats",
+                str(features),
+                "--initial-tuned-file",
+                str(initial),
+                "--retune-established",
+                "--iters",
+                "0",
+            ],
+            "verify_feature_corpus",
+        )
+        self.status["feature_corpus"] = {
+            "positions": feature_rows,
+            "groups": group_rows,
+            "exact_reconstruction": True,
+        }
+        self.save()
+        return features, groups, initial
+
+    def tune(self) -> Path:
+        features, groups, initial = self.prepare_feature_corpus()
         vectors = []
         for seed in (31, 32, 33):
             name = f"seed{seed}"
