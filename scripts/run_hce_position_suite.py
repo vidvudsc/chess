@@ -87,7 +87,10 @@ def run_case(engine: chess.engine.SimpleEngine, case: dict[str, Any], args: argp
     limit = chess.engine.Limit(time=think_ms / 1000.0, depth=max_depth)
 
     started = time.perf_counter()
-    result = engine.play(board, limit)
+    # Every suite row is an independent game. A fresh token makes
+    # python-chess emit "ucinewgame", clearing game-scoped engine state such
+    # as persistent history before this standalone FEN is searched.
+    result = engine.play(board, limit, game=object())
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     move_uci = result.move.uci() if result.move is not None else "0000"
 
