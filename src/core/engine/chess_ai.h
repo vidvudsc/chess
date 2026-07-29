@@ -41,6 +41,8 @@ typedef struct AiSearchConfig {
     int hce_lmp_base;
     int hce_lmp_depth_scale;
     int hce_lmp_max_depth;
+    int hce_q_delta_margin;
+    int hce_q_see_threshold;
     // Percentage of the previous move's quiet-history table to carry into the
     // next search. Zero preserves the established per-search reset behavior.
     int hce_history_carry;

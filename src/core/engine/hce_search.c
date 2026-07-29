@@ -53,6 +53,8 @@ typedef struct HceSearchContext {
     int lmp_base;
     int lmp_depth_scale;
     int lmp_max_depth;
+    int q_delta_margin;
+    int q_see_threshold;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
@@ -436,6 +438,13 @@ static int ctx_lmp_max_depth(const HceSearchContext *ctx) {
 static int ctx_lmp_move_limit(const HceSearchContext *ctx, int depth) {
     return ctx_lmp_base(ctx) +
            depth * depth * ctx_lmp_depth_scale(ctx) / 100;
+}
+
+static int ctx_q_delta_margin(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->q_delta_margin > 0) {
+        return ctx->q_delta_margin;
+    }
+    return search_uses_nn_backend() ? 160 : 120;
 }
 
 static int search_eval_cp_stm(const GameState *s, HceSearchContext *ctx, int ply) {
@@ -914,7 +923,7 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
             alpha > -HCE_MATE_THRESHOLD &&
             beta < HCE_MATE_THRESHOLD) {
             int gain = qsearch_move_gain_cp(s, m);
-            int delta_margin = search_uses_nn_backend() ? 160 : 120;
+            int delta_margin = ctx_q_delta_margin(ctx);
             if (!move_has_flag(m, MOVE_FLAG_PROMOTION) &&
                 stand_pat + gain + delta_margin <= alpha) {
                 continue;
@@ -923,7 +932,7 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
                 !move_has_flag(m, MOVE_FLAG_PROMOTION) &&
                 !move_has_flag(m, MOVE_FLAG_EN_PASSANT) &&
                 move_piece(m) != PIECE_KING &&
-                static_exchange_eval(s, m) < 0) {
+                static_exchange_eval(s, m) < ctx->q_see_threshold) {
                 continue;
             }
         }
@@ -1441,6 +1450,8 @@ static bool run_search(const GameState *state,
         ctx.lmp_base = cfg->hce_lmp_base;
         ctx.lmp_depth_scale = cfg->hce_lmp_depth_scale;
         ctx.lmp_max_depth = cfg->hce_lmp_max_depth;
+        ctx.q_delta_margin = cfg->hce_q_delta_margin;
+        ctx.q_see_threshold = cfg->hce_q_see_threshold;
     }
     Move best_move = legal[0];
     int best_score = -HCE_INF;
