@@ -81,6 +81,30 @@ def test_apply_tune_accepts_previous_vector_shapes() -> None:
             assert parsed[35:47] == [0] * 12
 
 
+def test_apply_tune_updates_combined_mobility_expression() -> None:
+    apply_tune = load_module(APPLY_SCRIPT, "texel_apply_tune_mobility_test")
+    values = [0] * (47 + 2 * 6 * 64)
+    values[9:17] = [5, 3, 10, -1, 8, 7, 5, 2]
+    with tempfile.TemporaryDirectory() as tmp:
+        eval_copy = Path(tmp) / "hce_eval.c"
+        eval_copy.write_text(
+            (ROOT / "src" / "core" / "engine" / "hce_eval.c").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        apply_tune.patch_eval_c(eval_copy, values)
+        patched = eval_copy.read_text(encoding="utf-8")
+        assert (
+            "knight_mob * 5 + bishop_mob * 10 + "
+            "rook_mob * 8 + queen_mob * 5"
+        ) in patched
+        assert (
+            "knight_mob * 3 + bishop_mob * -1 + "
+            "rook_mob * 7 + queen_mob * 2"
+        ) in patched
+
+
 def test_hce_v2_feature_detectors() -> None:
     tune = load_module(TUNE_SCRIPT, "texel_tune_feature_test")
     fixtures = [
@@ -198,6 +222,7 @@ if __name__ == "__main__":
     test_grouped_split_has_no_game_leakage()
     test_dataset_group_sidecar_stays_aligned()
     test_apply_tune_accepts_previous_vector_shapes()
+    test_apply_tune_updates_combined_mobility_expression()
     test_hce_v2_feature_detectors()
     test_tunedump_rejects_misaligned_groups()
     test_remote_pipeline_uses_coordinate_median()

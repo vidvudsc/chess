@@ -54,6 +54,18 @@ def fmt_array(arr, indent=4):
 def patch_eval_c(path, vals):
     text = path.read_text(encoding="utf-8")
 
+    def replace_exact(pattern, replacement, label, *, flags=0):
+        nonlocal text
+        text, replaced = re.subn(
+            pattern,
+            replacement,
+            text,
+            count=1,
+            flags=flags,
+        )
+        if replaced != 1:
+            raise SystemExit(f"failed to patch {label} in {path}")
+
     scalar = vals[:N_SCALAR]
     mg = vals[N_SCALAR:N_SCALAR + N_PST]
     eg = vals[N_SCALAR + N_PST:]
@@ -87,69 +99,56 @@ def patch_eval_c(path, vals):
             f"    {v}," for v in piece_values
         ) + "\n};"
 
-    text = re.sub(
+    replace_exact(
         r"const int hce_piece_value\[PIECE_TYPE_COUNT\] = \{[^}]+\};",
         pv_repl,
-        text,
-        count=1,
+        "hce_piece_value",
     )
 
     # Patch scalar constants.  Use regexes that match the surrounding code.
-    text = re.sub(
+    replace_exact(
         r"eval_term_add\(&terms\.pawn_structure, -?\d+, -?\d+\);\s*\n\s*if \(feat != NULL\) \{\s*\n\s*feat->isolated",
         lambda m: f"eval_term_add(&terms.pawn_structure, {iso_mg}, {iso_eg});\n"
-                  f"                    if (feat != NULL) {{\n"
-                  f"                        feat->isolated",
-        text,
-        count=1,
+                  f"                        if (feat != NULL) {{\n"
+                  f"                            feat->isolated",
+        "isolated pawn weights",
     )
-    text = re.sub(
+    replace_exact(
         r"eval_term_add\(&terms\.pawn_structure, -?\d+, -?\d+\);\s*\n\s*if \(feat != NULL\) \{\s*\n\s*feat->doubled",
         lambda m: f"eval_term_add(&terms.pawn_structure, {dbl_mg}, {dbl_eg});\n"
-                  f"                    if (feat != NULL) {{\n"
-                  f"                        feat->doubled",
-        text,
-        count=1,
+                  f"                        if (feat != NULL) {{\n"
+                  f"                            feat->doubled",
+        "doubled pawn weights",
     )
-    text = re.sub(
-        r"eval_term_add\(&terms\.mobility, knight_mob \* -?\d+, knight_mob \* -?\d+\);",
-        f"eval_term_add(&terms.mobility, knight_mob * {mob_n_mg}, knight_mob * {mob_n_eg});",
-        text,
-        count=1,
+    mobility_replacement = (
+        "eval_term_add(&terms.mobility,\n"
+        f"                  knight_mob * {mob_n_mg} + "
+        f"bishop_mob * {mob_b_mg} + rook_mob * {mob_r_mg} + "
+        f"queen_mob * {mob_q_mg},\n"
+        f"                  knight_mob * {mob_n_eg} + "
+        f"bishop_mob * {mob_b_eg} + rook_mob * {mob_r_eg} + "
+        f"queen_mob * {mob_q_eg});"
     )
-    text = re.sub(
-        r"eval_term_add\(&terms\.mobility, bishop_mob \* -?\d+, bishop_mob \* -?\d+\);",
-        f"eval_term_add(&terms.mobility, bishop_mob * {mob_b_mg}, bishop_mob * {mob_b_eg});",
-        text,
-        count=1,
+    replace_exact(
+        r"eval_term_add\(&terms\.mobility,\s*"
+        r"knight_mob\s*\*\s*-?\d+.*?\);",
+        mobility_replacement,
+        "combined mobility weights",
+        flags=re.DOTALL,
     )
-    text = re.sub(
-        r"eval_term_add\(&terms\.mobility, rook_mob \* -?\d+, rook_mob \* -?\d+\);",
-        f"eval_term_add(&terms.mobility, rook_mob * {mob_r_mg}, rook_mob * {mob_r_eg});",
-        text,
-        count=1,
-    )
-    text = re.sub(
-        r"eval_term_add\(&terms\.mobility, queen_mob \* -?\d+, queen_mob \* -?\d+\);",
-        f"eval_term_add(&terms.mobility, queen_mob * {mob_q_mg}, queen_mob * {mob_q_eg});",
-        text,
-        count=1,
-    )
-    text = re.sub(
+    replace_exact(
         r"eval_term_add\(&terms\.rook_files, \d+, \d+\);\s*\n\s*if \(feat != NULL\) \{\s*\n\s*feat->rook_open",
         lambda m: f"eval_term_add(&terms.rook_files, {rook_open_mg}, {rook_open_eg});\n"
                   f"                        if (feat != NULL) {{\n"
                   f"                            feat->rook_open",
-        text,
-        count=1,
+        "open-file rook weights",
     )
-    text = re.sub(
+    replace_exact(
         r"eval_term_add\(&terms\.rook_files, \d+, \d+\);\s*\n\s*if \(feat != NULL\) \{\s*\n\s*feat->rook_semi",
         lambda m: f"eval_term_add(&terms.rook_files, {rook_semi_mg}, {rook_semi_eg});\n"
                   f"                        if (feat != NULL) {{\n"
                   f"                            feat->rook_semi",
-        text,
-        count=1,
+        "semi-open-file rook weights",
     )
 
     scale_values = {
@@ -233,17 +232,15 @@ def patch_eval_c(path, vals):
             body = fmt_array(arr)
             return lambda m: f"static const int {m.group(1)}[64] = {{\n{body}\n}};"
 
-        text = re.sub(
+        replace_exact(
             rf"static const int ({re.escape(mg_name)})\[64\] = \{{[^}}]+\}};",
             make_repl(mg_arr),
-            text,
-            count=1,
+            mg_name,
         )
-        text = re.sub(
+        replace_exact(
             rf"static const int ({re.escape(eg_name)})\[64\] = \{{[^}}]+\}};",
             make_repl(eg_arr),
-            text,
-            count=1,
+            eg_name,
         )
 
     path.write_text(text, encoding="utf-8")

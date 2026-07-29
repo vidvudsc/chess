@@ -9,6 +9,7 @@ It never replaces the frozen baseline or deploys a candidate.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -122,10 +123,11 @@ def probability(result: dict) -> float:
 
 
 class Retune:
-    def __init__(self) -> None:
+    def __init__(self, *, resume_from_median: bool = False) -> None:
         SWEEP.mkdir(parents=True, exist_ok=True)
         self.status_path = SWEEP / "status.json"
         self.candidate_options: dict[str, str] = {}
+        self.resume_from_median = resume_from_median
         self.status: dict = {
             "status": "waiting",
             "started_at_unix": int(time.time()),
@@ -430,7 +432,18 @@ class Retune:
             if not BASELINE.exists():
                 raise RuntimeError(f"missing frozen baseline: {BASELINE}")
             self.wait_for_search_sweep()
-            tuned_path = self.tune()
+            if self.resume_from_median:
+                tuned_path = SWEEP / "established_median_tuned.txt"
+                if not tuned_path.exists():
+                    raise RuntimeError(
+                        f"missing saved median tune: {tuned_path}"
+                    )
+                parse_tuned_vector(tuned_path)
+                self.status["resumed_from_median"] = True
+                self.status["median_tuned_file"] = str(tuned_path)
+                self.save()
+            else:
+                tuned_path = self.tune()
             self.build_and_test(tuned_path)
             self.gate()
             self.status["finished_at_unix"] = int(time.time())
@@ -446,7 +459,14 @@ class Retune:
 
 
 def main() -> int:
-    return Retune().execute()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--resume-from-median",
+        action="store_true",
+        help="Reuse the saved three-seed median and repeat candidate validation.",
+    )
+    args = parser.parse_args()
+    return Retune(resume_from_median=args.resume_from_median).execute()
 
 
 if __name__ == "__main__":
