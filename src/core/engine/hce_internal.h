@@ -73,6 +73,10 @@ typedef struct HceTuneFeatures {
     int safe_space;             // safely controlled central space squares
     int deep_space;             // safe space on the two central ranks
     int advanced_center_pawns;  // center-file pawns advanced beyond home territory
+    int unsafe_mob_n;           // knight mobility squares controlled by enemy pawns
+    int unsafe_mob_b;           // bishop mobility squares controlled by enemy pawns
+    int unsafe_mob_r;           // rook mobility squares controlled by enemy pawns
+    int unsafe_mob_q;           // queen mobility squares controlled by enemy pawns
     int pst[PIECE_TYPE_COUNT][64];  // piece-square counts (view side, mirrored for black)
     int residual_mg;            // summed mg of all non-tuned terms
     int residual_eg;            // summed eg of all non-tuned terms

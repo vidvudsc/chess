@@ -589,6 +589,7 @@ typedef struct AttackUnions {
     uint64_t piece[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     uint64_t double_non_king[PIECE_COLOR_COUNT];
     int mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
+    int unsafe_mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int restricted_mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int active_mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int king_attack_units[PIECE_COLOR_COUNT];
@@ -596,6 +597,7 @@ typedef struct AttackUnions {
 
 static bool mobility_shape_enabled(void);
 static bool king_pressure_enabled(void);
+static bool unsafe_mobility_enabled(void);
 
 static void record_attack_multiplicity(uint64_t attacks,
                                        uint64_t *attacked_once,
@@ -643,16 +645,22 @@ static void compute_attack_unions(const GameState *s,
                                   bool collect_extended_features) {
     memset(out, 0, sizeof(*out));
     for (int side = PIECE_WHITE; side <= PIECE_BLACK; ++side) {
+        uint64_t pawns = s->bb[side][PIECE_PAWN];
+        uint64_t attacks = (side == PIECE_WHITE)
+                               ? (((pawns & ~g_file_masks[0]) << 7) |
+                                  ((pawns & ~g_file_masks[7]) << 9))
+                               : (((pawns & ~g_file_masks[0]) >> 9) |
+                                  ((pawns & ~g_file_masks[7]) >> 7));
+        out->pawn[side] = attacks;
+        out->piece[side][PIECE_PAWN] = attacks;
+    }
+    for (int side = PIECE_WHITE; side <= PIECE_BLACK; ++side) {
         int enemy_king_sq = chess_find_king_square(s, side ^ 1);
         uint64_t enemy_king_zone = enemy_king_sq >= 0
                                        ? (g_king_attacks[enemy_king_sq] | (1ULL << enemy_king_sq))
                                        : 0;
         uint64_t pawns = s->bb[side][PIECE_PAWN];
-        uint64_t a = (side == PIECE_WHITE)
-                         ? (((pawns & ~g_file_masks[0]) << 7) | ((pawns & ~g_file_masks[7]) << 9))
-                         : (((pawns & ~g_file_masks[0]) >> 9) | ((pawns & ~g_file_masks[7]) >> 7));
-        out->pawn[side] = a;
-        out->piece[side][PIECE_PAWN] = a;
+        uint64_t a = out->pawn[side];
         uint64_t attacked_once = 0;
         uint64_t attacked_twice = 0;
         uint64_t pawn_scan = pawns;
@@ -679,6 +687,9 @@ static void compute_attack_unions(const GameState *s,
             out->piece[side][PIECE_KNIGHT] |= attacks;
             out->mobility[side][PIECE_KNIGHT] += mobility;
             if (collect_extended_features) {
+                out->unsafe_mobility[side][PIECE_KNIGHT] += chess_count_bits(
+                    attacks & ~s->occ[side] & out->pawn[side ^ 1]
+                );
                 record_mobility_shape(out, side, PIECE_KNIGHT, mobility);
                 record_attack_multiplicity(
                     attacks,
@@ -699,6 +710,9 @@ static void compute_attack_unions(const GameState *s,
             out->piece[side][PIECE_BISHOP] |= attacks;
             out->mobility[side][PIECE_BISHOP] += mobility;
             if (collect_extended_features) {
+                out->unsafe_mobility[side][PIECE_BISHOP] += chess_count_bits(
+                    attacks & ~s->occ[side] & out->pawn[side ^ 1]
+                );
                 record_mobility_shape(out, side, PIECE_BISHOP, mobility);
                 record_attack_multiplicity(
                     attacks,
@@ -719,6 +733,9 @@ static void compute_attack_unions(const GameState *s,
             out->piece[side][PIECE_ROOK] |= attacks;
             out->mobility[side][PIECE_ROOK] += mobility;
             if (collect_extended_features) {
+                out->unsafe_mobility[side][PIECE_ROOK] += chess_count_bits(
+                    attacks & ~s->occ[side] & out->pawn[side ^ 1]
+                );
                 record_mobility_shape(out, side, PIECE_ROOK, mobility);
                 record_attack_multiplicity(
                     attacks,
@@ -740,6 +757,9 @@ static void compute_attack_unions(const GameState *s,
             out->piece[side][PIECE_QUEEN] |= attacks;
             out->mobility[side][PIECE_QUEEN] += mobility;
             if (collect_extended_features) {
+                out->unsafe_mobility[side][PIECE_QUEEN] += chess_count_bits(
+                    attacks & ~s->occ[side] & out->pawn[side ^ 1]
+                );
                 record_mobility_shape(out, side, PIECE_QUEEN, mobility);
                 record_attack_multiplicity(
                     attacks,
@@ -1144,6 +1164,14 @@ static const int k_deep_space_mg = 0;
 static const int k_deep_space_eg = 0;
 static const int k_advanced_center_pawns_mg = 0;
 static const int k_advanced_center_pawns_eg = 0;
+static const int k_unsafe_mob_n_mg = 0;
+static const int k_unsafe_mob_n_eg = 0;
+static const int k_unsafe_mob_b_mg = 0;
+static const int k_unsafe_mob_b_eg = 0;
+static const int k_unsafe_mob_r_mg = 0;
+static const int k_unsafe_mob_r_eg = 0;
+static const int k_unsafe_mob_q_mg = 0;
+static const int k_unsafe_mob_q_eg = 0;
 
 static bool mobility_shape_enabled(void) {
     return
@@ -1163,6 +1191,14 @@ static bool king_pressure_enabled(void) {
         k_king_ring_coverage_eg != 0 ||
         k_king_ring_double_mg != 0 ||
         k_king_ring_double_eg != 0;
+}
+
+static bool unsafe_mobility_enabled(void) {
+    return
+        k_unsafe_mob_n_mg != 0 || k_unsafe_mob_n_eg != 0 ||
+        k_unsafe_mob_b_mg != 0 || k_unsafe_mob_b_eg != 0 ||
+        k_unsafe_mob_r_mg != 0 || k_unsafe_mob_r_eg != 0 ||
+        k_unsafe_mob_q_mg != 0 || k_unsafe_mob_q_eg != 0;
 }
 
 static bool positional_space_enabled(void) {
@@ -1534,6 +1570,33 @@ static int eval_side(const GameState *s,
         feat->mob_r += rook_mob;
         feat->mob_q += queen_mob;
     }
+    if (feat != NULL || unsafe_mobility_enabled()) {
+        int unsafe_n =
+            attack_unions->unsafe_mobility[side][PIECE_KNIGHT];
+        int unsafe_b =
+            attack_unions->unsafe_mobility[side][PIECE_BISHOP];
+        int unsafe_r =
+            attack_unions->unsafe_mobility[side][PIECE_ROOK];
+        int unsafe_q =
+            attack_unions->unsafe_mobility[side][PIECE_QUEEN];
+        eval_term_add(
+            &terms.mobility,
+            unsafe_n * k_unsafe_mob_n_mg +
+                unsafe_b * k_unsafe_mob_b_mg +
+                unsafe_r * k_unsafe_mob_r_mg +
+                unsafe_q * k_unsafe_mob_q_mg,
+            unsafe_n * k_unsafe_mob_n_eg +
+                unsafe_b * k_unsafe_mob_b_eg +
+                unsafe_r * k_unsafe_mob_r_eg +
+                unsafe_q * k_unsafe_mob_q_eg
+        );
+        if (feat != NULL) {
+            feat->unsafe_mob_n = unsafe_n;
+            feat->unsafe_mob_b = unsafe_b;
+            feat->unsafe_mob_r = unsafe_r;
+            feat->unsafe_mob_q = unsafe_q;
+        }
+    }
     if (feat != NULL || mobility_shape_enabled()) {
         int restricted_n =
             attack_unions->restricted_mobility[side][PIECE_KNIGHT];
@@ -1817,7 +1880,8 @@ int hce_eval_cp_stm(const GameState *s) {
     compute_attack_unions(
         s,
         &attack_unions,
-        mobility_shape_enabled() || king_pressure_enabled()
+        mobility_shape_enabled() || king_pressure_enabled() ||
+            unsafe_mobility_enabled()
     );
     int white = eval_side(s, PIECE_WHITE, phase, &attack_unions, NULL, NULL);
     int black = eval_side(s, PIECE_BLACK, phase, &attack_unions, NULL, NULL);
@@ -1868,7 +1932,8 @@ bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out) {
     compute_attack_unions(
         s,
         &attack_unions,
-        mobility_shape_enabled() || king_pressure_enabled()
+        mobility_shape_enabled() || king_pressure_enabled() ||
+            unsafe_mobility_enabled()
     );
     out->white.total = eval_side(s, PIECE_WHITE, out->phase, &attack_unions, &out->white, NULL);
     out->black.total = eval_side(s, PIECE_BLACK, out->phase, &attack_unions, &out->black, NULL);

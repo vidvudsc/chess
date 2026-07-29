@@ -881,14 +881,17 @@ static int run_tune_dump(const char *infile,
             }
         }
         fprintf(fout,
-                " %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+                " %d %d %d %d %d %d %d %d %d %d %d %d %d %d"
+                " %d %d %d %d",
                 w.restricted_mob_n, w.restricted_mob_b,
                 w.restricted_mob_r, w.restricted_mob_q,
                 w.active_mob_n, w.active_mob_b,
                 w.active_mob_r, w.active_mob_q,
                 w.king_ring_coverage, w.king_ring_double,
                 w.bad_bishop_pawns, w.safe_space,
-                w.deep_space, w.advanced_center_pawns);
+                w.deep_space, w.advanced_center_pawns,
+                w.unsafe_mob_n, w.unsafe_mob_b,
+                w.unsafe_mob_r, w.unsafe_mob_q);
         // Black old scalar features.
         fprintf(fout,
                 " %d %d %d %d %d %d %d %d %d %d %d %d %d"
@@ -914,14 +917,17 @@ static int run_tune_dump(const char *infile,
             }
         }
         fprintf(fout,
-                " %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+                " %d %d %d %d %d %d %d %d %d %d %d %d %d %d"
+                " %d %d %d %d",
                 b.restricted_mob_n, b.restricted_mob_b,
                 b.restricted_mob_r, b.restricted_mob_q,
                 b.active_mob_n, b.active_mob_b,
                 b.active_mob_r, b.active_mob_q,
                 b.king_ring_coverage, b.king_ring_double,
                 b.bad_bishop_pawns, b.safe_space,
-                b.deep_space, b.advanced_center_pawns);
+                b.deep_space, b.advanced_center_pawns,
+                b.unsafe_mob_n, b.unsafe_mob_b,
+                b.unsafe_mob_r, b.unsafe_mob_q);
         if (quiet_only) {
             fprintf(fout, "\n");
         } else {
