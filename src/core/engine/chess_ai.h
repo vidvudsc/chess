@@ -41,6 +41,9 @@ typedef struct AiSearchConfig {
     int hce_lmp_base;
     int hce_lmp_depth_scale;
     int hce_lmp_max_depth;
+    // Percentage of the previous move's quiet-history table to carry into the
+    // next search. Zero preserves the established per-search reset behavior.
+    int hce_history_carry;
     // Optional policy hints affect root ordering only. They are independent
     // of the selected evaluator and remain dormant when the count is zero.
     Move policy_root_moves[CHESS_MAX_MOVES];

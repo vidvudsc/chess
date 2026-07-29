@@ -409,6 +409,10 @@ def play_one_game(game_index: int,
 
     moves_uci: List[str] = []
     elapsed_ms = {"white": 0, "black": 0}
+    # python-chess only emits UCI "ucinewgame" when this token changes. Keep
+    # one token for every ply of this game and a fresh token for the next game
+    # so engines cannot leak game-scoped heuristics across match samples.
+    game_token = object()
 
     # Bot-style pondering: after a side moves, its engine keeps analysing the
     # new position (opponent to move) in the background, warming its TT for
@@ -454,7 +458,7 @@ def play_one_game(game_index: int,
         ponder_stop(actor_key)
         started = time.perf_counter()
         try:
-            result = actor_engine.play(board, move_limit)
+            result = actor_engine.play(board, move_limit, game=game_token)
         except chess.engine.EngineTerminatedError as exc:
             elapsed_ms[actor_key] += int((time.perf_counter() - started) * 1000.0)
             winner = "black" if board.turn == chess.WHITE else "white"

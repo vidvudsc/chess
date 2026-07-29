@@ -23,6 +23,7 @@ typedef struct UciOptions {
     int hce_lmp_base;
     int hce_lmp_depth_scale;
     int hce_lmp_max_depth;
+    int hce_history_carry;
     ChessAiBackend backend;
     char book_file_path[512];
     char nn_model_path[512];
@@ -229,7 +230,8 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         set_spin_option(name_buf, value_buf, "HceLmrMoveBonusAt", 0, 32, &opt->hce_lmr_move_bonus_at) ||
         set_spin_option(name_buf, value_buf, "HceLmpBase", 0, 16, &opt->hce_lmp_base) ||
         set_spin_option(name_buf, value_buf, "HceLmpDepthScale", 0, 200, &opt->hce_lmp_depth_scale) ||
-        set_spin_option(name_buf, value_buf, "HceLmpMaxDepth", 0, 16, &opt->hce_lmp_max_depth)) {
+        set_spin_option(name_buf, value_buf, "HceLmpMaxDepth", 0, 16, &opt->hce_lmp_max_depth) ||
+        set_spin_option(name_buf, value_buf, "HceHistoryCarry", 0, 100, &opt->hce_history_carry)) {
         return;
     }
 
@@ -603,6 +605,7 @@ static void handle_go(GameState *state, const char *line, const UciOptions *opt)
         .hce_lmp_base = opt->hce_lmp_base,
         .hce_lmp_depth_scale = opt->hce_lmp_depth_scale,
         .hce_lmp_max_depth = opt->hce_lmp_max_depth,
+        .hce_history_carry = opt->hce_history_carry,
         .policy_root_count = 0,
         .policy_root_bonus = opt->policy_root_bonus,
         .info_callback = uci_search_info_callback,
@@ -691,6 +694,7 @@ static void print_uci_intro(const UciOptions *opt) {
     printf("option name HceLmpBase type spin default 0 min 0 max 16\n");
     printf("option name HceLmpDepthScale type spin default 0 min 0 max 200\n");
     printf("option name HceLmpMaxDepth type spin default 0 min 0 max 16\n");
+    printf("option name HceHistoryCarry type spin default 0 min 0 max 100\n");
     printf("option name NNModel type string default auto\n");
     printf("option name NNLeafLog type string default off\n");
     printf("option name NNLeafLogLimit type spin default %d min 0 max 100000000\n", opt->nn_leaf_log_limit);
@@ -973,6 +977,7 @@ int main(void) {
         }
         if (strcmp(line, "ucinewgame") == 0) {
             search_thread_join();
+            hce_search_new_game();
             reset_start_position(&state);
             continue;
         }

@@ -60,6 +60,7 @@ typedef struct HceSearchContext {
 
 static HceTtEntry g_hce_tt[HCE_TT_SIZE];
 static uint8_t g_hce_tt_generation = 0;
+static int g_hce_persistent_history[PIECE_COLOR_COUNT][64][64];
 static atomic_flag g_hce_lock = ATOMIC_FLAG_INIT;
 
 // Cooperative stop for UCI "stop" (and later pondering/SMP): set from any
@@ -127,6 +128,12 @@ static void hce_lock(void) {
 
 static void hce_unlock(void) {
     atomic_flag_clear_explicit(&g_hce_lock, memory_order_release);
+}
+
+void hce_search_new_game(void) {
+    hce_lock();
+    memset(g_hce_persistent_history, 0, sizeof(g_hce_persistent_history));
+    hce_unlock();
 }
 
 static bool search_is_insufficient_material(const GameState *s) {
@@ -839,6 +846,30 @@ static void penalize_quiet_history(HceSearchContext *ctx,
     }
 }
 
+static void load_persistent_history(HceSearchContext *ctx, int carry_percent) {
+    if (ctx == NULL || carry_percent <= 0) {
+        return;
+    }
+    if (carry_percent > 100) {
+        carry_percent = 100;
+    }
+    for (int side = 0; side < PIECE_COLOR_COUNT; ++side) {
+        for (int from = 0; from < 64; ++from) {
+            for (int to = 0; to < 64; ++to) {
+                ctx->history[side][from][to] =
+                    (g_hce_persistent_history[side][from][to] * carry_percent) / 100;
+            }
+        }
+    }
+}
+
+static void save_persistent_history(const HceSearchContext *ctx) {
+    if (ctx == NULL) {
+        return;
+    }
+    memcpy(g_hce_persistent_history, ctx->history, sizeof(g_hce_persistent_history));
+}
+
 static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchContext *ctx) {
     if (should_stop(ctx)) {
         return search_eval_cp_stm(s, ctx, ply);
@@ -1355,7 +1386,12 @@ bool hce_pick_opening_move(const GameState *s, Move *out_move) {
     return false;
 }
 
-static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSearchResult *out, int override_depth, int override_ms) {
+static bool run_search(const GameState *state,
+                       const AiSearchConfig *cfg,
+                       AiSearchResult *out,
+                       int override_depth,
+                       int override_ms,
+                       bool save_history) {
     if (state == NULL || out == NULL) {
         return false;
     }
@@ -1380,6 +1416,8 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
 
     HceSearchContext ctx;
     memset(&ctx, 0, sizeof(ctx));
+    int history_carry = (cfg != NULL) ? cfg->hce_history_carry : 0;
+    load_persistent_history(&ctx, history_carry);
     ctx.start_ms = now_ms();
     int think_ms = (override_ms > 0) ? override_ms : ((cfg != NULL && cfg->think_time_ms > 0) ? cfg->think_time_ms : 120);
     int hard_ms = think_ms;
@@ -1488,6 +1526,9 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     out->depth_reached = depth_reached;
     out->nodes = ctx.nodes;
     out->elapsed_ms = (int)(now_ms() - ctx.start_ms);
+    if (save_history && history_carry > 0) {
+        save_persistent_history(&ctx);
+    }
     return true;
 }
 
@@ -1505,7 +1546,7 @@ typedef struct SmpHelperArgs {
 static void *smp_helper_main(void *arg) {
     SmpHelperArgs *a = (SmpHelperArgs *)arg;
     AiSearchResult scratch;
-    run_search(&a->root, &a->cfg, &scratch, 0, 0);
+    run_search(&a->root, &a->cfg, &scratch, 0, 0, false);
     return NULL;
 }
 
@@ -1534,6 +1575,9 @@ bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchRe
             a->root = *state;
             a->cfg = *cfg;
             a->cfg.threads = 1;
+            // Only the main search reads/writes the persistent table. Helpers
+            // keep private per-search history and share only the TT.
+            a->cfg.hce_history_carry = 0;
             a->cfg.info_callback = NULL;
             a->cfg.info_user_data = NULL;
             // Helpers get the hard budget as their whole budget; the stop
@@ -1550,7 +1594,7 @@ bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchRe
         pthread_attr_destroy(&attr);
     }
 
-    ok = run_search(state, cfg, out, 0, 0);
+    ok = run_search(state, cfg, out, 0, 0, true);
 
     if (helpers_started > 0) {
         hce_search_request_stop();
@@ -1576,7 +1620,7 @@ int hce_probe_deep_eval_cp_stm(const GameState *state) {
     hce_lock();
     hce_init_tables();
     init_lmr_table();
-    bool ok = run_search(state, &cfg, &result, 4, 35);
+    bool ok = run_search(state, &cfg, &result, 4, 35, false);
     hce_unlock();
     if (ok && result.found_move && result.depth_reached > 0) {
         return result.score_cp;

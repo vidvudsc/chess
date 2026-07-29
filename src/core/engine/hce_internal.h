@@ -84,6 +84,8 @@ void hce_search_request_stop(void);
 // searches BEFORE starting one (not inside the search itself), or a stop
 // arriving between spawn and search entry would be silently erased.
 void hce_search_clear_stop(void);
+// Reset state that is intentionally allowed to persist between moves.
+void hce_search_new_game(void);
 int hce_probe_deep_eval_cp_stm(const GameState *state);
 
 #endif
