@@ -586,6 +586,7 @@ typedef struct AttackUnions {
     uint64_t all[PIECE_COLOR_COUNT];
     uint64_t non_king[PIECE_COLOR_COUNT];
     uint64_t pawn[PIECE_COLOR_COUNT];
+    uint64_t piece[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int king_attack_units[PIECE_COLOR_COUNT];
 } AttackUnions;
@@ -602,6 +603,7 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
                          ? (((pawns & ~g_file_masks[0]) << 7) | ((pawns & ~g_file_masks[7]) << 9))
                          : (((pawns & ~g_file_masks[0]) >> 9) | ((pawns & ~g_file_masks[7]) >> 7));
         out->pawn[side] = a;
+        out->piece[side][PIECE_PAWN] = a;
         uint64_t pawn_scan = pawns;
         while (pawn_scan != 0) {
             int sq = chess_pop_lsb(&pawn_scan);
@@ -614,6 +616,7 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             int sq = chess_pop_lsb(&knights);
             uint64_t attacks = g_knight_attacks[sq];
             a |= attacks;
+            out->piece[side][PIECE_KNIGHT] |= attacks;
             out->mobility[side][PIECE_KNIGHT] += chess_count_bits(attacks & ~s->occ[side]);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 2;
@@ -624,6 +627,7 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             int sq = chess_pop_lsb(&bishops);
             uint64_t attacks = hce_bishop_attacks(sq, s->occ_all);
             a |= attacks;
+            out->piece[side][PIECE_BISHOP] |= attacks;
             out->mobility[side][PIECE_BISHOP] += chess_count_bits(attacks & ~s->occ[side]);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 2;
@@ -634,6 +638,7 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             int sq = chess_pop_lsb(&rooks);
             uint64_t attacks = hce_rook_attacks(sq, s->occ_all);
             a |= attacks;
+            out->piece[side][PIECE_ROOK] |= attacks;
             out->mobility[side][PIECE_ROOK] += chess_count_bits(attacks & ~s->occ[side]);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 3;
@@ -645,6 +650,7 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             uint64_t attacks = hce_bishop_attacks(sq, s->occ_all) |
                                hce_rook_attacks(sq, s->occ_all);
             a |= attacks;
+            out->piece[side][PIECE_QUEEN] |= attacks;
             out->mobility[side][PIECE_QUEEN] += chess_count_bits(attacks & ~s->occ[side]);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 5;
@@ -653,10 +659,70 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
         out->non_king[side] = a;
         uint64_t king = s->bb[side][PIECE_KING];
         while (king != 0) {
-            a |= g_king_attacks[chess_pop_lsb(&king)];
+            uint64_t attacks = g_king_attacks[chess_pop_lsb(&king)];
+            a |= attacks;
+            out->piece[side][PIECE_KING] |= attacks;
         }
         out->all[side] = a;
     }
+}
+
+typedef struct PositionalThreatCounts {
+    int minor_pawn;
+    int minor_minor;
+    int minor_major;
+    int rook_minor;
+    int safe_push_minor;
+    int safe_push_major;
+} PositionalThreatCounts;
+
+static PositionalThreatCounts positional_threat_counts(
+    const GameState *s,
+    int side,
+    const AttackUnions *atk) {
+    PositionalThreatCounts out = {0};
+    int enemy = side ^ 1;
+    uint64_t enemy_pawn_defended = atk->pawn[enemy];
+    uint64_t minor_attacks =
+        atk->piece[side][PIECE_KNIGHT] | atk->piece[side][PIECE_BISHOP];
+    uint64_t rook_attacks = atk->piece[side][PIECE_ROOK];
+    uint64_t enemy_minors =
+        s->bb[enemy][PIECE_KNIGHT] | s->bb[enemy][PIECE_BISHOP];
+    uint64_t enemy_majors =
+        s->bb[enemy][PIECE_ROOK] | s->bb[enemy][PIECE_QUEEN];
+
+    out.minor_pawn = chess_count_bits(
+        minor_attacks & s->bb[enemy][PIECE_PAWN] & ~enemy_pawn_defended);
+    out.minor_minor = chess_count_bits(
+        minor_attacks & enemy_minors & ~enemy_pawn_defended);
+    out.minor_major = chess_count_bits(
+        minor_attacks & enemy_majors & ~enemy_pawn_defended);
+    out.rook_minor = chess_count_bits(
+        rook_attacks & enemy_minors & ~enemy_pawn_defended);
+
+    uint64_t pushes;
+    if (side == PIECE_WHITE) {
+        pushes = (s->bb[side][PIECE_PAWN] << 8) & ~s->occ_all;
+        pushes &= ~0xff00000000000000ULL;
+        pushes = (pushes & ~atk->all[enemy]) |
+                 (pushes & atk->all[side] & ~atk->pawn[enemy]);
+        uint64_t push_attacks =
+            ((pushes & ~g_file_masks[0]) << 7) |
+            ((pushes & ~g_file_masks[7]) << 9);
+        out.safe_push_minor = chess_count_bits(push_attacks & enemy_minors);
+        out.safe_push_major = chess_count_bits(push_attacks & enemy_majors);
+    } else {
+        pushes = (s->bb[side][PIECE_PAWN] >> 8) & ~s->occ_all;
+        pushes &= ~0x00000000000000ffULL;
+        pushes = (pushes & ~atk->all[enemy]) |
+                 (pushes & atk->all[side] & ~atk->pawn[enemy]);
+        uint64_t push_attacks =
+            ((pushes & ~g_file_masks[0]) >> 9) |
+            ((pushes & ~g_file_masks[7]) >> 7);
+        out.safe_push_minor = chess_count_bits(push_attacks & enemy_minors);
+        out.safe_push_major = chess_count_bits(push_attacks & enemy_majors);
+    }
+    return out;
 }
 
 static int king_shield_penalty(const GameState *s, int side) {
@@ -909,6 +975,7 @@ typedef struct EvalSideTerms {
     EvalTermPair mobility;
     EvalTermPair pawn_activity;
     EvalTermPair positional_structure;
+    EvalTermPair positional_threats;
     EvalTermPair king_safety_penalty;
     EvalTermPair hanging_penalty;
     EvalTermPair queen_trap_penalty;
@@ -940,6 +1007,18 @@ static const int k_bishop_pair_mg = 0;
 static const int k_bishop_pair_eg = 0;
 static const int k_rook_behind_passer_mg = 0;
 static const int k_rook_behind_passer_eg = 0;
+static const int k_minor_threat_pawn_mg = 0;
+static const int k_minor_threat_pawn_eg = 0;
+static const int k_minor_threat_minor_mg = 0;
+static const int k_minor_threat_minor_eg = 0;
+static const int k_minor_threat_major_mg = 0;
+static const int k_minor_threat_major_eg = 0;
+static const int k_rook_threat_minor_mg = 0;
+static const int k_rook_threat_minor_eg = 0;
+static const int k_safe_push_threat_minor_mg = 0;
+static const int k_safe_push_threat_minor_eg = 0;
+static const int k_safe_push_threat_major_mg = 0;
+static const int k_safe_push_threat_major_eg = 0;
 
 #define HCE_PAWN_CACHE_BITS 16u
 #define HCE_PAWN_CACHE_SIZE (1u << HCE_PAWN_CACHE_BITS)
@@ -1313,6 +1392,39 @@ static int eval_side(const GameState *s,
         feat->pawn_threat_major = pawn_threat_major;
     }
 
+    if (feat != NULL ||
+        k_minor_threat_pawn_mg != 0 || k_minor_threat_pawn_eg != 0 ||
+        k_minor_threat_minor_mg != 0 || k_minor_threat_minor_eg != 0 ||
+        k_minor_threat_major_mg != 0 || k_minor_threat_major_eg != 0 ||
+        k_rook_threat_minor_mg != 0 || k_rook_threat_minor_eg != 0 ||
+        k_safe_push_threat_minor_mg != 0 || k_safe_push_threat_minor_eg != 0 ||
+        k_safe_push_threat_major_mg != 0 || k_safe_push_threat_major_eg != 0) {
+        PositionalThreatCounts threats =
+            positional_threat_counts(s, side, attack_unions);
+        eval_term_add(
+            &terms.positional_threats,
+            threats.minor_pawn * k_minor_threat_pawn_mg +
+                threats.minor_minor * k_minor_threat_minor_mg +
+                threats.minor_major * k_minor_threat_major_mg +
+                threats.rook_minor * k_rook_threat_minor_mg +
+                threats.safe_push_minor * k_safe_push_threat_minor_mg +
+                threats.safe_push_major * k_safe_push_threat_major_mg,
+            threats.minor_pawn * k_minor_threat_pawn_eg +
+                threats.minor_minor * k_minor_threat_minor_eg +
+                threats.minor_major * k_minor_threat_major_eg +
+                threats.rook_minor * k_rook_threat_minor_eg +
+                threats.safe_push_minor * k_safe_push_threat_minor_eg +
+                threats.safe_push_major * k_safe_push_threat_major_eg);
+        if (feat != NULL) {
+            feat->minor_threat_pawn = threats.minor_pawn;
+            feat->minor_threat_minor = threats.minor_minor;
+            feat->minor_threat_major = threats.minor_major;
+            feat->rook_threat_minor = threats.rook_minor;
+            feat->safe_push_threat_minor = threats.safe_push_minor;
+            feat->safe_push_threat_major = threats.safe_push_major;
+        }
+    }
+
     int king_danger = king_safety_penalty(s, side, attack_unions);
     int hanging = hanging_piece_penalty(s, side, attack_unions);
     int queen_trap = queen_trap_penalty(s, side, attack_unions);
@@ -1344,7 +1456,9 @@ static int eval_side(const GameState *s,
         out_breakdown->passed_pawns = eval_term_blend(terms.passed_pawns, phase);
         out_breakdown->rook_files = eval_term_blend(terms.rook_files, phase);
         out_breakdown->mobility = eval_term_blend(terms.mobility, phase);
-        out_breakdown->pawn_activity = eval_term_blend(terms.pawn_activity, phase);
+        out_breakdown->pawn_activity =
+            eval_term_blend(terms.pawn_activity, phase) +
+            eval_term_blend(terms.positional_threats, phase);
         out_breakdown->king_safety_penalty = -eval_term_blend(terms.king_safety_penalty, phase);
         out_breakdown->hanging_penalty = -eval_term_blend(terms.hanging_penalty, phase);
         out_breakdown->queen_trap_penalty = -eval_term_blend(terms.queen_trap_penalty, phase);
@@ -1358,6 +1472,7 @@ static int eval_side(const GameState *s,
                    terms.mobility.mg +
                    terms.pawn_activity.mg +
                    terms.positional_structure.mg +
+                   terms.positional_threats.mg +
                    terms.king_safety_penalty.mg +
                    terms.hanging_penalty.mg +
                    terms.queen_trap_penalty.mg;
@@ -1369,6 +1484,7 @@ static int eval_side(const GameState *s,
                    terms.mobility.eg +
                    terms.pawn_activity.eg +
                    terms.positional_structure.eg +
+                   terms.positional_threats.eg +
                    terms.king_safety_penalty.eg +
                    terms.hanging_penalty.eg +
                    terms.queen_trap_penalty.eg;
@@ -1383,6 +1499,7 @@ static int eval_side(const GameState *s,
                        terms.mobility.mg + terms.passed_pawns.mg +
                        terms.pawn_activity.mg +
                        terms.positional_structure.mg +
+                       terms.positional_threats.mg +
                        terms.king_safety_penalty.mg + terms.hanging_penalty.mg +
                        terms.queen_trap_penalty.mg;
         int tuned_eg = terms.material.eg + terms.piece_square.eg +
@@ -1390,6 +1507,7 @@ static int eval_side(const GameState *s,
                        terms.mobility.eg + terms.passed_pawns.eg +
                        terms.pawn_activity.eg +
                        terms.positional_structure.eg +
+                       terms.positional_threats.eg +
                        terms.king_safety_penalty.eg + terms.hanging_penalty.eg +
                        terms.queen_trap_penalty.eg;
         feat->residual_mg = total_mg - tuned_mg;

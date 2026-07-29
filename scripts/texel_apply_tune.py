@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Apply a TUNED weight line from texel_tune.py to hce_eval.c.
 
-Reads the machine-readable `TUNED ...` line (815 integers):
-    47 scalars (established terms, pawn activity, and HCE-v2 structure)
+Reads the machine-readable `TUNED ...` line (827 integers):
+    59 scalars (established terms, HCE-v2 structure, and contextual threats)
     384 mg PST values (K, Q, B, N, R, P each 64 squares)
     384 eg PST values
 
@@ -17,7 +17,8 @@ import sys
 from pathlib import Path
 
 N_CURRENT_SCALAR = 35
-N_SCALAR = 47
+N_V2_SCALAR = 47
+N_SCALAR = 59
 N_PST = 6 * 64
 PST_PIECES = 6
 
@@ -28,6 +29,7 @@ def parse_tuned_line(line):
         parts = parts[1:]
     vals = [int(x) for x in parts]
     expected = N_SCALAR + 2 * N_PST
+    v2_expected = N_V2_SCALAR + 2 * N_PST
     current_expected = N_CURRENT_SCALAR + 2 * N_PST
     legacy_expected = 21 + 2 * N_PST
     if len(vals) == legacy_expected:
@@ -35,9 +37,11 @@ def parse_tuned_line(line):
             100, 100, -100, -100, -100, -100, -100, -100,
             0, 0, 0, 0, 0, 0,
         ]
-        vals = vals[:21] + extra_defaults + [0] * 12 + vals[21:]
+        vals = vals[:21] + extra_defaults + [0] * 24 + vals[21:]
     elif len(vals) == current_expected:
-        vals = vals[:N_CURRENT_SCALAR] + [0] * 12 + vals[N_CURRENT_SCALAR:]
+        vals = vals[:N_CURRENT_SCALAR] + [0] * 24 + vals[N_CURRENT_SCALAR:]
+    elif len(vals) == v2_expected:
+        vals = vals[:N_V2_SCALAR] + [0] * 12 + vals[N_V2_SCALAR:]
     if len(vals) != expected:
         raise SystemExit(f"expected {expected} tuned integers, got {len(vals)}")
     return vals
@@ -88,6 +92,12 @@ def patch_eval_c(path, vals):
      knight_outpost_mg, knight_outpost_eg,
      bishop_pair_mg, bishop_pair_eg,
      rook_behind_passer_mg, rook_behind_passer_eg) = scalar[35:47]
+    (minor_threat_pawn_mg, minor_threat_pawn_eg,
+     minor_threat_minor_mg, minor_threat_minor_eg,
+     minor_threat_major_mg, minor_threat_major_eg,
+     rook_threat_minor_mg, rook_threat_minor_eg,
+     safe_push_threat_minor_mg, safe_push_threat_minor_eg,
+     safe_push_threat_major_mg, safe_push_threat_major_eg) = scalar[47:59]
 
     # Piece enum order in engine: KING=0, QUEEN=1, BISHOP=2, KNIGHT=3, ROOK=4, PAWN=5.
     # Scalar order from tuner: mat_q, mat_n, mat_b, mat_r, mat_p.
@@ -204,6 +214,30 @@ def patch_eval_c(path, vals):
         "k_rook_behind_passer_eg": rook_behind_passer_eg,
     }
     for name, value in v2_values.items():
+        text, replaced = re.subn(
+            rf"static const int {name} = -?\d+;",
+            f"static const int {name} = {value};",
+            text,
+            count=1,
+        )
+        if replaced != 1:
+            raise SystemExit(f"failed to patch {name} in {path}")
+
+    threat_values = {
+        "k_minor_threat_pawn_mg": minor_threat_pawn_mg,
+        "k_minor_threat_pawn_eg": minor_threat_pawn_eg,
+        "k_minor_threat_minor_mg": minor_threat_minor_mg,
+        "k_minor_threat_minor_eg": minor_threat_minor_eg,
+        "k_minor_threat_major_mg": minor_threat_major_mg,
+        "k_minor_threat_major_eg": minor_threat_major_eg,
+        "k_rook_threat_minor_mg": rook_threat_minor_mg,
+        "k_rook_threat_minor_eg": rook_threat_minor_eg,
+        "k_safe_push_threat_minor_mg": safe_push_threat_minor_mg,
+        "k_safe_push_threat_minor_eg": safe_push_threat_minor_eg,
+        "k_safe_push_threat_major_mg": safe_push_threat_major_mg,
+        "k_safe_push_threat_major_eg": safe_push_threat_major_eg,
+    }
+    for name, value in threat_values.items():
         text, replaced = re.subn(
             rf"static const int {name} = -?\d+;",
             f"static const int {name} = {value};",

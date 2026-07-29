@@ -761,7 +761,8 @@ static void print_uci_intro(const UciOptions *opt) {
 //   rook_open, rook_semi, passed_mg, passed_eg, king_mg, king_eg, hanging,
 //   queen_mg, queen_eg, pawn_pushes, pawn_threat_minor, pawn_threat_major,
 //   connected_pawns, phalanx_pawns, backward_pawns, knight_outposts,
-//   bishop_pair, rook_behind_passer,
+//   bishop_pair, rook_behind_passer, minor threats against weak pawn/minor/major,
+//   rook threats against weak minors, safe-push threats against minor/major,
 //   6*64 piece-square counts (K,Q,B,N,R,P by square, king always zero),
 //   residual_mg, residual_eg.
 // Positions are kept only if |static_eval - qsearch_eval| < 50 cp so the label
@@ -848,6 +849,7 @@ static int run_tune_dump(const char *infile,
         fprintf(fout,
                 " %d %d %d %d %d %d %d %d %d %d %d %d %d"
                 " %d %d %d %d %d %d %d %d %d %d %d %d"
+                " %d %d %d %d %d %d"
                 " %d %d %d %d %d %d",
                 w.mat[PIECE_QUEEN], w.mat[PIECE_KNIGHT], w.mat[PIECE_BISHOP],
                 w.mat[PIECE_ROOK], w.mat[PIECE_PAWN], w.isolated, w.doubled,
@@ -857,6 +859,9 @@ static int run_tune_dump(const char *infile,
                 w.pawn_pushes, w.pawn_threat_minor, w.pawn_threat_major,
                 w.connected_pawns, w.phalanx_pawns, w.backward_pawns,
                 w.knight_outposts, w.bishop_pair, w.rook_behind_passer,
+                w.minor_threat_pawn, w.minor_threat_minor,
+                w.minor_threat_major, w.rook_threat_minor,
+                w.safe_push_threat_minor, w.safe_push_threat_major,
                 w.residual_mg, w.residual_eg);
         // White PST counts.
         for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
@@ -868,6 +873,7 @@ static int run_tune_dump(const char *infile,
         fprintf(fout,
                 " %d %d %d %d %d %d %d %d %d %d %d %d %d"
                 " %d %d %d %d %d %d %d %d %d %d %d %d"
+                " %d %d %d %d %d %d"
                 " %d %d %d %d %d %d",
                 b.mat[PIECE_QUEEN], b.mat[PIECE_KNIGHT], b.mat[PIECE_BISHOP],
                 b.mat[PIECE_ROOK], b.mat[PIECE_PAWN], b.isolated, b.doubled,
@@ -877,6 +883,9 @@ static int run_tune_dump(const char *infile,
                 b.pawn_pushes, b.pawn_threat_minor, b.pawn_threat_major,
                 b.connected_pawns, b.phalanx_pawns, b.backward_pawns,
                 b.knight_outposts, b.bishop_pair, b.rook_behind_passer,
+                b.minor_threat_pawn, b.minor_threat_minor,
+                b.minor_threat_major, b.rook_threat_minor,
+                b.safe_push_threat_minor, b.safe_push_threat_major,
                 b.residual_mg, b.residual_eg);
         // Black PST counts.
         for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {

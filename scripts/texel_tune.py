@@ -13,6 +13,8 @@ where each 415-feature block is:
     pawn_pushes pawn_threat_minor pawn_threat_major
     connected_pawns phalanx_pawns backward_pawns knight_outposts
     bishop_pair rook_behind_passer
+    minor_threat_pawn minor_threat_minor minor_threat_major
+    rook_threat_minor safe_push_threat_minor safe_push_threat_major
     pst[K,Q,B,N,R,P][64] flattened
     residual_mg residual_eg
 
@@ -34,9 +36,12 @@ import numpy as np
 N_BASE_SCALAR = 21
 N_CURRENT_SCALAR = 35
 N_V2_SCALAR = 12
-N_EXTRA_SCALAR = (N_CURRENT_SCALAR - N_BASE_SCALAR) + N_V2_SCALAR
+N_V3_SCALAR = 12
+N_EXTRA_SCALAR = (
+    (N_CURRENT_SCALAR - N_BASE_SCALAR) + N_V2_SCALAR + N_V3_SCALAR
+)
 N_SCALAR = N_BASE_SCALAR + N_EXTRA_SCALAR
-SIDE_OLD = 31
+SIDE_OLD = 37
 PST_PIECES = 6
 PST_SQUARES = 64
 N_PST = PST_PIECES * PST_SQUARES
@@ -154,7 +159,13 @@ PARAM_NAMES = (
      "backward_pawn_mg", "backward_pawn_eg",
      "knight_outpost_mg", "knight_outpost_eg",
      "bishop_pair_mg", "bishop_pair_eg",
-     "rook_behind_passer_mg", "rook_behind_passer_eg"]
+     "rook_behind_passer_mg", "rook_behind_passer_eg",
+     "minor_threat_pawn_mg", "minor_threat_pawn_eg",
+     "minor_threat_minor_mg", "minor_threat_minor_eg",
+     "minor_threat_major_mg", "minor_threat_major_eg",
+     "rook_threat_minor_mg", "rook_threat_minor_eg",
+     "safe_push_threat_minor_mg", "safe_push_threat_minor_eg",
+     "safe_push_threat_major_mg", "safe_push_threat_major_eg"]
     + [f"pst{p}_{s}_mg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
     + [f"pst{p}_{s}_eg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
 )
@@ -178,6 +189,12 @@ _SCALAR_DEFAULTS = np.array([
     0, 0,                        # knight outpost mg/eg
     0, 0,                        # bishop pair mg/eg
     0, 0,                        # rook behind passer mg/eg
+    0, 0,                        # minor threat vs weak pawn mg/eg
+    0, 0,                        # minor threat vs weak minor mg/eg
+    0, 0,                        # minor threat vs weak major mg/eg
+    0, 0,                        # rook threat vs weak minor mg/eg
+    0, 0,                        # safe pawn-push threat vs minor mg/eg
+    0, 0,                        # safe pawn-push threat vs major mg/eg
 ], dtype=np.float64)
 
 DEFAULTS = np.concatenate([
@@ -198,7 +215,13 @@ F_QUEENMG, F_QUEENEG = 18, 19
 F_PAWN_PUSH, F_PAWN_THREAT_MINOR, F_PAWN_THREAT_MAJOR = 20, 21, 22
 F_CONNECTED, F_PHALANX, F_BACKWARD = 23, 24, 25
 F_KNIGHT_OUTPOST, F_BISHOP_PAIR, F_ROOK_BEHIND_PASSER = 26, 27, 28
-F_RESMG, F_RESEG = 29, 30
+F_MINOR_THREAT_PAWN = 29
+F_MINOR_THREAT_MINOR = 30
+F_MINOR_THREAT_MAJOR = 31
+F_ROOK_THREAT_MINOR = 32
+F_SAFE_PUSH_THREAT_MINOR = 33
+F_SAFE_PUSH_THREAT_MAJOR = 34
+F_RESMG, F_RESEG = 35, 36
 
 
 def trunc_div24(a):
@@ -268,6 +291,12 @@ def side_totals_int(side, phase, theta):
           old[:, F_KNIGHT_OUTPOST] * scalar[41] +
           old[:, F_BISHOP_PAIR] * scalar[43] +
           old[:, F_ROOK_BEHIND_PASSER] * scalar[45] +
+          old[:, F_MINOR_THREAT_PAWN] * scalar[47] +
+          old[:, F_MINOR_THREAT_MINOR] * scalar[49] +
+          old[:, F_MINOR_THREAT_MAJOR] * scalar[51] +
+          old[:, F_ROOK_THREAT_MINOR] * scalar[53] +
+          old[:, F_SAFE_PUSH_THREAT_MINOR] * scalar[55] +
+          old[:, F_SAFE_PUSH_THREAT_MAJOR] * scalar[57] +
           old[:, F_RESMG]).astype(np.int64)
     eg = (mat + ps_eg +
           old[:, F_ISO] * scalar[6] + old[:, F_DBL] * scalar[8] +
@@ -287,6 +316,12 @@ def side_totals_int(side, phase, theta):
           old[:, F_KNIGHT_OUTPOST] * scalar[42] +
           old[:, F_BISHOP_PAIR] * scalar[44] +
           old[:, F_ROOK_BEHIND_PASSER] * scalar[46] +
+          old[:, F_MINOR_THREAT_PAWN] * scalar[48] +
+          old[:, F_MINOR_THREAT_MINOR] * scalar[50] +
+          old[:, F_MINOR_THREAT_MAJOR] * scalar[52] +
+          old[:, F_ROOK_THREAT_MINOR] * scalar[54] +
+          old[:, F_SAFE_PUSH_THREAT_MINOR] * scalar[56] +
+          old[:, F_SAFE_PUSH_THREAT_MAJOR] * scalar[58] +
           old[:, F_RESEG]).astype(np.int64)
     return trunc_div24(mg * phase + eg * (24 - phase))
 
@@ -352,6 +387,18 @@ def design_matrix(phase, w, b):
     X[:, 44] = d_old[:, F_BISHOP_PAIR] * egw
     X[:, 45] = d_old[:, F_ROOK_BEHIND_PASSER] * mgw
     X[:, 46] = d_old[:, F_ROOK_BEHIND_PASSER] * egw
+    X[:, 47] = d_old[:, F_MINOR_THREAT_PAWN] * mgw
+    X[:, 48] = d_old[:, F_MINOR_THREAT_PAWN] * egw
+    X[:, 49] = d_old[:, F_MINOR_THREAT_MINOR] * mgw
+    X[:, 50] = d_old[:, F_MINOR_THREAT_MINOR] * egw
+    X[:, 51] = d_old[:, F_MINOR_THREAT_MAJOR] * mgw
+    X[:, 52] = d_old[:, F_MINOR_THREAT_MAJOR] * egw
+    X[:, 53] = d_old[:, F_ROOK_THREAT_MINOR] * mgw
+    X[:, 54] = d_old[:, F_ROOK_THREAT_MINOR] * egw
+    X[:, 55] = d_old[:, F_SAFE_PUSH_THREAT_MINOR] * mgw
+    X[:, 56] = d_old[:, F_SAFE_PUSH_THREAT_MINOR] * egw
+    X[:, 57] = d_old[:, F_SAFE_PUSH_THREAT_MAJOR] * mgw
+    X[:, 58] = d_old[:, F_SAFE_PUSH_THREAT_MAJOR] * egw
     # PST mg/eg.
     X[:, N_SCALAR:N_SCALAR + N_PST] = d_pst * mgw[:, None]
     X[:, N_SCALAR + N_PST:] = d_pst * egw[:, None]
@@ -415,6 +462,8 @@ def load_tuned_defaults(path):
     values = np.array([int(value) for value in lines[-1].split()[1:]], dtype=np.float64)
     old_params = N_BASE_SCALAR + 2 * N_PST
     current_params = N_CURRENT_SCALAR + 2 * N_PST
+    v2_scalar = N_CURRENT_SCALAR + N_V2_SCALAR
+    v2_params = v2_scalar + 2 * N_PST
     if len(values) == old_params:
         values = np.concatenate([
             values[:N_BASE_SCALAR],
@@ -424,8 +473,14 @@ def load_tuned_defaults(path):
     elif len(values) == current_params:
         values = np.concatenate([
             values[:N_CURRENT_SCALAR],
-            np.zeros(N_V2_SCALAR, dtype=np.float64),
+            np.zeros(N_V2_SCALAR + N_V3_SCALAR, dtype=np.float64),
             values[N_CURRENT_SCALAR:],
+        ])
+    elif len(values) == v2_params:
+        values = np.concatenate([
+            values[:v2_scalar],
+            np.zeros(N_V3_SCALAR, dtype=np.float64),
+            values[v2_scalar:],
         ])
     if len(values) != N_PARAMS:
         raise SystemExit(f"expected {N_PARAMS} values in {path}, got {len(values)}")
@@ -469,6 +524,8 @@ def main():
                     help="Tune only pawn activity/threat weights.")
     ap.add_argument("--only-v2-features", action="store_true",
                     help="Tune only the new pawn/minor/rook structure weights.")
+    ap.add_argument("--only-v3-features", action="store_true",
+                    help="Tune only contextual weak-piece and safe-push threats.")
     ap.add_argument("--retune-established", action="store_true",
                     help="Freeze material and all experimental scalar terms; "
                          "retune the established 16 positional scalars and PSTs.")
@@ -535,6 +592,7 @@ def main():
     ntr = len(tr)
     selection_count = sum((
         args.only_v2_features,
+        args.only_v3_features,
         args.only_new_features,
         args.only_extra_scalars,
         args.freeze_material,
@@ -545,8 +603,16 @@ def main():
     if args.batch_size < 0:
         raise SystemExit("--batch-size must be non-negative")
 
-    if args.only_v2_features:
-        active = np.arange(N_CURRENT_SCALAR, N_SCALAR)
+    if args.only_v3_features:
+        active = np.arange(
+            N_CURRENT_SCALAR + N_V2_SCALAR,
+            N_SCALAR,
+        )
+    elif args.only_v2_features:
+        active = np.arange(
+            N_CURRENT_SCALAR,
+            N_CURRENT_SCALAR + N_V2_SCALAR,
+        )
     elif args.only_new_features:
         active = np.arange(N_BASE_SCALAR + 8, N_CURRENT_SCALAR)
     elif args.only_extra_scalars:

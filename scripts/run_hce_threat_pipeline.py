@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Tune and Elo-test the zero-default HCE positional-threat features.
+
+The pipeline reuses the existing grouped VidBot + 25k self-play corpus. It
+regenerates exact features with the current engine, fits only the twelve new
+MG/EG threat weights over three game-grouped splits, verifies the rounded
+candidate exactly, runs the full test suites, and gates it over 60/120/240
+paired games. It never deploys or replaces the frozen baseline.
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from run_hce_v2_remote_pipeline import (
+    LAB,
+    ROOT,
+    copy_first_lines,
+    executable_name,
+    summarize_match,
+    write_json_atomic,
+)
+
+
+OUT = LAB / "threat_v3"
+N_TUNED = 827
+V3_START = 47
+V3_NAMES = [
+    "minor_threat_pawn_mg",
+    "minor_threat_pawn_eg",
+    "minor_threat_minor_mg",
+    "minor_threat_minor_eg",
+    "minor_threat_major_mg",
+    "minor_threat_major_eg",
+    "rook_threat_minor_mg",
+    "rook_threat_minor_eg",
+    "safe_push_threat_minor_mg",
+    "safe_push_threat_minor_eg",
+    "safe_push_threat_major_mg",
+    "safe_push_threat_major_eg",
+]
+
+
+def log(message: str) -> None:
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
+
+
+class ThreatPipeline:
+    def __init__(self) -> None:
+        OUT.mkdir(parents=True, exist_ok=True)
+        self.status_path = OUT / "status.json"
+        self.summary = {
+            "status": "running",
+            "started_at_unix": int(time.time()),
+            "feature_family": "contextual positional threats",
+            "stages": {},
+        }
+        write_json_atomic(self.status_path, self.summary)
+
+    def mark(self, stage: str, **details) -> None:
+        self.summary["stages"][stage] = {
+            "completed_at_unix": int(time.time()),
+            **details,
+        }
+        write_json_atomic(self.status_path, self.summary)
+        log(f"completed stage: {stage}")
+
+    def run(
+        self,
+        args: list[str],
+        name: str,
+        input_text: str | None = None,
+    ) -> None:
+        stdout_path = OUT / f"{name}.stdout.log"
+        stderr_path = OUT / f"{name}.stderr.log"
+        log("run: " + subprocess.list2cmdline([str(arg) for arg in args]))
+        with stdout_path.open("w", encoding="utf-8") as stdout, \
+                stderr_path.open("w", encoding="utf-8") as stderr:
+            completed = subprocess.run(
+                [str(arg) for arg in args],
+                cwd=ROOT,
+                input=input_text,
+                text=True,
+                stdout=stdout,
+                stderr=stderr,
+                check=False,
+            )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"{name} failed with exit {completed.returncode}; "
+                f"see {stdout_path.name} and {stderr_path.name}")
+
+    def dump_features(self) -> None:
+        positions = LAB / "combined_positions.txt"
+        groups_raw = LAB / "combined_groups_raw.txt"
+        if not positions.exists() or not groups_raw.exists():
+            raise RuntimeError("the existing grouped HCE-v2 corpus is missing")
+        self.run(["make", "-B", "bin/chess_uci", "-j5"], "build_feature_engine")
+        feature_engine = OUT / executable_name("feature_engine")
+        shutil.copy2(ROOT / "bin" / executable_name("chess_uci"), feature_engine)
+        features = OUT / "features.txt"
+        groups = OUT / "groups.txt"
+        command = (
+            f"tunedump {positions} {features} {groups_raw} {groups}\n"
+            "quit\n"
+        )
+        self.run([str(feature_engine)], "quiet_tunedump", input_text=command)
+        feature_rows = count_nonempty_lines(features)
+        group_rows = count_nonempty_lines(groups)
+        if feature_rows != group_rows or feature_rows < 50000:
+            raise RuntimeError(
+                f"invalid quiet feature/group rows: {feature_rows}/{group_rows}")
+        self.mark("features", positions=feature_rows)
+
+    def tune(self) -> None:
+        initial = LAB / "baseline_tune.log"
+        vectors = []
+        for seed in (31, 32, 33):
+            name = f"tune_seed{seed}"
+            self.run(
+                [
+                    sys.executable,
+                    "scripts/texel_tune.py",
+                    "--feats", str(OUT / "features.txt"),
+                    "--groups", str(OUT / "groups.txt"),
+                    "--initial-tuned-file", str(initial),
+                    "--only-v3-features",
+                    "--iters", "5000",
+                    "--l2", "0.3",
+                    "--seed", str(seed),
+                ],
+                name,
+            )
+            vectors.append(parse_tuned_vector(OUT / f"{name}.stdout.log"))
+        median = [
+            sorted(vector[index] for vector in vectors)[1]
+            for index in range(N_TUNED)
+        ]
+        tuned_path = OUT / "median_tuned.txt"
+        tuned_path.write_text(
+            "TUNED " + " ".join(str(value) for value in median) + "\n",
+            encoding="utf-8",
+        )
+        stability = {
+            name: [vector[V3_START + index] for vector in vectors]
+            for index, name in enumerate(V3_NAMES)
+        }
+        weights = dict(zip(V3_NAMES, median[V3_START:V3_START + len(V3_NAMES)]))
+        self.mark("tuning", median_weights=weights, seed_weights=stability)
+
+    def build_and_test_candidate(self) -> None:
+        eval_source = ROOT / "src" / "core" / "engine" / "hce_eval.c"
+        backup = OUT / "hce_eval.zero.c"
+        shutil.copy2(eval_source, backup)
+        try:
+            self.run(
+                [
+                    sys.executable,
+                    "scripts/texel_apply_tune.py",
+                    "--eval-c", str(eval_source),
+                    "--tuned-file", str(OUT / "median_tuned.txt"),
+                ],
+                "apply_median",
+            )
+            self.run(["make", "-B", "bin/chess_uci", "-j5"], "build_candidate")
+            candidate = OUT / executable_name("candidate")
+            shutil.copy2(ROOT / "bin" / executable_name("chess_uci"), candidate)
+            self.verify_candidate(candidate)
+            self.run(["make", "test"], "make_test")
+            self.run(
+                [
+                    sys.executable,
+                    "scripts/run_hce_position_suite.py",
+                    "--engine", str(candidate),
+                    "--backend", "classic",
+                    "--out", str(OUT / "hce_suite.json"),
+                    "--fail-fast",
+                ],
+                "hce_suite",
+            )
+        finally:
+            shutil.copyfile(backup, eval_source)
+            os.utime(eval_source, None)
+            self.run(["make", "-B", "bin/chess_uci", "-j5"], "restore_default")
+        self.mark(
+            "candidate_tests",
+            exact_reconstruction=True,
+            make_test="passed",
+            hce_suite="passed",
+        )
+
+    def verify_candidate(self, candidate: Path) -> None:
+        positions = OUT / "verify_positions.txt"
+        copy_first_lines(LAB / "combined_positions.txt", positions, limit=5000)
+        features = OUT / "verify_features.txt"
+        self.run(
+            [str(candidate)],
+            "candidate_tunedump",
+            input_text=f"tunedump {positions} {features}\nquit\n",
+        )
+        self.run(
+            [
+                sys.executable,
+                "scripts/texel_tune.py",
+                "--feats", str(features),
+                "--initial-tuned-file", str(OUT / "median_tuned.txt"),
+                "--only-v3-features",
+                "--iters", "0",
+            ],
+            "candidate_exact_verify",
+        )
+
+    def run_elo_gates(self) -> None:
+        screen = self.run_match(60, 30, 20261231, "screen_60g")
+        self.mark("elo_60", **screen)
+        probability = paired_probability(screen)
+        if (
+            screen["engine_failures"] != 0
+            or screen["elo_diff"] is None
+            or screen["elo_diff"] <= -50.0
+            or (probability is not None and probability < 0.15)
+        ):
+            self.finish("rejected_at_60")
+            return
+
+        gate = self.run_match(120, 60, 20261301, "gate_120g")
+        self.mark("elo_120", **gate)
+        if (
+            gate["engine_failures"] != 0
+            or gate["elo_diff"] is None
+            or gate["elo_diff"] <= -50.0
+        ):
+            self.finish("rejected_at_120")
+            return
+
+        confirmation = self.run_match(240, 120, 20261302, "confirm_240g")
+        self.mark("elo_240", **confirmation)
+        probability = paired_probability(confirmation)
+        confirmed = (
+            confirmation["engine_failures"] == 0
+            and confirmation["elo_diff"] is not None
+            and confirmation["elo_diff"] > 0.0
+            and probability is not None
+            and probability >= 0.90
+        )
+        self.finish(
+            "confirmed_positive_not_promoted" if confirmed else "not_confirmed"
+        )
+
+    def run_match(
+        self,
+        games: int,
+        positions: int,
+        seed: int,
+        name: str,
+    ) -> dict:
+        report_path = OUT / f"{name}.json"
+        self.run(
+            [
+                sys.executable,
+                "src/core/bot/test_lab.py",
+                "--engine", f"cand={OUT / executable_name('candidate')}",
+                "--engine", f"base={LAB / executable_name('baseline_854193a')}",
+                "--baseline", "base",
+                "--positions-count", str(positions),
+                "--paired-colors",
+                "--think-ms", "120",
+                "--max-plies", "200",
+                "--positions-file", "data/positions/lichess_equal_positions.fen",
+                "--seed", str(seed),
+                "--concurrency", "5",
+                "--out", str(report_path),
+            ],
+            name,
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        return summarize_match(report, expected_games=games)
+
+    def finish(self, status: str) -> None:
+        self.summary["status"] = status
+        self.summary["finished_at_unix"] = int(time.time())
+        self.summary["promotion"] = "none"
+        write_json_atomic(self.status_path, self.summary)
+        log(f"pipeline finished: {status}")
+
+    def fail(self, exc: BaseException) -> None:
+        self.summary["status"] = "failed"
+        self.summary["finished_at_unix"] = int(time.time())
+        self.summary["error"] = f"{type(exc).__name__}: {exc}"
+        write_json_atomic(self.status_path, self.summary)
+        log(self.summary["error"])
+
+
+def count_nonempty_lines(path: Path) -> int:
+    with path.open("r", encoding="utf-8", errors="replace") as stream:
+        return sum(1 for line in stream if line.strip())
+
+
+def parse_tuned_vector(path: Path) -> list[int]:
+    lines = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("TUNED ")
+    ]
+    if not lines:
+        raise ValueError(f"no TUNED line in {path}")
+    vector = [int(value) for value in lines[-1].split()[1:]]
+    if len(vector) != N_TUNED:
+        raise ValueError(f"{path} has {len(vector)} values, expected {N_TUNED}")
+    return vector
+
+
+def paired_probability(result: dict) -> float | None:
+    paired = result.get("paired_probability_better")
+    return paired if paired is not None else result.get("probability_better")
+
+
+def main() -> int:
+    pipeline = ThreatPipeline()
+    try:
+        pipeline.dump_features()
+        pipeline.tune()
+        pipeline.build_and_test_candidate()
+        pipeline.run_elo_gates()
+    except BaseException as exc:
+        pipeline.fail(exc)
+        raise
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

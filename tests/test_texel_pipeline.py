@@ -77,18 +77,20 @@ def test_dataset_group_sidecar_stays_aligned() -> None:
 
 def test_apply_tune_accepts_previous_vector_shapes() -> None:
     apply_tune = load_module(APPLY_SCRIPT, "texel_apply_tune_test")
-    for scalar_count in (21, 35, 47):
+    for scalar_count in (21, 35, 47, 59):
         values = [0] * (scalar_count + 2 * 6 * 64)
         parsed = apply_tune.parse_tuned_line(
             "TUNED " + " ".join(str(value) for value in values))
-        assert len(parsed) == 47 + 2 * 6 * 64
+        assert len(parsed) == 59 + 2 * 6 * 64
         if scalar_count < 47:
             assert parsed[35:47] == [0] * 12
+        if scalar_count < 59:
+            assert parsed[47:59] == [0] * 12
 
 
 def test_apply_tune_updates_combined_mobility_expression() -> None:
     apply_tune = load_module(APPLY_SCRIPT, "texel_apply_tune_mobility_test")
-    values = [0] * (47 + 2 * 6 * 64)
+    values = [0] * (59 + 2 * 6 * 64)
     values[9:17] = [5, 3, 10, -1, 8, 7, 5, 2]
     with tempfile.TemporaryDirectory() as tmp:
         eval_copy = Path(tmp) / "hce_eval.c"
@@ -150,6 +152,49 @@ def test_hce_v2_feature_detectors() -> None:
         assert old[2, tune.F_KNIGHT_OUTPOST] == 1
         assert old[2, tune.F_BISHOP_PAIR] == 1
         assert old[3, tune.F_ROOK_BEHIND_PASSER] == 1
+
+
+def test_hce_v3_threat_feature_detectors() -> None:
+    tune = load_module(TUNE_SCRIPT, "texel_tune_threat_feature_test")
+    fixtures = [
+        # Knight d4 attacks an undefended pawn on f5.
+        "7k/8/8/5p2/3N4/8/8/7K w - - 0 1",
+        # Knight d4 attacks an undefended bishop on f5 and rook on b5.
+        "7k/8/8/1r3b2/3N4/8/8/7K w - - 0 1",
+        # Rook a1 attacks an undefended bishop on a5.
+        "7k/8/8/b7/8/8/8/R6K w - - 0 1",
+        # A safe d4-d5 push would attack the knight c6 and rook e6.
+        "7k/8/2n1r3/8/3P4/8/8/7K w - - 0 1",
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        positions_path = tmp_path / "positions.txt"
+        features_path = tmp_path / "features.txt"
+        positions_path.write_text(
+            "".join(f"{fen};0.5\n" for fen in fixtures),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [str(ROOT / "bin" / "chess_uci")],
+            input=(
+                f"tunedumpall {positions_path} {features_path}\n"
+                "quit\n"
+            ),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        raw = np.atleast_2d(np.loadtxt(features_path, dtype=np.float32))
+        side_features = tune.SIDE_OLD + tune.N_PST
+        white = raw[:, 3:3 + side_features]
+        old, _ = tune.split_side(white)
+
+        assert old[0, tune.F_MINOR_THREAT_PAWN] == 1
+        assert old[1, tune.F_MINOR_THREAT_MINOR] == 1
+        assert old[1, tune.F_MINOR_THREAT_MAJOR] == 1
+        assert old[2, tune.F_ROOK_THREAT_MINOR] == 1
+        assert old[3, tune.F_SAFE_PUSH_THREAT_MINOR] == 1
+        assert old[3, tune.F_SAFE_PUSH_THREAT_MAJOR] == 1
 
 
 def test_tunedump_rejects_misaligned_groups() -> None:
@@ -276,6 +321,7 @@ if __name__ == "__main__":
     test_apply_tune_accepts_previous_vector_shapes()
     test_apply_tune_updates_combined_mobility_expression()
     test_hce_v2_feature_detectors()
+    test_hce_v3_threat_feature_detectors()
     test_tunedump_rejects_misaligned_groups()
     test_remote_pipeline_uses_coordinate_median()
     test_established_retune_guards_bishop_endgame_mobility()
