@@ -38,6 +38,9 @@ typedef struct AiSearchConfig {
     int hce_lmr_base_reduction;
     int hce_lmr_depth_bonus_at;
     int hce_lmr_move_bonus_at;
+    int hce_lmp_base;
+    int hce_lmp_depth_scale;
+    int hce_lmp_max_depth;
     // Optional policy hints affect root ordering only. They are independent
     // of the selected evaluator and remain dormant when the count is zero.
     Move policy_root_moves[CHESS_MAX_MOVES];

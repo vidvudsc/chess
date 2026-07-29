@@ -50,6 +50,9 @@ typedef struct HceSearchContext {
     int lmr_base_reduction;
     int lmr_depth_bonus_at;
     int lmr_move_bonus_at;
+    int lmp_base;
+    int lmp_depth_scale;
+    int lmp_max_depth;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
@@ -400,6 +403,32 @@ static int ctx_null_depth_divisor(const HceSearchContext *ctx) {
         return ctx->null_depth_divisor;
     }
     return 4;
+}
+
+static int ctx_lmp_base(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->lmp_base > 0) {
+        return ctx->lmp_base;
+    }
+    return 3;
+}
+
+static int ctx_lmp_depth_scale(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->lmp_depth_scale > 0) {
+        return ctx->lmp_depth_scale;
+    }
+    return 100;
+}
+
+static int ctx_lmp_max_depth(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->lmp_max_depth > 0) {
+        return ctx->lmp_max_depth;
+    }
+    return 8;
+}
+
+static int ctx_lmp_move_limit(const HceSearchContext *ctx, int depth) {
+    return ctx_lmp_base(ctx) +
+           depth * depth * ctx_lmp_depth_scale(ctx) / 100;
 }
 
 static int search_eval_cp_stm(const GameState *s, HceSearchContext *ctx, int ply) {
@@ -1010,8 +1039,8 @@ static int negamax(GameState *s,
         // best_score already and never applied while in check or near mate.
         if (!in_check &&
             quiet &&
-            depth <= 8 &&
-            searched >= 3 + depth * depth &&
+            depth <= ctx_lmp_max_depth(ctx) &&
+            searched >= ctx_lmp_move_limit(ctx, depth) &&
             best_score > -HCE_MATE_THRESHOLD) {
             continue;
         }
@@ -1371,6 +1400,9 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
         ctx.lmr_base_reduction = cfg->hce_lmr_base_reduction;
         ctx.lmr_depth_bonus_at = cfg->hce_lmr_depth_bonus_at;
         ctx.lmr_move_bonus_at = cfg->hce_lmr_move_bonus_at;
+        ctx.lmp_base = cfg->hce_lmp_base;
+        ctx.lmp_depth_scale = cfg->hce_lmp_depth_scale;
+        ctx.lmp_max_depth = cfg->hce_lmp_max_depth;
     }
     Move best_move = legal[0];
     int best_score = -HCE_INF;
