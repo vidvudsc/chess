@@ -46,6 +46,7 @@ typedef struct HceSearchContext {
     int rfp_margin_per_depth;
     int null_base_reduction;
     int null_depth_divisor;
+    int check_extension_min_depth;
     int lmr_base_reduction;
     int lmr_depth_bonus_at;
     int lmr_move_bonus_at;
@@ -450,11 +451,22 @@ static int captured_piece_for_move(const GameState *s, Move m) {
     return s->sq_piece[target_sq];
 }
 
-static int search_move_extension(const GameState *s_after_move, Move m, int depth) {
+static int ctx_check_extension_min_depth(const HceSearchContext *ctx) {
+    if (ctx != NULL && ctx->check_extension_min_depth > 0) {
+        return ctx->check_extension_min_depth;
+    }
+    return 3;
+}
+
+static int search_move_extension(const GameState *s_after_move,
+                                 Move m,
+                                 int depth,
+                                 const HceSearchContext *ctx) {
     if (depth <= 2) {
         return 0;
     }
-    if (chess_in_check(s_after_move, s_after_move->side_to_move)) {
+    if (depth >= ctx_check_extension_min_depth(ctx) &&
+        chess_in_check(s_after_move, s_after_move->side_to_move)) {
         return 1;
     }
     if (move_has_flag(m, MOVE_FLAG_PROMOTION)) {
@@ -1008,7 +1020,7 @@ static int negamax(GameState *s,
         }
         ctx->nodes += 1;
 
-        int extension = search_move_extension(s, m, depth);
+        int extension = search_move_extension(s, m, depth, ctx);
 
         int score;
         int next_depth = depth - 1 + extension;
@@ -1138,7 +1150,7 @@ static int search_root(GameState *root,
         }
         ctx->nodes += 1;
 
-        int extension = search_move_extension(root, m, depth);
+        int extension = search_move_extension(root, m, depth, ctx);
         int next_depth = depth - 1 + extension;
 
         if (searched == 0) {
@@ -1355,6 +1367,7 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
         ctx.rfp_margin_per_depth = cfg->hce_rfp_margin_per_depth;
         ctx.null_base_reduction = cfg->hce_null_base_reduction;
         ctx.null_depth_divisor = cfg->hce_null_depth_divisor;
+        ctx.check_extension_min_depth = cfg->hce_check_extension_min_depth;
         ctx.lmr_base_reduction = cfg->hce_lmr_base_reduction;
         ctx.lmr_depth_bonus_at = cfg->hce_lmr_depth_bonus_at;
         ctx.lmr_move_bonus_at = cfg->hce_lmr_move_bonus_at;

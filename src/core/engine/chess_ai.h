@@ -34,6 +34,7 @@ typedef struct AiSearchConfig {
     int hce_rfp_margin_per_depth;
     int hce_null_base_reduction;
     int hce_null_depth_divisor;
+    int hce_check_extension_min_depth;
     int hce_lmr_base_reduction;
     int hce_lmr_depth_bonus_at;
     int hce_lmr_move_bonus_at;

@@ -16,6 +16,7 @@ typedef struct UciOptions {
     int hce_rfp_margin_per_depth;
     int hce_null_base_reduction;
     int hce_null_depth_divisor;
+    int hce_check_extension_min_depth;
     int hce_lmr_base_reduction;
     int hce_lmr_depth_bonus_at;
     int hce_lmr_move_bonus_at;
@@ -219,6 +220,7 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         set_spin_option(name_buf, value_buf, "HceRfpMargin", 0, 500, &opt->hce_rfp_margin_per_depth) ||
         set_spin_option(name_buf, value_buf, "HceNullBase", 0, 6, &opt->hce_null_base_reduction) ||
         set_spin_option(name_buf, value_buf, "HceNullDepthDivisor", 0, 12, &opt->hce_null_depth_divisor) ||
+        set_spin_option(name_buf, value_buf, "HceCheckExtensionMinDepth", 0, 32, &opt->hce_check_extension_min_depth) ||
         set_spin_option(name_buf, value_buf, "HceLmrBase", 0, 4, &opt->hce_lmr_base_reduction) ||
         set_spin_option(name_buf, value_buf, "HceLmrDepthBonusAt", 0, 16, &opt->hce_lmr_depth_bonus_at) ||
         set_spin_option(name_buf, value_buf, "HceLmrMoveBonusAt", 0, 32, &opt->hce_lmr_move_bonus_at)) {
@@ -588,6 +590,7 @@ static void handle_go(GameState *state, const char *line, const UciOptions *opt)
         .hce_rfp_margin_per_depth = opt->hce_rfp_margin_per_depth,
         .hce_null_base_reduction = opt->hce_null_base_reduction,
         .hce_null_depth_divisor = opt->hce_null_depth_divisor,
+        .hce_check_extension_min_depth = opt->hce_check_extension_min_depth,
         .hce_lmr_base_reduction = opt->hce_lmr_base_reduction,
         .hce_lmr_depth_bonus_at = opt->hce_lmr_depth_bonus_at,
         .hce_lmr_move_bonus_at = opt->hce_lmr_move_bonus_at,
@@ -672,6 +675,7 @@ static void print_uci_intro(const UciOptions *opt) {
     printf("option name HceRfpMargin type spin default 0 min 0 max 500\n");
     printf("option name HceNullBase type spin default 0 min 0 max 6\n");
     printf("option name HceNullDepthDivisor type spin default 0 min 0 max 12\n");
+    printf("option name HceCheckExtensionMinDepth type spin default 0 min 0 max 32\n");
     printf("option name HceLmrBase type spin default 0 min 0 max 4\n");
     printf("option name HceLmrDepthBonusAt type spin default 0 min 0 max 16\n");
     printf("option name HceLmrMoveBonusAt type spin default 0 min 0 max 32\n");
