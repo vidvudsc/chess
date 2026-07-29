@@ -20,7 +20,12 @@ def load_module(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
-    spec.loader.exec_module(module)
+    added_paths = [str(ROOT), str(ROOT / "scripts")]
+    sys.path[:0] = added_paths
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        del sys.path[:len(added_paths)]
     return module
 
 
@@ -188,6 +193,27 @@ def test_remote_pipeline_uses_coordinate_median() -> None:
     assert median[pipeline.V2_START] == 13
 
 
+def test_established_retune_guards_bishop_endgame_mobility() -> None:
+    pipeline = load_module(
+        ROOT / "scripts" / "run_hce_established_retune.py",
+        "hce_established_retune_guard_test",
+    )
+    baseline = [0] * pipeline.N_TUNED
+    tuned = [0] * pipeline.N_TUNED
+    baseline[pipeline.BISHOP_EG_MOBILITY_INDEX] = 3
+    tuned[pipeline.BISHOP_EG_MOBILITY_INDEX] = -1
+
+    guarded, adjustments = pipeline.apply_behavioral_guards(tuned, baseline)
+
+    assert guarded[pipeline.BISHOP_EG_MOBILITY_INDEX] == 3
+    assert tuned[pipeline.BISHOP_EG_MOBILITY_INDEX] == -1
+    assert adjustments == [{
+        "parameter": "mob_b_eg",
+        "raw": -1,
+        "guarded": 3,
+    }]
+
+
 def test_remote_pipeline_summarizes_paired_match() -> None:
     pipeline = load_module(REMOTE_PIPELINE_SCRIPT, "hce_v2_match_summary_test")
     report = {
@@ -226,5 +252,6 @@ if __name__ == "__main__":
     test_hce_v2_feature_detectors()
     test_tunedump_rejects_misaligned_groups()
     test_remote_pipeline_uses_coordinate_median()
+    test_established_retune_guards_bishop_endgame_mobility()
     test_remote_pipeline_summarizes_paired_match()
     print("test_texel_pipeline: OK")

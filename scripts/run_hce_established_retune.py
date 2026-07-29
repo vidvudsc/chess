@@ -34,6 +34,7 @@ BASELINE = LAB / executable_name("baseline_854193a")
 CANDIDATE = SWEEP / executable_name("established_retune_candidate")
 EVAL_SOURCE = ROOT / "src" / "core" / "engine" / "hce_eval.c"
 N_TUNED = 815
+BISHOP_EG_MOBILITY_INDEX = 12
 
 
 def log(message: str) -> None:
@@ -92,6 +93,31 @@ def median_vector(vectors: list[list[int]]) -> list[int]:
         sorted(vector[index] for vector in vectors)[1]
         for index in range(N_TUNED)
     ]
+
+
+def apply_behavioral_guards(
+    tuned: list[int],
+    baseline: list[int],
+) -> tuple[list[int], list[dict[str, int | str]]]:
+    if len(tuned) != N_TUNED or len(baseline) != N_TUNED:
+        raise RuntimeError("behavioral guards require complete tuned vectors")
+
+    guarded = tuned.copy()
+    adjustments: list[dict[str, int | str]] = []
+
+    # Bishop mobility must remain a reward in endings. Letting this coordinate
+    # cross below the proven baseline rewards a bishop for being boxed in by
+    # its own pawns and breaks the engine's bad-bishop evaluation invariant.
+    floor = baseline[BISHOP_EG_MOBILITY_INDEX]
+    if guarded[BISHOP_EG_MOBILITY_INDEX] < floor:
+        adjustments.append({
+            "parameter": "mob_b_eg",
+            "raw": guarded[BISHOP_EG_MOBILITY_INDEX],
+            "guarded": floor,
+        })
+        guarded[BISHOP_EG_MOBILITY_INDEX] = floor
+
+    return guarded, adjustments
 
 
 def copy_first_lines(source: Path, destination: Path, limit: int) -> None:
@@ -262,6 +288,21 @@ class Retune:
         self.status["median_tuned_file"] = str(tuned_path)
         self.save()
         return tuned_path
+
+    def guard_candidate(self, tuned_path: Path) -> Path:
+        baseline_path = LAB / "baseline_tune.log"
+        baseline = parse_tuned_vector(baseline_path)
+        tuned = parse_tuned_vector(tuned_path)
+        guarded, adjustments = apply_behavioral_guards(tuned, baseline)
+        guarded_path = SWEEP / "established_guarded_tuned.txt"
+        guarded_path.write_text(
+            "TUNED " + " ".join(str(value) for value in guarded) + "\n",
+            encoding="utf-8",
+        )
+        self.status["guarded_tuned_file"] = str(guarded_path)
+        self.status["behavioral_guard_adjustments"] = adjustments
+        self.save()
+        return guarded_path
 
     def build_and_test(self, tuned_path: Path) -> None:
         backup = SWEEP / "hce_eval.pre_retune.c"
@@ -444,6 +485,7 @@ class Retune:
                 self.save()
             else:
                 tuned_path = self.tune()
+            tuned_path = self.guard_candidate(tuned_path)
             self.build_and_test(tuned_path)
             self.gate()
             self.status["finished_at_unix"] = int(time.time())
