@@ -25,6 +25,9 @@ SPACE_APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_positional_space.py"
 SPACE_PIPELINE_SCRIPT = (
     ROOT / "scripts" / "run_hce_positional_space_pipeline.py"
 )
+PAWN_ACTIVITY_PIPELINE_SCRIPT = (
+    ROOT / "scripts" / "run_hce_pawn_activity_pipeline.py"
+)
 THREAT_RECOVERY_SCRIPT = (
     ROOT / "scripts" / "run_hce_threat_recovery_sweep.py"
 )
@@ -386,6 +389,20 @@ def test_positional_space_pipeline_uses_coordinate_median() -> None:
     ]
 
 
+def test_pawn_activity_pipeline_uses_coordinate_median() -> None:
+    pipeline = load_module(
+        PAWN_ACTIVITY_PIPELINE_SCRIPT,
+        "run_hce_pawn_activity_pipeline_test",
+    )
+    baseline = list(range(pipeline.N_PARAMS))
+    low = baseline.copy()
+    high = baseline.copy()
+    for index in range(pipeline.PAWN_START, pipeline.PAWN_START + 6):
+        low[index] -= 3
+        high[index] += 5
+    assert pipeline.coordinate_median([high, baseline, low]) == baseline
+
+
 def test_threat_recovery_scales_only_safe_push_weights() -> None:
     recovery = load_module(
         THREAT_RECOVERY_SCRIPT,
@@ -536,6 +553,7 @@ if __name__ == "__main__":
     test_hce_positional_space_feature_detectors()
     test_apply_positional_space_updates_all_constants()
     test_positional_space_pipeline_uses_coordinate_median()
+    test_pawn_activity_pipeline_uses_coordinate_median()
     test_threat_recovery_scales_only_safe_push_weights()
     test_tunedump_rejects_misaligned_groups()
     test_remote_pipeline_uses_coordinate_median()
