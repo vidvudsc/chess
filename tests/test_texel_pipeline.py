@@ -15,6 +15,9 @@ TUNE_SCRIPT = ROOT / "scripts" / "texel_tune.py"
 APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_tune.py"
 MOBILITY_TUNE_SCRIPT = ROOT / "scripts" / "texel_tune_mobility_shape.py"
 MOBILITY_APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_mobility_shape.py"
+THREAT_RECOVERY_SCRIPT = (
+    ROOT / "scripts" / "run_hce_threat_recovery_sweep.py"
+)
 REMOTE_PIPELINE_SCRIPT = ROOT / "scripts" / "run_hce_v2_remote_pipeline.py"
 
 
@@ -260,6 +263,23 @@ def test_apply_mobility_shape_updates_all_constants() -> None:
             assert f"static const int k_{name} = {value};" in patched
 
 
+def test_threat_recovery_scales_only_safe_push_weights() -> None:
+    recovery = load_module(
+        THREAT_RECOVERY_SCRIPT,
+        "run_hce_threat_recovery_sweep_test",
+    )
+    source = list(range(recovery.N_TUNED))
+    source[recovery.SAFE_PUSH_START:recovery.SAFE_PUSH_END] = [9, 4, 4, 2]
+
+    direct = recovery.variant_vector(source, "zero_safe_push")
+    half = recovery.variant_vector(source, "half_safe_push")
+
+    assert direct[recovery.SAFE_PUSH_START:recovery.SAFE_PUSH_END] == [0, 0, 0, 0]
+    assert half[recovery.SAFE_PUSH_START:recovery.SAFE_PUSH_END] == [4, 2, 2, 1]
+    assert direct[:recovery.SAFE_PUSH_START] == source[:recovery.SAFE_PUSH_START]
+    assert half[recovery.SAFE_PUSH_END:] == source[recovery.SAFE_PUSH_END:]
+
+
 def test_tunedump_rejects_misaligned_groups() -> None:
     fen = "7k/8/8/8/8/8/8/7K w - - 0 1"
     with tempfile.TemporaryDirectory() as tmp:
@@ -387,6 +407,7 @@ if __name__ == "__main__":
     test_hce_v3_threat_feature_detectors()
     test_hce_mobility_shape_feature_detectors()
     test_apply_mobility_shape_updates_all_constants()
+    test_threat_recovery_scales_only_safe_push_weights()
     test_tunedump_rejects_misaligned_groups()
     test_remote_pipeline_uses_coordinate_median()
     test_established_retune_guards_bishop_endgame_mobility()
