@@ -49,6 +49,9 @@ typedef struct AiSearchConfig {
     // Optional pure-HCE improving-node heuristic. Bit 0 relaxes LMR and bit 1
     // relaxes LMP when static eval improved versus the same side two plies ago.
     int hce_improving_mode;
+    // Optional four-entry clustered TT lookup/replacement. Zero keeps the
+    // established direct-mapped table.
+    int hce_tt_cluster_mode;
     // Percentage of the previous move's quiet-history table to carry into the
     // next search. Zero preserves the established per-search reset behavior.
     int hce_history_carry;

@@ -16,6 +16,9 @@
 #define HCE_TT_BITS 20
 #define HCE_TT_SIZE (1u << HCE_TT_BITS)
 #define HCE_TT_MASK (HCE_TT_SIZE - 1u)
+#define HCE_TT_CLUSTER_SIZE 4u
+#define HCE_TT_CLUSTER_COUNT (HCE_TT_SIZE / HCE_TT_CLUSTER_SIZE)
+#define HCE_TT_CLUSTER_MASK (HCE_TT_CLUSTER_COUNT - 1u)
 
 typedef enum HceTtBound {
     HCE_TT_NONE = 0,
@@ -59,6 +62,7 @@ typedef struct HceSearchContext {
     int aspiration_depth_scale;
     int iir_min_depth;
     int improving_mode;
+    int tt_cluster_mode;
     int static_eval[HCE_MAX_PLY];
     bool static_eval_valid[HCE_MAX_PLY];
     Move killer[HCE_MAX_PLY][2];
@@ -275,8 +279,18 @@ static int tt_score_from_store(int score, int ply) {
     return score;
 }
 
-static HceTtEntry *tt_entry(uint64_t key) {
-    return &g_hce_tt[key & HCE_TT_MASK];
+static int tt_cluster_width(const HceSearchContext *ctx) {
+    return (ctx != NULL && ctx->tt_cluster_mode > 0) ?
+        (int)HCE_TT_CLUSTER_SIZE : 1;
+}
+
+static HceTtEntry *tt_entry(uint64_t key, int slot, int width) {
+    if (width <= 1) {
+        return &g_hce_tt[key & HCE_TT_MASK];
+    }
+    size_t base = (size_t)(key & HCE_TT_CLUSTER_MASK) *
+                  HCE_TT_CLUSTER_SIZE;
+    return &g_hce_tt[base + (size_t)slot];
 }
 
 static uint64_t tt_pack_payload(Move move, int score, int depth, HceTtBound bound, uint8_t age) {
@@ -307,26 +321,52 @@ static uint8_t tt_payload_age(uint64_t payload) {
     return (uint8_t)((payload >> HCE_TT_AGE_SHIFT) & 0xFFULL);
 }
 
-static bool tt_probe(uint64_t key, int depth, int ply, int alpha, int beta, Move *move_out, int *score_out) {
-    HceTtEntry *entry = tt_entry(key);
-    uint64_t key_before = atomic_load_explicit(&entry->key, memory_order_acquire);
-    if (key_before != key || key_before == HCE_TT_WRITE_LOCK) {
-        return false;
+static bool tt_probe(uint64_t key,
+                     int depth,
+                     int ply,
+                     int alpha,
+                     int beta,
+                     Move *move_out,
+                     int *score_out,
+                     const HceSearchContext *ctx) {
+    int width = tt_cluster_width(ctx);
+    uint64_t best_payload = 0;
+    int best_depth = INT_MIN;
+    bool found = false;
+    for (int slot = 0; slot < width; ++slot) {
+        HceTtEntry *entry = tt_entry(key, slot, width);
+        uint64_t key_before =
+            atomic_load_explicit(&entry->key, memory_order_acquire);
+        if (key_before != key || key_before == HCE_TT_WRITE_LOCK) {
+            continue;
+        }
+        uint64_t payload =
+            atomic_load_explicit(&entry->payload, memory_order_relaxed);
+        uint64_t key_after =
+            atomic_load_explicit(&entry->key, memory_order_acquire);
+        HceTtBound bound = tt_payload_bound(payload);
+        if (key_after != key_before || bound == HCE_TT_NONE) {
+            continue;
+        }
+        int entry_depth = tt_payload_depth(payload);
+        if (!found || entry_depth > best_depth) {
+            best_payload = payload;
+            best_depth = entry_depth;
+            found = true;
+        }
     }
-    uint64_t payload = atomic_load_explicit(&entry->payload, memory_order_relaxed);
-    uint64_t key_after = atomic_load_explicit(&entry->key, memory_order_acquire);
-    HceTtBound bound = tt_payload_bound(payload);
-    if (key_after != key_before || bound == HCE_TT_NONE) {
+    if (!found) {
         return false;
     }
     if (move_out != NULL) {
-        *move_out = tt_payload_move(payload);
+        *move_out = tt_payload_move(best_payload);
     }
-    if (tt_payload_depth(payload) < depth || score_out == NULL) {
+    if (best_depth < depth || score_out == NULL) {
         return false;
     }
 
-    int score = tt_score_from_store(tt_payload_score(payload), ply);
+    HceTtBound bound = tt_payload_bound(best_payload);
+    int score = tt_score_from_store(tt_payload_score(best_payload), ply);
     if (bound == HCE_TT_EXACT) {
         *score_out = score;
         return true;
@@ -342,8 +382,47 @@ static bool tt_probe(uint64_t key, int depth, int ply, int alpha, int beta, Move
     return false;
 }
 
-static void tt_store(uint64_t key, int depth, int ply, int score, HceTtBound bound, Move move) {
-    HceTtEntry *entry = tt_entry(key);
+static void tt_store(uint64_t key,
+                     int depth,
+                     int ply,
+                     int score,
+                     HceTtBound bound,
+                     Move move,
+                     const HceSearchContext *ctx) {
+    int width = tt_cluster_width(ctx);
+    HceTtEntry *entry = NULL;
+    int replacement_value = INT_MAX;
+    for (int slot = 0; slot < width; ++slot) {
+        HceTtEntry *candidate = tt_entry(key, slot, width);
+        uint64_t candidate_key =
+            atomic_load_explicit(&candidate->key, memory_order_acquire);
+        if (candidate_key == HCE_TT_WRITE_LOCK) {
+            continue;
+        }
+        uint64_t candidate_payload =
+            atomic_load_explicit(&candidate->payload, memory_order_relaxed);
+        HceTtBound candidate_bound = tt_payload_bound(candidate_payload);
+        if (candidate_key == key && candidate_bound != HCE_TT_NONE) {
+            entry = candidate;
+            break;
+        }
+        if (candidate_bound == HCE_TT_NONE) {
+            entry = candidate;
+            break;
+        }
+        uint8_t age_delta = (uint8_t)(
+            g_hce_tt_generation - tt_payload_age(candidate_payload)
+        );
+        int value = tt_payload_depth(candidate_payload) -
+                    (int)age_delta * 4;
+        if (entry == NULL || value < replacement_value) {
+            entry = candidate;
+            replacement_value = value;
+        }
+    }
+    if (entry == NULL) {
+        return;
+    }
     uint64_t current_key = atomic_load_explicit(&entry->key, memory_order_acquire);
     if (current_key == HCE_TT_WRITE_LOCK) {
         return;
@@ -1040,7 +1119,14 @@ static int negamax(GameState *s,
 
     Move tt_move = 0;
     int tt_score = 0;
-    if (tt_probe(s->zobrist_hash, depth, ply, alpha, beta, &tt_move, &tt_score)) {
+    if (tt_probe(s->zobrist_hash,
+                 depth,
+                 ply,
+                 alpha,
+                 beta,
+                 &tt_move,
+                 &tt_score,
+                 ctx)) {
         return tt_score;
     }
     if (ctx_should_apply_iir(ctx, depth, tt_move)) {
@@ -1213,7 +1299,15 @@ static int negamax(GameState *s,
                 if (has_non_pawn_material(s, side)) {
                     penalize_quiet_history(ctx, side, failed_quiets, failed_quiet_count, depth);
                 }
-                tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
+                tt_store(
+                    s->zobrist_hash,
+                    depth,
+                    ply,
+                    beta,
+                    HCE_TT_LOWER,
+                    m,
+                    ctx
+                );
                 if (best_move_out != NULL) {
                     *best_move_out = m;
                 }
@@ -1236,7 +1330,15 @@ static int negamax(GameState *s,
         bound = HCE_TT_LOWER;
     }
     if (!ctx->timed_out) {
-        tt_store(s->zobrist_hash, depth, ply, best_score, bound, best_move);
+        tt_store(
+            s->zobrist_hash,
+            depth,
+            ply,
+            best_score,
+            bound,
+            best_move,
+            ctx
+        );
     }
     if (best_move_out != NULL) {
         *best_move_out = best_move;
@@ -1268,7 +1370,16 @@ static int search_root(GameState *root,
         return score_terminal_stm(root, 0);
     }
 
-    (void)tt_probe(root->zobrist_hash, depth, 0, alpha, beta, &tt_move, &tt_score);
+    (void)tt_probe(
+        root->zobrist_hash,
+        depth,
+        0,
+        alpha,
+        beta,
+        &tt_move,
+        &tt_score,
+        ctx
+    );
     int root_scores[CHESS_MAX_MOVES];
     score_moves(root, root_scores, moves, n, tt_move, ctx, 0);
 
@@ -1313,7 +1424,15 @@ static int search_root(GameState *root,
             if (alpha >= beta) {
                 update_killer(ctx, 0, m);
                 update_history(ctx, side, m, depth);
-                tt_store(root_hash, depth, 0, beta, HCE_TT_LOWER, m);
+                tt_store(
+                    root_hash,
+                    depth,
+                    0,
+                    beta,
+                    HCE_TT_LOWER,
+                    m,
+                    ctx
+                );
                 if (best_move_out != NULL) {
                     *best_move_out = m;
                 }
@@ -1333,7 +1452,15 @@ static int search_root(GameState *root,
         bound = HCE_TT_LOWER;
     }
     if (!ctx->timed_out) {
-        tt_store(root_hash, depth, 0, best_score, bound, best_move);
+        tt_store(
+            root_hash,
+            depth,
+            0,
+            best_score,
+            bound,
+            best_move,
+            ctx
+        );
     }
     if (best_move_out != NULL) {
         *best_move_out = best_move;
@@ -1518,6 +1645,8 @@ static bool run_search(const GameState *state,
         ctx.aspiration_depth_scale = cfg->hce_aspiration_depth_scale;
         ctx.iir_min_depth = cfg->hce_iir_min_depth;
         ctx.improving_mode = cfg->hce_improving_mode;
+        ctx.tt_cluster_mode = search_uses_nn_backend() ?
+            0 : cfg->hce_tt_cluster_mode;
     }
     Move best_move = legal[0];
     int best_score = -HCE_INF;
