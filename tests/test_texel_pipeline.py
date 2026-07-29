@@ -20,6 +20,11 @@ KING_APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_king_pressure.py"
 KING_PIPELINE_SCRIPT = (
     ROOT / "scripts" / "run_hce_king_pressure_pipeline.py"
 )
+SPACE_TUNE_SCRIPT = ROOT / "scripts" / "texel_tune_positional_space.py"
+SPACE_APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_positional_space.py"
+SPACE_PIPELINE_SCRIPT = (
+    ROOT / "scripts" / "run_hce_positional_space_pipeline.py"
+)
 THREAT_RECOVERY_SCRIPT = (
     ROOT / "scripts" / "run_hce_threat_recovery_sweep.py"
 )
@@ -324,6 +329,63 @@ def test_king_pressure_pipeline_uses_coordinate_median() -> None:
     assert pipeline.coordinate_median(vectors) == [-7, -4, -4, -2]
 
 
+def test_hce_positional_space_feature_detectors() -> None:
+    tune = load_module(
+        SPACE_TUNE_SCRIPT,
+        "texel_tune_positional_space_feature_test",
+    )
+    fen = "k7/8/8/8/3P4/8/1P1P4/2B4K w - - 0 1"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        positions_path = tmp_path / "positions.txt"
+        features_path = tmp_path / "features.txt"
+        positions_path.write_text(f"{fen};0.5\n", encoding="utf-8")
+        subprocess.run(
+            [str(ROOT / "bin" / "chess_uci")],
+            input=f"tunedumpall {positions_path} {features_path}\nquit\n",
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        _, _, _, _, white_counts, _, _ = tune.load_features(features_path)
+        assert white_counts[0].tolist() == [3, 4, 2, 1]
+
+
+def test_apply_positional_space_updates_all_constants() -> None:
+    apply_space = load_module(
+        SPACE_APPLY_SCRIPT,
+        "texel_apply_positional_space_test",
+    )
+    values = [-4, -2, 12, 4, -4, -1, 22, 8]
+    with tempfile.TemporaryDirectory() as tmp:
+        eval_copy = Path(tmp) / "hce_eval.c"
+        eval_copy.write_text(
+            (ROOT / "src" / "core" / "engine" / "hce_eval.c").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        apply_space.patch_eval_c(eval_copy, values)
+        patched = eval_copy.read_text(encoding="utf-8")
+        for name, value in zip(apply_space.PARAMETER_NAMES, values):
+            assert f"static const int k_{name} = {value};" in patched
+
+
+def test_positional_space_pipeline_uses_coordinate_median() -> None:
+    pipeline = load_module(
+        SPACE_PIPELINE_SCRIPT,
+        "run_hce_positional_space_pipeline_test",
+    )
+    vectors = [
+        [-5, -2, 16, -1, -6, 0, 18, 8],
+        [-4, -1, 18, 1, -3, 2, 20, 11],
+        [-3, 0, 17, 0, -4, 1, 19, 10],
+    ]
+    assert pipeline.coordinate_median(vectors) == [
+        -4, -1, 17, 0, -4, 1, 19, 10,
+    ]
+
+
 def test_threat_recovery_scales_only_safe_push_weights() -> None:
     recovery = load_module(
         THREAT_RECOVERY_SCRIPT,
@@ -471,6 +533,9 @@ if __name__ == "__main__":
     test_hce_king_pressure_feature_detectors()
     test_apply_king_pressure_updates_all_constants()
     test_king_pressure_pipeline_uses_coordinate_median()
+    test_hce_positional_space_feature_detectors()
+    test_apply_positional_space_updates_all_constants()
+    test_positional_space_pipeline_uses_coordinate_median()
     test_threat_recovery_scales_only_safe_push_weights()
     test_tunedump_rejects_misaligned_groups()
     test_remote_pipeline_uses_coordinate_median()

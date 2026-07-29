@@ -49,6 +49,7 @@ N_PST = PST_PIECES * PST_SQUARES
 N_PARAMS = N_SCALAR + 2 * N_PST  # 827
 N_MOBILITY_SHAPE = 8
 N_KING_PRESSURE = 2
+N_POSITIONAL_SPACE = 4
 
 # Current engine PST tables (from src/core/engine/hce_eval.c).
 K_PAWN_PST = np.array([
@@ -246,6 +247,8 @@ def build(feats_path):
         base_side,
         base_side + N_MOBILITY_SHAPE,
         base_side + N_MOBILITY_SHAPE + N_KING_PRESSURE,
+        base_side + N_MOBILITY_SHAPE + N_KING_PRESSURE +
+        N_POSITIONAL_SPACE,
     )
     side_feats = next(
         (

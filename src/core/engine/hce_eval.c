@@ -1136,6 +1136,14 @@ static const int k_king_ring_coverage_mg = 0;
 static const int k_king_ring_coverage_eg = 0;
 static const int k_king_ring_double_mg = 0;
 static const int k_king_ring_double_eg = 0;
+static const int k_bad_bishop_pawns_mg = 0;
+static const int k_bad_bishop_pawns_eg = 0;
+static const int k_safe_space_mg = 0;
+static const int k_safe_space_eg = 0;
+static const int k_deep_space_mg = 0;
+static const int k_deep_space_eg = 0;
+static const int k_advanced_center_pawns_mg = 0;
+static const int k_advanced_center_pawns_eg = 0;
 
 static bool mobility_shape_enabled(void) {
     return
@@ -1155,6 +1163,18 @@ static bool king_pressure_enabled(void) {
         k_king_ring_coverage_eg != 0 ||
         k_king_ring_double_mg != 0 ||
         k_king_ring_double_eg != 0;
+}
+
+static bool positional_space_enabled(void) {
+    return
+        k_bad_bishop_pawns_mg != 0 ||
+        k_bad_bishop_pawns_eg != 0 ||
+        k_safe_space_mg != 0 ||
+        k_safe_space_eg != 0 ||
+        k_deep_space_mg != 0 ||
+        k_deep_space_eg != 0 ||
+        k_advanced_center_pawns_mg != 0 ||
+        k_advanced_center_pawns_eg != 0;
 }
 
 #define HCE_PAWN_CACHE_BITS 16u
@@ -1628,6 +1648,64 @@ static int eval_side(const GameState *s,
         if (feat != NULL) {
             feat->king_ring_coverage = coverage;
             feat->king_ring_double = double_coverage;
+        }
+    }
+
+    if (feat != NULL || positional_space_enabled()) {
+        static const uint64_t k_center_files = 0x3c3c3c3c3c3c3c3cULL;
+        static const uint64_t k_even_color = 0xaa55aa55aa55aa55ULL;
+        static const uint64_t k_white_space_ranks = 0x000000ffffff0000ULL;
+        static const uint64_t k_black_space_ranks = 0x0000ffffff000000ULL;
+        static const uint64_t k_deep_space_ranks = 0x000000ffff000000ULL;
+        static const uint64_t k_white_advanced = 0xffffffffff000000ULL;
+        static const uint64_t k_black_advanced = 0x000000ffffffffffULL;
+
+        int bad_bishop_pawns = 0;
+        uint64_t bishops = s->bb[side][PIECE_BISHOP];
+        uint64_t own_pawns = s->bb[side][PIECE_PAWN];
+        while (bishops != 0) {
+            int bishop_sq = chess_pop_lsb(&bishops);
+            uint64_t same_color =
+                ((square_file(bishop_sq) + square_rank(bishop_sq)) & 1) != 0
+                    ? ~k_even_color
+                    : k_even_color;
+            bad_bishop_pawns += chess_count_bits(own_pawns & same_color);
+        }
+
+        uint64_t space_area =
+            k_center_files &
+            (side == PIECE_WHITE
+                 ? k_white_space_ranks
+                 : k_black_space_ranks);
+        uint64_t safe =
+            space_area &
+            ~s->occ[side] &
+            ~attack_unions->pawn[enemy] &
+            attack_unions->non_king[side];
+        int safe_space = chess_count_bits(safe);
+        int deep_space = chess_count_bits(safe & k_deep_space_ranks);
+        uint64_t advanced_mask =
+            k_center_files &
+            (side == PIECE_WHITE ? k_white_advanced : k_black_advanced);
+        int advanced_center_pawns =
+            chess_count_bits(own_pawns & advanced_mask);
+
+        eval_term_add(
+            &terms.positional_structure,
+            bad_bishop_pawns * k_bad_bishop_pawns_mg +
+                safe_space * k_safe_space_mg +
+                deep_space * k_deep_space_mg +
+                advanced_center_pawns * k_advanced_center_pawns_mg,
+            bad_bishop_pawns * k_bad_bishop_pawns_eg +
+                safe_space * k_safe_space_eg +
+                deep_space * k_deep_space_eg +
+                advanced_center_pawns * k_advanced_center_pawns_eg
+        );
+        if (feat != NULL) {
+            feat->bad_bishop_pawns = bad_bishop_pawns;
+            feat->safe_space = safe_space;
+            feat->deep_space = deep_space;
+            feat->advanced_center_pawns = advanced_center_pawns;
         }
     }
 

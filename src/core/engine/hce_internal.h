@@ -69,6 +69,10 @@ typedef struct HceTuneFeatures {
     int active_mob_q;           // queens with at least fourteen mobility squares
     int king_ring_coverage;     // king-zone squares attacked by enemy non-kings
     int king_ring_double;       // king-zone squares attacked at least twice
+    int bad_bishop_pawns;       // own pawns on the same color as each bishop
+    int safe_space;             // safely controlled central space squares
+    int deep_space;             // safe space on the two central ranks
+    int advanced_center_pawns;  // center-file pawns advanced beyond home territory
     int pst[PIECE_TYPE_COUNT][64];  // piece-square counts (view side, mirrored for black)
     int residual_mg;            // summed mg of all non-tuned terms
     int residual_eg;            // summed eg of all non-tuned terms
