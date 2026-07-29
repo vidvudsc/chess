@@ -469,6 +469,12 @@ def main():
                     help="Tune only pawn activity/threat weights.")
     ap.add_argument("--only-v2-features", action="store_true",
                     help="Tune only the new pawn/minor/rook structure weights.")
+    ap.add_argument("--retune-established", action="store_true",
+                    help="Freeze material and all experimental scalar terms; "
+                         "retune the established 16 positional scalars and PSTs.")
+    ap.add_argument("--batch-size", type=int, default=0,
+                    help="Use random mini-batches of this many training rows; "
+                         "zero keeps full-batch optimization.")
     ap.add_argument("--out-c", help="Optional path to write tuned PST/material C snippet.")
     ap.add_argument("--initial-tuned-file",
                     help="Use the last TUNED line in this file as the exact current defaults.")
@@ -527,12 +533,29 @@ def main():
     b1, b2, eps = 0.9, 0.999, 1e-8
     Xtr, ctr, ytr = X[tr], c[tr], y[tr]
     ntr = len(tr)
+    selection_count = sum((
+        args.only_v2_features,
+        args.only_new_features,
+        args.only_extra_scalars,
+        args.freeze_material,
+        args.retune_established,
+    ))
+    if selection_count > 1:
+        raise SystemExit("choose at most one parameter-selection mode")
+    if args.batch_size < 0:
+        raise SystemExit("--batch-size must be non-negative")
+
     if args.only_v2_features:
         active = np.arange(N_CURRENT_SCALAR, N_SCALAR)
     elif args.only_new_features:
         active = np.arange(N_BASE_SCALAR + 8, N_CURRENT_SCALAR)
     elif args.only_extra_scalars:
         active = np.arange(N_BASE_SCALAR, N_SCALAR)
+    elif args.retune_established:
+        active = np.concatenate((
+            np.arange(5, N_BASE_SCALAR),
+            np.arange(N_SCALAR, N_PARAMS),
+        ))
     elif args.freeze_material:
         active = np.arange(5, N_PARAMS)
     else:
@@ -544,10 +567,21 @@ def main():
     best_theta = theta.copy()
     best_iteration = 0
     best_val = loss_for(K, X[val] @ theta + c[val], y[val])
+    batch_rng = np.random.default_rng(args.seed ^ 0x5EED5EED)
     for it in range(1, args.iters + 1):
-        evals = fixed_tr + Xactive @ theta[active]
+        if 0 < args.batch_size < ntr:
+            batch = batch_rng.integers(0, ntr, size=args.batch_size)
+            batch_x = Xactive[batch]
+            batch_fixed = fixed_tr[batch]
+            batch_y = ytr[batch]
+        else:
+            batch_x = Xactive
+            batch_fixed = fixed_tr
+            batch_y = ytr
+        evals = batch_fixed + batch_x @ theta[active]
         p = sigmoid(K * evals)
-        g = (Xactive.T @ (2.0 * (p - ytr) * p * (1.0 - p) * K)) / ntr
+        g = (batch_x.T @
+             (2.0 * (p - batch_y) * p * (1.0 - p) * K)) / len(batch_y)
         g += (args.l2 * 1e-3 * (theta[active] - defaults[active]) /
               (reg_scale[active] ** 2))
         m = b1 * m + (1 - b1) * g
