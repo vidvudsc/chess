@@ -58,6 +58,9 @@ typedef struct HceSearchContext {
     int aspiration_base;
     int aspiration_depth_scale;
     int iir_min_depth;
+    int improving_mode;
+    int static_eval[HCE_MAX_PLY];
+    bool static_eval_valid[HCE_MAX_PLY];
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
@@ -1004,6 +1007,9 @@ static int negamax(GameState *s,
                    int ply,
                    HceSearchContext *ctx,
                    Move *best_move_out) {
+    if (ctx != NULL && ply >= 0 && ply < HCE_MAX_PLY) {
+        ctx->static_eval_valid[ply] = false;
+    }
     if (should_stop(ctx)) {
         return search_eval_cp_stm(s, ctx, ply);
     }
@@ -1042,10 +1048,29 @@ static int negamax(GameState *s,
     }
 
     bool in_check = chess_in_check(s, s->side_to_move);
+    bool improving = false;
+    bool have_static_eval = false;
+    int static_eval = 0;
+    if (ctx != NULL &&
+        ctx->improving_mode > 0 &&
+        !search_uses_nn_backend() &&
+        !in_check &&
+        depth >= 3 &&
+        ply >= 0 &&
+        ply < HCE_MAX_PLY) {
+        static_eval = search_eval_cp_stm(s, ctx, ply);
+        have_static_eval = true;
+        ctx->static_eval[ply] = static_eval;
+        ctx->static_eval_valid[ply] = true;
+        if (ply >= 2 && ctx->static_eval_valid[ply - 2]) {
+            improving = static_eval > ctx->static_eval[ply - 2];
+        }
+    }
 
     if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
         int margin = ctx_rfp_margin_per_depth(ctx) * depth;
-        if (search_eval_cp_stm(s, ctx, ply) >= beta + margin) {
+        int eval = have_static_eval ? static_eval : search_eval_cp_stm(s, ctx, ply);
+        if (eval >= beta + margin) {
             return beta;
         }
     }
@@ -1096,6 +1121,10 @@ static int negamax(GameState *s,
     int alpha_orig = alpha;
     int side = s->side_to_move;
     int searched = 0;
+    int lmp_move_limit = ctx_lmp_move_limit(ctx, depth);
+    if (ctx != NULL && (ctx->improving_mode & 2) != 0 && improving) {
+        lmp_move_limit += depth;
+    }
     Move failed_quiets[CHESS_MAX_MOVES];
     int failed_quiet_count = 0;
 
@@ -1110,7 +1139,7 @@ static int negamax(GameState *s,
         if (!in_check &&
             quiet &&
             depth <= ctx_lmp_max_depth(ctx) &&
-            searched >= ctx_lmp_move_limit(ctx, depth) &&
+            searched >= lmp_move_limit &&
             best_score > -HCE_MATE_THRESHOLD) {
             continue;
         }
@@ -1139,6 +1168,9 @@ static int negamax(GameState *s,
                     reduction += 1;
                 }
                 if (recapture) {
+                    reduction -= 1;
+                }
+                if (ctx != NULL && (ctx->improving_mode & 1) != 0 && improving) {
                     reduction -= 1;
                 }
                 if (search_uses_nn_backend()) {
@@ -1485,6 +1517,7 @@ static bool run_search(const GameState *state,
         ctx.aspiration_base = cfg->hce_aspiration_base;
         ctx.aspiration_depth_scale = cfg->hce_aspiration_depth_scale;
         ctx.iir_min_depth = cfg->hce_iir_min_depth;
+        ctx.improving_mode = cfg->hce_improving_mode;
     }
     Move best_move = legal[0];
     int best_score = -HCE_INF;

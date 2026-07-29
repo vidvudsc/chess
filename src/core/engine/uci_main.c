@@ -28,6 +28,7 @@ typedef struct UciOptions {
     int hce_aspiration_base;
     int hce_aspiration_depth_scale;
     int hce_iir_min_depth;
+    int hce_improving_mode;
     int hce_history_carry;
     ChessAiBackend backend;
     char book_file_path[512];
@@ -241,6 +242,7 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         set_spin_option(name_buf, value_buf, "HceAspirationBase", 0, 200, &opt->hce_aspiration_base) ||
         set_spin_option(name_buf, value_buf, "HceAspirationDepthScale", 0, 30, &opt->hce_aspiration_depth_scale) ||
         set_spin_option(name_buf, value_buf, "HceIirMinDepth", 0, 16, &opt->hce_iir_min_depth) ||
+        set_spin_option(name_buf, value_buf, "HceImprovingMode", 0, 3, &opt->hce_improving_mode) ||
         set_spin_option(name_buf, value_buf, "HceHistoryCarry", 0, 100, &opt->hce_history_carry)) {
         return;
     }
@@ -620,6 +622,7 @@ static void handle_go(GameState *state, const char *line, const UciOptions *opt)
         .hce_aspiration_base = opt->hce_aspiration_base,
         .hce_aspiration_depth_scale = opt->hce_aspiration_depth_scale,
         .hce_iir_min_depth = opt->hce_iir_min_depth,
+        .hce_improving_mode = opt->hce_improving_mode,
         .hce_history_carry = opt->hce_history_carry,
         .policy_root_count = 0,
         .policy_root_bonus = opt->policy_root_bonus,
@@ -714,6 +717,7 @@ static void print_uci_intro(const UciOptions *opt) {
     printf("option name HceAspirationBase type spin default 0 min 0 max 200\n");
     printf("option name HceAspirationDepthScale type spin default 0 min 0 max 30\n");
     printf("option name HceIirMinDepth type spin default 0 min 0 max 16\n");
+    printf("option name HceImprovingMode type spin default 0 min 0 max 3\n");
     printf("option name HceHistoryCarry type spin default 0 min 0 max 100\n");
     printf("option name NNModel type string default auto\n");
     printf("option name NNLeafLog type string default off\n");

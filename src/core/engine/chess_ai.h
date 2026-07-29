@@ -46,6 +46,9 @@ typedef struct AiSearchConfig {
     int hce_aspiration_base;
     int hce_aspiration_depth_scale;
     int hce_iir_min_depth;
+    // Optional pure-HCE improving-node heuristic. Bit 0 relaxes LMR and bit 1
+    // relaxes LMP when static eval improved versus the same side two plies ago.
+    int hce_improving_mode;
     // Percentage of the previous move's quiet-history table to carry into the
     // next search. Zero preserves the established per-search reset behavior.
     int hce_history_carry;
