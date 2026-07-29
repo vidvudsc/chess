@@ -398,6 +398,16 @@ def test_positional_space_pipeline_uses_coordinate_median() -> None:
     ]
 
 
+def test_positional_space_constraints_freeze_advanced_center() -> None:
+    tune = load_module(
+        SPACE_TUNE_SCRIPT,
+        "texel_tune_positional_space_constraint_test",
+    )
+    weights = np.arange(1, tune.N_PARAMS + 1, dtype=np.float64)
+    tune.enforce_constraints(weights, freeze_advanced_center=True)
+    assert weights.tolist() == [1, 2, 3, 4, 5, 6, 0, 0]
+
+
 def test_hce_unsafe_mobility_feature_detectors() -> None:
     tune = load_module(
         UNSAFE_MOBILITY_TUNE_SCRIPT,
@@ -636,6 +646,7 @@ if __name__ == "__main__":
     test_hce_positional_space_feature_detectors()
     test_apply_positional_space_updates_all_constants()
     test_positional_space_pipeline_uses_coordinate_median()
+    test_positional_space_constraints_freeze_advanced_center()
     test_pawn_activity_pipeline_uses_coordinate_median()
     test_hce_unsafe_mobility_feature_detectors()
     test_apply_unsafe_mobility_updates_all_constants()

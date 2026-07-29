@@ -19,6 +19,7 @@ except ModuleNotFoundError:
 
 N_FEATURES = 4
 N_PARAMS = 2 * N_FEATURES
+ADVANCED_CENTER_START = 6
 EXTRA_START = (
     extended.N_SHAPE_FEATURES +
     extended.N_KING_PRESSURE_FEATURES
@@ -33,6 +34,14 @@ PARAMETER_NAMES = [
     "advanced_center_pawns_mg",
     "advanced_center_pawns_eg",
 ]
+
+
+def enforce_constraints(
+    weights: np.ndarray,
+    freeze_advanced_center: bool,
+) -> None:
+    if freeze_advanced_center:
+        weights[ADVANCED_CENTER_START:ADVANCED_CENTER_START + 2] = 0.0
 
 
 def load_weights(path: str | None) -> np.ndarray:
@@ -155,11 +164,23 @@ def main() -> int:
     parser.add_argument("--val-frac", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=32768)
+    parser.add_argument(
+        "--freeze-advanced-center",
+        action="store_true",
+        help=(
+            "Keep the advanced-center-pawn mg/eg pair at zero. The unconstrained "
+            "bonus violates the engine's outside-passer regression."
+        ),
+    )
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
 
     base_weights = base.load_tuned_defaults(args.initial_tuned_file)
     correction_weights = load_weights(args.initial_space_file)
+    enforce_constraints(
+        correction_weights,
+        args.freeze_advanced_center,
+    )
     (
         label,
         phase,
@@ -279,6 +300,7 @@ def main() -> int:
             args.lr * corrected_first /
             (np.sqrt(corrected_second) + 1e-8)
         )
+        enforce_constraints(theta, args.freeze_advanced_center)
 
         if iteration % 500 == 0:
             K, _ = base.fit_K(

@@ -47,6 +47,11 @@ class PositionalSpacePipeline:
             "status": "running",
             "started_at_unix": int(time.time()),
             "feature_family": "central space and bishop congestion",
+            "constraints": {
+                "advanced_center_pawns_mg": 0,
+                "advanced_center_pawns_eg": 0,
+                "reason": "preserve outside-passer regression",
+            },
             "stages": {},
             "promotion": "none",
         }
@@ -136,6 +141,7 @@ class PositionalSpacePipeline:
                     "--iters", "5000",
                     "--l2", "0.5",
                     "--seed", str(seed),
+                    "--freeze-advanced-center",
                 ],
                 name,
             )
