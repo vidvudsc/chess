@@ -57,6 +57,7 @@ typedef struct HceSearchContext {
     int q_see_threshold;
     int aspiration_base;
     int aspiration_depth_scale;
+    int iir_min_depth;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
@@ -458,6 +459,19 @@ static int ctx_aspiration_window(const HceSearchContext *ctx, int depth) {
     int scale = (ctx != NULL && ctx->aspiration_depth_scale > 0) ?
         ctx->aspiration_depth_scale : 6;
     return base + depth * scale;
+}
+
+static bool ctx_should_apply_iir(const HceSearchContext *ctx,
+                                 int depth,
+                                 Move tt_move) {
+    if (ctx == NULL ||
+        ctx->iir_min_depth <= 0 ||
+        depth < ctx->iir_min_depth ||
+        tt_move != 0 ||
+        search_uses_nn_backend()) {
+        return false;
+    }
+    return true;
 }
 
 static int search_eval_cp_stm(const GameState *s, HceSearchContext *ctx, int ply) {
@@ -1023,6 +1037,9 @@ static int negamax(GameState *s,
     if (tt_probe(s->zobrist_hash, depth, ply, alpha, beta, &tt_move, &tt_score)) {
         return tt_score;
     }
+    if (ctx_should_apply_iir(ctx, depth, tt_move)) {
+        depth -= 1;
+    }
 
     bool in_check = chess_in_check(s, s->side_to_move);
 
@@ -1467,6 +1484,7 @@ static bool run_search(const GameState *state,
         ctx.q_see_threshold = cfg->hce_q_see_threshold;
         ctx.aspiration_base = cfg->hce_aspiration_base;
         ctx.aspiration_depth_scale = cfg->hce_aspiration_depth_scale;
+        ctx.iir_min_depth = cfg->hce_iir_min_depth;
     }
     Move best_move = legal[0];
     int best_score = -HCE_INF;

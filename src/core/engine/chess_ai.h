@@ -45,6 +45,7 @@ typedef struct AiSearchConfig {
     int hce_q_see_threshold;
     int hce_aspiration_base;
     int hce_aspiration_depth_scale;
+    int hce_iir_min_depth;
     // Percentage of the previous move's quiet-history table to carry into the
     // next search. Zero preserves the established per-search reset behavior.
     int hce_history_carry;
