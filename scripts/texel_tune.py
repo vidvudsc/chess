@@ -4,9 +4,9 @@
 Input: the file produced by `chess_uci`'s `tunedump` command, one line per
 quiet position:
 
-    <label> <phase> <eval_true> <white 415 feats> <black 415 feats>
+    <label> <phase> <eval_true> <white feature block> <black feature block>
 
-where each 415-feature block is:
+where each base feature block is:
     mat_q mat_n mat_b mat_r mat_p isolated doubled
     mob_n mob_b mob_r mob_q rook_open rook_semi
     passed_mg passed_eg king_mg king_eg hanging queen_mg queen_eg
@@ -15,8 +15,9 @@ where each 415-feature block is:
     bishop_pair rook_behind_passer
     minor_threat_pawn minor_threat_minor minor_threat_major
     rook_threat_minor safe_push_threat_minor safe_push_threat_major
-    pst[K,Q,B,N,R,P][64] flattened
     residual_mg residual_eg
+    pst[K,Q,B,N,R,P][64] flattened
+    optional mobility-shape counts appended by newer tunedump binaries
 
 The engine's per-side eval is  total = (mg*phase + eg*(24-phase)) / 24  with an
 integer truncation per side. Dropping that truncation makes white_total -
@@ -45,7 +46,8 @@ SIDE_OLD = 37
 PST_PIECES = 6
 PST_SQUARES = 64
 N_PST = PST_PIECES * PST_SQUARES
-N_PARAMS = N_SCALAR + 2 * N_PST  # 815
+N_PARAMS = N_SCALAR + 2 * N_PST  # 827
+N_MOBILITY_SHAPE = 8
 
 # Current engine PST tables (from src/core/engine/hce_eval.c).
 K_PAWN_PST = np.array([
@@ -238,17 +240,22 @@ def trunc_div100(a):
 
 def build(feats_path):
     raw = np.atleast_2d(np.loadtxt(feats_path, dtype=np.float32))
-    expected_columns = 3 + 2 * (SIDE_OLD + N_PST)
-    if raw.shape[1] != expected_columns:
+    base_side = SIDE_OLD + N_PST
+    base_columns = 3 + 2 * base_side
+    extended_side = base_side + N_MOBILITY_SHAPE
+    extended_columns = 3 + 2 * extended_side
+    if raw.shape[1] not in (base_columns, extended_columns):
         raise ValueError(
             f"feature dump has {raw.shape[1]} columns, expected "
-            f"{expected_columns}; regenerate it with the current tunedump")
+            f"{base_columns} or {extended_columns}; regenerate it with "
+            "a compatible tunedump")
     label = raw[:, 0].astype(np.float64)
     phase = raw[:, 1].astype(np.int64)
     eval_true = raw[:, 2].astype(np.int64)
-    side_feats = SIDE_OLD + N_PST
-    w = raw[:, 3:3 + side_feats]
-    b = raw[:, 3 + side_feats:3 + 2 * side_feats]
+    side_feats = extended_side if raw.shape[1] == extended_columns else base_side
+    w = raw[:, 3:3 + base_side]
+    b_start = 3 + side_feats
+    b = raw[:, b_start:b_start + base_side]
     return label, phase, eval_true, w, b
 
 
@@ -260,8 +267,8 @@ def split_side(side, dtype=np.int64):
     return old, pst
 
 
-def side_totals_int(side, phase, theta):
-    """Exact integer per-side total using the current weights."""
+def side_mg_eg_int(side, theta):
+    """Return exact pre-blend middlegame/endgame totals for each side row."""
     old, pst = split_side(side)
     scalar = theta[:N_SCALAR]
     wmg = theta[N_SCALAR:N_SCALAR + N_PST].reshape(PST_PIECES, PST_SQUARES)
@@ -323,6 +330,12 @@ def side_totals_int(side, phase, theta):
           old[:, F_SAFE_PUSH_THREAT_MINOR] * scalar[56] +
           old[:, F_SAFE_PUSH_THREAT_MAJOR] * scalar[58] +
           old[:, F_RESEG]).astype(np.int64)
+    return mg, eg
+
+
+def side_totals_int(side, phase, theta):
+    """Exact integer per-side total using the current weights."""
+    mg, eg = side_mg_eg_int(side, theta)
     return trunc_div24(mg * phase + eg * (24 - phase))
 
 

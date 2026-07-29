@@ -588,10 +588,50 @@ typedef struct AttackUnions {
     uint64_t pawn[PIECE_COLOR_COUNT];
     uint64_t piece[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
+    int restricted_mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
+    int active_mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int king_attack_units[PIECE_COLOR_COUNT];
 } AttackUnions;
 
-static void compute_attack_unions(const GameState *s, AttackUnions *out) {
+static bool mobility_shape_enabled(void);
+
+static void record_mobility_shape(AttackUnions *out,
+                                  int side,
+                                  int piece,
+                                  int mobility) {
+    int restricted_max = -1;
+    int active_min = 64;
+    switch (piece) {
+        case PIECE_KNIGHT:
+            restricted_max = 2;
+            active_min = 6;
+            break;
+        case PIECE_BISHOP:
+            restricted_max = 3;
+            active_min = 8;
+            break;
+        case PIECE_ROOK:
+            restricted_max = 3;
+            active_min = 10;
+            break;
+        case PIECE_QUEEN:
+            restricted_max = 5;
+            active_min = 14;
+            break;
+        default:
+            return;
+    }
+    if (mobility <= restricted_max) {
+        out->restricted_mobility[side][piece] += 1;
+    }
+    if (mobility >= active_min) {
+        out->active_mobility[side][piece] += 1;
+    }
+}
+
+static void compute_attack_unions(const GameState *s,
+                                  AttackUnions *out,
+                                  bool collect_mobility_shape) {
     memset(out, 0, sizeof(*out));
     for (int side = PIECE_WHITE; side <= PIECE_BLACK; ++side) {
         int enemy_king_sq = chess_find_king_square(s, side ^ 1);
@@ -615,9 +655,13 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
         while (knights != 0) {
             int sq = chess_pop_lsb(&knights);
             uint64_t attacks = g_knight_attacks[sq];
+            int mobility = chess_count_bits(attacks & ~s->occ[side]);
             a |= attacks;
             out->piece[side][PIECE_KNIGHT] |= attacks;
-            out->mobility[side][PIECE_KNIGHT] += chess_count_bits(attacks & ~s->occ[side]);
+            out->mobility[side][PIECE_KNIGHT] += mobility;
+            if (collect_mobility_shape) {
+                record_mobility_shape(out, side, PIECE_KNIGHT, mobility);
+            }
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 2;
             }
@@ -626,9 +670,13 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
         while (bishops != 0) {
             int sq = chess_pop_lsb(&bishops);
             uint64_t attacks = hce_bishop_attacks(sq, s->occ_all);
+            int mobility = chess_count_bits(attacks & ~s->occ[side]);
             a |= attacks;
             out->piece[side][PIECE_BISHOP] |= attacks;
-            out->mobility[side][PIECE_BISHOP] += chess_count_bits(attacks & ~s->occ[side]);
+            out->mobility[side][PIECE_BISHOP] += mobility;
+            if (collect_mobility_shape) {
+                record_mobility_shape(out, side, PIECE_BISHOP, mobility);
+            }
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 2;
             }
@@ -637,9 +685,13 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
         while (rooks != 0) {
             int sq = chess_pop_lsb(&rooks);
             uint64_t attacks = hce_rook_attacks(sq, s->occ_all);
+            int mobility = chess_count_bits(attacks & ~s->occ[side]);
             a |= attacks;
             out->piece[side][PIECE_ROOK] |= attacks;
-            out->mobility[side][PIECE_ROOK] += chess_count_bits(attacks & ~s->occ[side]);
+            out->mobility[side][PIECE_ROOK] += mobility;
+            if (collect_mobility_shape) {
+                record_mobility_shape(out, side, PIECE_ROOK, mobility);
+            }
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 3;
             }
@@ -649,9 +701,13 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             int sq = chess_pop_lsb(&queens);
             uint64_t attacks = hce_bishop_attacks(sq, s->occ_all) |
                                hce_rook_attacks(sq, s->occ_all);
+            int mobility = chess_count_bits(attacks & ~s->occ[side]);
             a |= attacks;
             out->piece[side][PIECE_QUEEN] |= attacks;
-            out->mobility[side][PIECE_QUEEN] += chess_count_bits(attacks & ~s->occ[side]);
+            out->mobility[side][PIECE_QUEEN] += mobility;
+            if (collect_mobility_shape) {
+                record_mobility_shape(out, side, PIECE_QUEEN, mobility);
+            }
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 5;
             }
@@ -1019,6 +1075,34 @@ static const int k_safe_push_threat_minor_mg = 0;
 static const int k_safe_push_threat_minor_eg = 0;
 static const int k_safe_push_threat_major_mg = 0;
 static const int k_safe_push_threat_major_eg = 0;
+static const int k_restricted_mob_n_mg = 0;
+static const int k_restricted_mob_n_eg = 0;
+static const int k_restricted_mob_b_mg = 0;
+static const int k_restricted_mob_b_eg = 0;
+static const int k_restricted_mob_r_mg = 0;
+static const int k_restricted_mob_r_eg = 0;
+static const int k_restricted_mob_q_mg = 0;
+static const int k_restricted_mob_q_eg = 0;
+static const int k_active_mob_n_mg = 0;
+static const int k_active_mob_n_eg = 0;
+static const int k_active_mob_b_mg = 0;
+static const int k_active_mob_b_eg = 0;
+static const int k_active_mob_r_mg = 0;
+static const int k_active_mob_r_eg = 0;
+static const int k_active_mob_q_mg = 0;
+static const int k_active_mob_q_eg = 0;
+
+static bool mobility_shape_enabled(void) {
+    return
+        k_restricted_mob_n_mg != 0 || k_restricted_mob_n_eg != 0 ||
+        k_restricted_mob_b_mg != 0 || k_restricted_mob_b_eg != 0 ||
+        k_restricted_mob_r_mg != 0 || k_restricted_mob_r_eg != 0 ||
+        k_restricted_mob_q_mg != 0 || k_restricted_mob_q_eg != 0 ||
+        k_active_mob_n_mg != 0 || k_active_mob_n_eg != 0 ||
+        k_active_mob_b_mg != 0 || k_active_mob_b_eg != 0 ||
+        k_active_mob_r_mg != 0 || k_active_mob_r_eg != 0 ||
+        k_active_mob_q_mg != 0 || k_active_mob_q_eg != 0;
+}
 
 #define HCE_PAWN_CACHE_BITS 16u
 #define HCE_PAWN_CACHE_SIZE (1u << HCE_PAWN_CACHE_BITS)
@@ -1377,6 +1461,48 @@ static int eval_side(const GameState *s,
         feat->mob_r += rook_mob;
         feat->mob_q += queen_mob;
     }
+    if (feat != NULL || mobility_shape_enabled()) {
+        int restricted_n =
+            attack_unions->restricted_mobility[side][PIECE_KNIGHT];
+        int restricted_b =
+            attack_unions->restricted_mobility[side][PIECE_BISHOP];
+        int restricted_r =
+            attack_unions->restricted_mobility[side][PIECE_ROOK];
+        int restricted_q =
+            attack_unions->restricted_mobility[side][PIECE_QUEEN];
+        int active_n = attack_unions->active_mobility[side][PIECE_KNIGHT];
+        int active_b = attack_unions->active_mobility[side][PIECE_BISHOP];
+        int active_r = attack_unions->active_mobility[side][PIECE_ROOK];
+        int active_q = attack_unions->active_mobility[side][PIECE_QUEEN];
+        eval_term_add(
+            &terms.mobility,
+            restricted_n * k_restricted_mob_n_mg +
+                restricted_b * k_restricted_mob_b_mg +
+                restricted_r * k_restricted_mob_r_mg +
+                restricted_q * k_restricted_mob_q_mg +
+                active_n * k_active_mob_n_mg +
+                active_b * k_active_mob_b_mg +
+                active_r * k_active_mob_r_mg +
+                active_q * k_active_mob_q_mg,
+            restricted_n * k_restricted_mob_n_eg +
+                restricted_b * k_restricted_mob_b_eg +
+                restricted_r * k_restricted_mob_r_eg +
+                restricted_q * k_restricted_mob_q_eg +
+                active_n * k_active_mob_n_eg +
+                active_b * k_active_mob_b_eg +
+                active_r * k_active_mob_r_eg +
+                active_q * k_active_mob_q_eg);
+        if (feat != NULL) {
+            feat->restricted_mob_n = restricted_n;
+            feat->restricted_mob_b = restricted_b;
+            feat->restricted_mob_r = restricted_r;
+            feat->restricted_mob_q = restricted_q;
+            feat->active_mob_n = active_n;
+            feat->active_mob_b = active_b;
+            feat->active_mob_r = active_r;
+            feat->active_mob_q = active_q;
+        }
+    }
 
     uint64_t enemy_minors = s->bb[enemy][PIECE_BISHOP] | s->bb[enemy][PIECE_KNIGHT];
     uint64_t enemy_majors = s->bb[enemy][PIECE_ROOK] | s->bb[enemy][PIECE_QUEEN];
@@ -1524,7 +1650,7 @@ int hce_eval_cp_stm(const GameState *s) {
 
     int phase = phase_value(s);
     AttackUnions attack_unions;
-    compute_attack_unions(s, &attack_unions);
+    compute_attack_unions(s, &attack_unions, mobility_shape_enabled());
     int white = eval_side(s, PIECE_WHITE, phase, &attack_unions, NULL, NULL);
     int black = eval_side(s, PIECE_BLACK, phase, &attack_unions, NULL, NULL);
     int cp_white = white - black;
@@ -1549,7 +1675,7 @@ int hce_eval_tune_features(const GameState *s,
         *phase_out = phase;
     }
     AttackUnions attack_unions;
-    compute_attack_unions(s, &attack_unions);
+    compute_attack_unions(s, &attack_unions, true);
     int white = eval_side(s, PIECE_WHITE, phase, &attack_unions, NULL, white_out);
     int black = eval_side(s, PIECE_BLACK, phase, &attack_unions, NULL, black_out);
     int cp_white = white - black;
@@ -1571,7 +1697,7 @@ bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out) {
     memset(out, 0, sizeof(*out));
     out->phase = phase_value(s);
     AttackUnions attack_unions;
-    compute_attack_unions(s, &attack_unions);
+    compute_attack_unions(s, &attack_unions, mobility_shape_enabled());
     out->white.total = eval_side(s, PIECE_WHITE, out->phase, &attack_unions, &out->white, NULL);
     out->black.total = eval_side(s, PIECE_BLACK, out->phase, &attack_unions, &out->black, NULL);
     out->score_cp_white = out->white.total - out->black.total;

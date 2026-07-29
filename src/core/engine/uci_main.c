@@ -767,8 +767,9 @@ static void print_uci_intro(const UciOptions *opt) {
 //   connected_pawns, phalanx_pawns, backward_pawns, knight_outposts,
 //   bishop_pair, rook_behind_passer, minor threats against weak pawn/minor/major,
 //   rook threats against weak minors, safe-push threats against minor/major,
+//   residual_mg, residual_eg,
 //   6*64 piece-square counts (K,Q,B,N,R,P by square, king always zero),
-//   residual_mg, residual_eg.
+//   restricted-mobility counts n/b/r/q, active-mobility counts n/b/r/q.
 // Positions are kept only if |static_eval - qsearch_eval| < 50 cp so the label
 // reflects the static evaluation rather than a pending tactical sequence.
 static int run_tune_dump(const char *infile,
@@ -873,6 +874,12 @@ static int run_tune_dump(const char *infile,
                 fprintf(fout, " %d", w.pst[piece][sq]);
             }
         }
+        fprintf(fout,
+                " %d %d %d %d %d %d %d %d",
+                w.restricted_mob_n, w.restricted_mob_b,
+                w.restricted_mob_r, w.restricted_mob_q,
+                w.active_mob_n, w.active_mob_b,
+                w.active_mob_r, w.active_mob_q);
         // Black old scalar features.
         fprintf(fout,
                 " %d %d %d %d %d %d %d %d %d %d %d %d %d"
@@ -897,6 +904,12 @@ static int run_tune_dump(const char *infile,
                 fprintf(fout, " %d", b.pst[piece][sq]);
             }
         }
+        fprintf(fout,
+                " %d %d %d %d %d %d %d %d",
+                b.restricted_mob_n, b.restricted_mob_b,
+                b.restricted_mob_r, b.restricted_mob_q,
+                b.active_mob_n, b.active_mob_b,
+                b.active_mob_r, b.active_mob_q);
         if (quiet_only) {
             fprintf(fout, "\n");
         } else {

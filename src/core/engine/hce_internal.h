@@ -59,6 +59,14 @@ typedef struct HceTuneFeatures {
     int rook_threat_minor;      // weak enemy minors attacked by a rook
     int safe_push_threat_minor; // safe pawn pushes that would attack a minor
     int safe_push_threat_major; // safe pawn pushes that would attack a major
+    int restricted_mob_n;       // knights with at most two legal mobility squares
+    int restricted_mob_b;       // bishops with at most three mobility squares
+    int restricted_mob_r;       // rooks with at most three mobility squares
+    int restricted_mob_q;       // queens with at most five mobility squares
+    int active_mob_n;           // knights with at least six mobility squares
+    int active_mob_b;           // bishops with at least eight mobility squares
+    int active_mob_r;           // rooks with at least ten mobility squares
+    int active_mob_q;           // queens with at least fourteen mobility squares
     int pst[PIECE_TYPE_COUNT][64];  // piece-square counts (view side, mirrored for black)
     int residual_mg;            // summed mg of all non-tuned terms
     int residual_eg;            // summed eg of all non-tuned terms

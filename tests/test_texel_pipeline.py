@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = ROOT / "scripts" / "texel_build_dataset.py"
 TUNE_SCRIPT = ROOT / "scripts" / "texel_tune.py"
 APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_tune.py"
+MOBILITY_TUNE_SCRIPT = ROOT / "scripts" / "texel_tune_mobility_shape.py"
+MOBILITY_APPLY_SCRIPT = ROOT / "scripts" / "texel_apply_mobility_shape.py"
 REMOTE_PIPELINE_SCRIPT = ROOT / "scripts" / "run_hce_v2_remote_pipeline.py"
 
 
@@ -197,6 +199,67 @@ def test_hce_v3_threat_feature_detectors() -> None:
         assert old[3, tune.F_SAFE_PUSH_THREAT_MAJOR] == 1
 
 
+def test_hce_mobility_shape_feature_detectors() -> None:
+    tune = load_module(
+        MOBILITY_TUNE_SCRIPT,
+        "texel_tune_mobility_shape_feature_test",
+    )
+    fixtures = [
+        "k7/8/8/8/8/8/8/N6K w - - 0 1",
+        "k7/8/8/8/8/8/1P1P4/2B4K w - - 0 1",
+        "k7/8/8/8/8/8/P7/RN5K w - - 0 1",
+        "k7/8/8/8/8/8/PP6/QN5K w - - 0 1",
+        "k7/8/8/8/3N4/8/8/7K w - - 0 1",
+        "k7/8/8/8/3B4/8/8/7K w - - 0 1",
+        "k7/8/8/8/3R4/8/8/7K w - - 0 1",
+        "k7/8/8/8/3Q4/8/8/7K w - - 0 1",
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        positions_path = tmp_path / "positions.txt"
+        features_path = tmp_path / "features.txt"
+        positions_path.write_text(
+            "".join(f"{fen};0.5\n" for fen in fixtures),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [str(ROOT / "bin" / "chess_uci")],
+            input=(
+                f"tunedumpall {positions_path} {features_path}\n"
+                "quit\n"
+            ),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        _, _, _, _, white_shape, _, _ = tune.load_features(features_path)
+
+        for index in range(4):
+            assert white_shape[index, index] == 1
+        for index in range(4):
+            assert white_shape[index + 4, index + 4] == 1
+
+
+def test_apply_mobility_shape_updates_all_constants() -> None:
+    apply_shape = load_module(
+        MOBILITY_APPLY_SCRIPT,
+        "texel_apply_mobility_shape_test",
+    )
+    values = list(range(-8, 8))
+    with tempfile.TemporaryDirectory() as tmp:
+        eval_copy = Path(tmp) / "hce_eval.c"
+        eval_copy.write_text(
+            (ROOT / "src" / "core" / "engine" / "hce_eval.c").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        apply_shape.patch_eval_c(eval_copy, values)
+        patched = eval_copy.read_text(encoding="utf-8")
+        for name, value in zip(apply_shape.SHAPE_NAMES, values):
+            assert f"static const int k_{name} = {value};" in patched
+
+
 def test_tunedump_rejects_misaligned_groups() -> None:
     fen = "7k/8/8/8/8/8/8/7K w - - 0 1"
     with tempfile.TemporaryDirectory() as tmp:
@@ -322,6 +385,8 @@ if __name__ == "__main__":
     test_apply_tune_updates_combined_mobility_expression()
     test_hce_v2_feature_detectors()
     test_hce_v3_threat_feature_detectors()
+    test_hce_mobility_shape_feature_detectors()
+    test_apply_mobility_shape_updates_all_constants()
     test_tunedump_rejects_misaligned_groups()
     test_remote_pipeline_uses_coordinate_median()
     test_established_retune_guards_bishop_endgame_mobility()
