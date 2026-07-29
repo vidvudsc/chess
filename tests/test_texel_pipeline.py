@@ -214,6 +214,32 @@ def test_established_retune_guards_bishop_endgame_mobility() -> None:
     }]
 
 
+def test_established_retune_expands_previous_baseline_vector() -> None:
+    pipeline = load_module(
+        ROOT / "scripts" / "run_hce_established_retune.py",
+        "hce_established_retune_baseline_test",
+    )
+    previous_length = pipeline.N_TUNED - pipeline.N_V2_SCALAR
+    previous = list(range(previous_length))
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "baseline.log"
+        path.write_text(
+            "TUNED " + " ".join(str(value) for value in previous) + "\n",
+            encoding="utf-8",
+        )
+        expanded = pipeline.parse_baseline_vector(path)
+
+    assert len(expanded) == pipeline.N_TUNED
+    assert expanded[:pipeline.N_CURRENT_SCALAR] == \
+        previous[:pipeline.N_CURRENT_SCALAR]
+    assert expanded[
+        pipeline.N_CURRENT_SCALAR:
+        pipeline.N_CURRENT_SCALAR + pipeline.N_V2_SCALAR
+    ] == [0] * pipeline.N_V2_SCALAR
+    assert expanded[pipeline.N_CURRENT_SCALAR + pipeline.N_V2_SCALAR:] == \
+        previous[pipeline.N_CURRENT_SCALAR:]
+
+
 def test_remote_pipeline_summarizes_paired_match() -> None:
     pipeline = load_module(REMOTE_PIPELINE_SCRIPT, "hce_v2_match_summary_test")
     report = {
@@ -253,5 +279,6 @@ if __name__ == "__main__":
     test_tunedump_rejects_misaligned_groups()
     test_remote_pipeline_uses_coordinate_median()
     test_established_retune_guards_bishop_endgame_mobility()
+    test_established_retune_expands_previous_baseline_vector()
     test_remote_pipeline_summarizes_paired_match()
     print("test_texel_pipeline: OK")

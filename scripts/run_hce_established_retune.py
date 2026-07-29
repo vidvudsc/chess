@@ -34,6 +34,8 @@ BASELINE = LAB / executable_name("baseline_854193a")
 CANDIDATE = SWEEP / executable_name("established_retune_candidate")
 EVAL_SOURCE = ROOT / "src" / "core" / "engine" / "hce_eval.c"
 N_TUNED = 815
+N_CURRENT_SCALAR = 21
+N_V2_SCALAR = 26
 BISHOP_EG_MOBILITY_INDEX = 12
 
 
@@ -82,6 +84,30 @@ def parse_tuned_vector(path: Path) -> list[int]:
     if len(values) != N_TUNED:
         raise RuntimeError(
             f"{path} has {len(values)} tuned values, expected {N_TUNED}"
+        )
+    return values
+
+
+def parse_baseline_vector(path: Path) -> list[int]:
+    lines = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("TUNED ")
+    ]
+    if not lines:
+        raise RuntimeError(f"no TUNED line in {path}")
+    values = [int(value) for value in lines[-1].split()[1:]]
+    previous_length = N_TUNED - N_V2_SCALAR
+    if len(values) == previous_length:
+        values = (
+            values[:N_CURRENT_SCALAR]
+            + [0] * N_V2_SCALAR
+            + values[N_CURRENT_SCALAR:]
+        )
+    if len(values) != N_TUNED:
+        raise RuntimeError(
+            f"{path} has {len(values)} tuned values, expected "
+            f"{previous_length} or {N_TUNED}"
         )
     return values
 
@@ -291,7 +317,7 @@ class Retune:
 
     def guard_candidate(self, tuned_path: Path) -> Path:
         baseline_path = LAB / "baseline_tune.log"
-        baseline = parse_tuned_vector(baseline_path)
+        baseline = parse_baseline_vector(baseline_path)
         tuned = parse_tuned_vector(tuned_path)
         guarded, adjustments = apply_behavioral_guards(tuned, baseline)
         guarded_path = SWEEP / "established_guarded_tuned.txt"
