@@ -1,5 +1,9 @@
 CC ?= cc
 CFLAGS ?= -std=c11 -O3 -Wall -Wextra -Wpedantic
+# w64devkit/mingw hides POSIX pieces (clock_gettime) under strict c11.
+ifeq ($(OS),Windows_NT)
+CFLAGS := $(subst -std=c11,-std=gnu11,$(CFLAGS))
+endif
 HCE_SEARCH_OPT ?= -O2
 DEPFLAGS ?= -MMD -MP
 LDFLAGS ?=

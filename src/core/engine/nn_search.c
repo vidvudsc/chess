@@ -86,6 +86,10 @@ typedef struct HceSearchContext {
     int64_t deadline_ms;
     int64_t hard_deadline_ms;
     bool timed_out;
+    // While true the search ignores every stop condition: the first
+    // iteration must always complete so an early "stop"/quit can never
+    // produce a depth-0 garbage bestmove.
+    bool in_first_iteration;
     uint64_t nodes;
     int max_depth;
     Move policy_root_moves[CHESS_MAX_MOVES];
@@ -335,7 +339,12 @@ void hce_nn_search_reset_options(void) {
 
 static int64_t now_ms(void) {
     struct timespec ts;
+#if defined(_WIN32)
+    // msvcrt-based mingw has no timespec_get; winpthreads supplies clock_gettime.
+    clock_gettime(CLOCK_REALTIME, &ts);
+#else
     timespec_get(&ts, TIME_UTC);
+#endif
     return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
 }
 
@@ -517,8 +526,17 @@ static bool should_stop(HceSearchContext *ctx) {
     if (ctx == NULL || ctx->deadline_ms <= 0) {
         return false;
     }
+    if (ctx->in_first_iteration) {
+        return false;
+    }
     if ((ctx->nodes & 2047ULL) != 0ULL) {
         return false;
+    }
+    // Honor UCI "stop" on the NN lane too; previously only the deadline
+    // could end an NN search, so stop/ponderhit stalled until time ran out.
+    if (hce_search_stop_requested()) {
+        ctx->timed_out = true;
+        return true;
     }
     if (now_ms() >= ctx->deadline_ms) {
         ctx->timed_out = true;
@@ -1702,7 +1720,8 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     bool have_iter_score = false;
 
     for (int depth = 1; depth <= ctx.max_depth; ++depth) {
-        if (should_stop(&ctx)) {
+        ctx.in_first_iteration = (depth == 1);
+        if (depth > 1 && should_stop(&ctx)) {
             break;
         }
         if (depth >= 2 && depth_reached >= 1) {

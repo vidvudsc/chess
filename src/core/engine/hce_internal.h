@@ -74,6 +74,7 @@ bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchRe
 // Ask a running search to stop at its next node-count check (~2k nodes).
 // Safe to call from any thread; a no-op when no search is running.
 void hce_search_request_stop(void);
+bool hce_search_stop_requested(void);
 // Clear a pending stop request. Must be called by the thread that issues
 // searches BEFORE starting one (not inside the search itself), or a stop
 // arriving between spawn and search entry would be silently erased.
