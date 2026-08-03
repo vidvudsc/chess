@@ -512,6 +512,9 @@ typedef struct AttackUnions {
     uint64_t all[PIECE_COLOR_COUNT];
     uint64_t non_king[PIECE_COLOR_COUNT];
     uint64_t pawn[PIECE_COLOR_COUNT];
+    // Per-piece-type attack unions (knight/bishop/rook/queen only; the rest
+    // stay zero). Used for safe-check detection in king safety.
+    uint64_t piece_atk[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int king_attack_units[PIECE_COLOR_COUNT];
 } AttackUnions;
@@ -540,6 +543,7 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             int sq = chess_pop_lsb(&knights);
             uint64_t attacks = g_knight_attacks[sq];
             a |= attacks;
+            out->piece_atk[side][PIECE_KNIGHT] |= attacks;
             out->mobility[side][PIECE_KNIGHT] += chess_count_bits(attacks & ~s->occ[side]);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 2;
@@ -550,6 +554,7 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             int sq = chess_pop_lsb(&bishops);
             uint64_t attacks = hce_bishop_attacks(sq, s->occ_all);
             a |= attacks;
+            out->piece_atk[side][PIECE_BISHOP] |= attacks;
             out->mobility[side][PIECE_BISHOP] += chess_count_bits(attacks & ~s->occ[side]);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 2;
@@ -560,6 +565,7 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             int sq = chess_pop_lsb(&rooks);
             uint64_t attacks = hce_rook_attacks(sq, s->occ_all);
             a |= attacks;
+            out->piece_atk[side][PIECE_ROOK] |= attacks;
             out->mobility[side][PIECE_ROOK] += chess_count_bits(attacks & ~s->occ[side]);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 3;
@@ -571,6 +577,7 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             uint64_t attacks = hce_bishop_attacks(sq, s->occ_all) |
                                hce_rook_attacks(sq, s->occ_all);
             a |= attacks;
+            out->piece_atk[side][PIECE_QUEEN] |= attacks;
             out->mobility[side][PIECE_QUEEN] += chess_count_bits(attacks & ~s->occ[side]);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 5;
@@ -698,6 +705,22 @@ static int king_safety_penalty(const GameState *s, int side, const AttackUnions 
         if (attack_units >= 6) {
             penalty += shield / 2;
         }
+    }
+
+    // Safe checks: enemy pieces that can deliver a check from a square we do
+    // not defend and they do not occupy. These are forcing threats the rest
+    // of the king-safety terms cannot see.
+    {
+        uint64_t safe = ~atk->all[side] & ~s->occ[enemy];
+        uint64_t n_check = g_knight_attacks[king_sq];
+        uint64_t b_check = hce_bishop_attacks(king_sq, s->occ_all);
+        uint64_t r_check = hce_rook_attacks(king_sq, s->occ_all);
+        int safe_checks =
+            6 * chess_count_bits(n_check & atk->piece_atk[enemy][PIECE_KNIGHT] & safe) +
+            4 * chess_count_bits(b_check & atk->piece_atk[enemy][PIECE_BISHOP] & safe) +
+            7 * chess_count_bits(r_check & atk->piece_atk[enemy][PIECE_ROOK] & safe) +
+            9 * chess_count_bits((b_check | r_check) & atk->piece_atk[enemy][PIECE_QUEEN] & safe);
+        penalty += safe_checks;
     }
 
     if (enemy_queen_count == 0 && enemy_rook_count <= 1 && attack_units <= 2) {
