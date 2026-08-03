@@ -899,6 +899,7 @@ int main(void) {
         if (strcmp(line, "ucinewgame") == 0) {
             search_thread_join();
             reset_start_position(&state);
+            hce_search_clear_pawn_corr();
             continue;
         }
         if (starts_with(line, "position")) {

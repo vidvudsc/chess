@@ -33,6 +33,30 @@ typedef struct HceTtEntry {
 #define HCE_TT_BOUND_SHIFT 50u
 #define HCE_TT_AGE_SHIFT 52u
 
+// Pawn-structure correction history: learns the static eval's systematic
+// error per (side-to-move, pawn structure) during search and feeds it back
+// into every static eval. Entries are centipawns scaled by HCE_CORR_GRAIN.
+// The table persists across searches within a game (cleared on ucinewgame)
+// and is shared by all lazy-SMP threads; relaxed atomics keep the accesses
+// defined, and a lost update between racing threads is harmless.
+enum {
+    HCE_CORR_SIZE = 16384,
+    HCE_CORR_GRAIN = 256,
+    HCE_CORR_SCALE = 256,
+    HCE_CORR_MAX = 48 * 256,
+    HCE_CORR_DELTA_CAP = 256,
+};
+
+static _Atomic int32_t g_pawn_corr[PIECE_COLOR_COUNT][HCE_CORR_SIZE];
+
+void hce_search_clear_pawn_corr(void) {
+    for (int c = 0; c < PIECE_COLOR_COUNT; ++c) {
+        for (int i = 0; i < HCE_CORR_SIZE; ++i) {
+            atomic_store_explicit(&g_pawn_corr[c][i], 0, memory_order_relaxed);
+        }
+    }
+}
+
 typedef struct HceSearchContext {
     int64_t start_ms;
     int64_t deadline_ms;
@@ -394,12 +418,27 @@ static int ctx_null_depth_divisor(const HceSearchContext *ctx) {
     return 4;
 }
 
+static uint32_t pawn_corr_index(const GameState *s) {
+    uint64_t k = s->bb[PIECE_WHITE][PIECE_PAWN] * 0x9E3779B97F4A7C15ULL;
+    k ^= s->bb[PIECE_BLACK][PIECE_PAWN] * 0xC2B2AE3D27D4EB4FULL;
+    k ^= k >> 29;
+    k *= 0xBF58476D1CE4E5B9ULL;
+    k ^= k >> 32;
+    return (uint32_t)(k & (HCE_CORR_SIZE - 1));
+}
+
+static int pawn_corr_lookup(const GameState *s) {
+    int32_t v = atomic_load_explicit(
+        &g_pawn_corr[s->side_to_move][pawn_corr_index(s)], memory_order_relaxed);
+    return v / HCE_CORR_GRAIN;
+}
+
 static int search_eval_cp_stm(const GameState *s, HceSearchContext *ctx, int ply) {
     if (s == NULL) {
         return 0;
     }
     if (chess_ai_get_backend() != CHESS_AI_BACKEND_NN || !nn_eval_is_loaded()) {
-        return engine_eval_cp_stm(s);
+        return engine_eval_cp_stm(s) + pawn_corr_lookup(s);
     }
     if (ply < 0 || ply >= HCE_MAX_PLY) {
         return nn_eval_cp_stm(s);
@@ -882,6 +921,53 @@ int hce_qsearch_eval_cp_stm(const GameState *root) {
     return quiescence(&s, -HCE_INF, HCE_INF, 0, &ctx);
 }
 
+// Feed the searched score back into the pawn correction table. Only quiet,
+// non-mate results whose bound direction agrees with the eval error are used,
+// weighted by depth, matching standard correction-history practice.
+static void pawn_corr_update(const GameState *s,
+                             int static_eval,
+                             int best_score,
+                             HceTtBound bound,
+                             int depth,
+                             Move best_move,
+                             bool best_move_valid) {
+    if (static_eval == INT_MIN) {
+        return;
+    }
+    if (best_score >= HCE_MATE_THRESHOLD || best_score <= -HCE_MATE_THRESHOLD) {
+        return;
+    }
+    if (best_move_valid && !is_quiet_move(best_move)) {
+        return;
+    }
+    if (bound == HCE_TT_LOWER && best_score <= static_eval) {
+        return;
+    }
+    if (bound == HCE_TT_UPPER && best_score >= static_eval) {
+        return;
+    }
+    int delta = best_score - static_eval;
+    if (delta > HCE_CORR_DELTA_CAP) {
+        delta = HCE_CORR_DELTA_CAP;
+    } else if (delta < -HCE_CORR_DELTA_CAP) {
+        delta = -HCE_CORR_DELTA_CAP;
+    }
+    int weight = depth + 1;
+    if (weight > 16) {
+        weight = 16;
+    }
+    _Atomic int32_t *entry = &g_pawn_corr[s->side_to_move][pawn_corr_index(s)];
+    int64_t old = atomic_load_explicit(entry, memory_order_relaxed);
+    int64_t value = (old * (HCE_CORR_SCALE - weight) +
+                     (int64_t)delta * HCE_CORR_GRAIN * weight) / HCE_CORR_SCALE;
+    if (value > HCE_CORR_MAX) {
+        value = HCE_CORR_MAX;
+    } else if (value < -HCE_CORR_MAX) {
+        value = -HCE_CORR_MAX;
+    }
+    atomic_store_explicit(entry, (int32_t)value, memory_order_relaxed);
+}
+
 static int negamax(GameState *s,
                    int depth,
                    int alpha,
@@ -924,10 +1010,11 @@ static int negamax(GameState *s,
     }
 
     bool in_check = chess_in_check(s, s->side_to_move);
+    int static_eval = in_check ? INT_MIN : search_eval_cp_stm(s, ctx, ply);
 
     if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
         int margin = ctx_rfp_margin_per_depth(ctx) * depth;
-        if (search_eval_cp_stm(s, ctx, ply) >= beta + margin) {
+        if (static_eval >= beta + margin) {
             return beta;
         }
     }
@@ -1063,6 +1150,8 @@ static int negamax(GameState *s,
                 if (has_non_pawn_material(s, side)) {
                     penalize_quiet_history(ctx, side, failed_quiets, failed_quiet_count, depth);
                 }
+                pawn_corr_update(s, static_eval, best_score, HCE_TT_LOWER,
+                                 depth, m, true);
                 tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
                 if (best_move_out != NULL) {
                     *best_move_out = m;
@@ -1086,6 +1175,8 @@ static int negamax(GameState *s,
         bound = HCE_TT_LOWER;
     }
     if (!ctx->timed_out) {
+        pawn_corr_update(s, static_eval, best_score, bound,
+                         depth, best_move, searched > 0);
         tt_store(s->zobrist_hash, depth, ply, best_score, bound, best_move);
     }
     if (best_move_out != NULL) {

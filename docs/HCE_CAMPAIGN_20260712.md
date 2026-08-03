@@ -49,6 +49,10 @@ Only changes developed after that commit count toward the campaign target.
   reverted.
 - Game-outcome-fitted endgame bishop pair (`0/+48`): 29.0/60, -11.6 Elo,
   paired P=35.5%; reverted.
+- Pawn-structure correction history, per-search table: +34.9 Elo at 60g,
+  then 56.5/120, -20.3 Elo, paired P=16.4%; reverted.
+- Pawn-structure correction history, game-persistent shared table: 29.5/60,
+  -5.8 Elo, paired P=41.9%; reverted (branch `hce-corrhist`).
 
 All playing-code candidates above were reverted. The repeated 60-to-120
 collapses reinforce the requirement for 240-game confirmation before any Elo

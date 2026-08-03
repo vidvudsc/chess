@@ -1,5 +1,37 @@
 # HCE Experiments
 
+## 2026-08-03: Pawn-structure correction history (both variants neutral)
+
+Status: rejected after two variants; code parked on branch `hce-corrhist`.
+
+Hypothesis: a correction table indexed by (side-to-move, pawn-structure hash)
+that learns the static eval's systematic error from searched scores should
+de-noise the eval — targeting the diagnosed weakness (130/176 real VidBot
+errors were quiet-move misjudgments). Standard modern-engine feature, never
+tried here.
+
+Implementation: 16384-entry per-color table, depth-weighted EMA update at
+non-check nodes whose bound direction agrees with the eval error and whose
+best move is quiet; correction capped at +/-48cp, applied inside
+`search_eval_cp_stm` for the classic backend. Static eval now computed once
+per interior node (reused by RFP). Baseline `854193a`, NPS unchanged (~1.1M).
+
+Results (think 120ms, lichess_equal_positions, paired colors):
+
+- v1 per-search table (reset each `go`): 60g seed 20260803 +34.9
+  (33/60, P=83.5%) -> 120g fresh seed 20260804 -20.3 (56.5/120,
+  CI95 [-64.6, +23.4], P=18.1%). Pooled 180g: 89.5/180 = 49.7%, neutral.
+  `current/corrhist_vs_base_60g.json`, `current/corrhist_vs_base_120g.json`.
+- v2 persistent table (global relaxed-atomic, shared across lazy-SMP
+  threads, cleared on `ucinewgame`): 60g seed 20260805 -5.8 (29.5/60,
+  CI95 [-70.4, +58.5], P=42.9%). Below screen gate, no confirm run.
+  `current/corrhist2_vs_base_60g.json`.
+
+Verdict: the 60g->120g collapse repeats the campaign pattern. At 120ms with
+the texel-tuned eval, searched-score feedback adds no measurable strength.
+Do not retry minor variants (material-key or nonpawn-key tables) without a
+structurally new idea; both the amnesiac and persistent forms are covered.
+
 ## 2026-07-16: Post-clock Elo follow-up
 Status: all candidates rejected; engine restored exactly.
 
