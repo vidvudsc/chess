@@ -87,6 +87,81 @@ int engine_eval_cp_stm(const GameState *state) {
     return score;
 }
 
+// TEMPORARY measure mode (HCE_LAZY_MEASURE=1): always run both evals, log the
+// cheap-vs-full gap distribution at exit, take no lazy shortcut. Remove after
+// the margin is chosen.
+#include <stdio.h>
+#include <stdlib.h>
+static _Atomic long g_lm_count;
+static _Atomic long g_lm_over[7]; // >50 >100 >150 >200 >250 >300 >400
+static _Atomic int g_lm_max;
+static void lazy_measure_report(void) {
+    fprintf(stderr,
+            "lazy_measure: n=%ld >50=%ld >100=%ld >150=%ld >200=%ld >250=%ld >300=%ld >400=%ld max=%d\n",
+            atomic_load(&g_lm_count), atomic_load(&g_lm_over[0]),
+            atomic_load(&g_lm_over[1]), atomic_load(&g_lm_over[2]),
+            atomic_load(&g_lm_over[3]), atomic_load(&g_lm_over[4]),
+            atomic_load(&g_lm_over[5]), atomic_load(&g_lm_over[6]),
+            atomic_load(&g_lm_max));
+}
+static bool lazy_measure_enabled(void) {
+    static _Atomic int cached = -1;
+    int v = atomic_load(&cached);
+    if (v < 0) {
+        v = (getenv("HCE_LAZY_MEASURE") != NULL) ? 1 : 0;
+        if (v) {
+            atexit(lazy_measure_report);
+        }
+        atomic_store(&cached, v);
+    }
+    return v == 1;
+}
+
+int engine_eval_cp_stm_bounded(const GameState *state, int alpha, int beta) {
+    if (state == NULL) {
+        return 0;
+    }
+    if (g_chess_ai_backend != CHESS_AI_BACKEND_CLASSIC) {
+        return engine_eval_cp_stm(state);
+    }
+    if (lazy_measure_enabled()) {
+        int full = engine_eval_cp_stm(state);
+        int diff = full - hce_eval_cheap_cp_stm(state);
+        if (diff < 0) {
+            diff = -diff;
+        }
+        atomic_fetch_add(&g_lm_count, 1);
+        static const int thr[7] = {50, 100, 150, 200, 250, 300, 400};
+        for (int i = 0; i < 7; ++i) {
+            if (diff > thr[i]) {
+                atomic_fetch_add(&g_lm_over[i], 1);
+            }
+        }
+        int prev = atomic_load(&g_lm_max);
+        while (diff > prev &&
+               !atomic_compare_exchange_weak(&g_lm_max, &prev, diff)) {
+        }
+        return full;
+    }
+    // Exact cached scores beat the lazy shortcut; clamped lazy scores are
+    // window-relative and must never enter the cache.
+    EvalCacheEntry *entry = &g_hce_eval_cache[state->zobrist_hash & NN_EVAL_CACHE_MASK];
+    int cached = 0;
+    if (eval_cache_probe(entry, state->zobrist_hash, &cached)) {
+        return cached;
+    }
+    int cheap = hce_eval_cheap_cp_stm(state);
+    if (cheap - HCE_LAZY_EVAL_MARGIN >= beta) {
+        return cheap - HCE_LAZY_EVAL_MARGIN;
+    }
+    if (cheap + HCE_LAZY_EVAL_MARGIN <= alpha) {
+        return cheap + HCE_LAZY_EVAL_MARGIN;
+    }
+    int score = hce_eval_cp_stm(state);
+    eval_cache_store(entry, state->zobrist_hash, score);
+    return score;
+}
+
 int chess_ai_eval_cp(const GameState *state) {
     if (state == NULL) {
         return 0;

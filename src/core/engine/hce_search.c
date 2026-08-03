@@ -394,12 +394,26 @@ static int ctx_null_depth_divisor(const HceSearchContext *ctx) {
     return 4;
 }
 
+static int search_eval_cp_stm_bounded(const GameState *s,
+                                      HceSearchContext *ctx,
+                                      int ply,
+                                      int alpha,
+                                      int beta);
+
 static int search_eval_cp_stm(const GameState *s, HceSearchContext *ctx, int ply) {
+    return search_eval_cp_stm_bounded(s, ctx, ply, -HCE_INF, HCE_INF);
+}
+
+static int search_eval_cp_stm_bounded(const GameState *s,
+                                      HceSearchContext *ctx,
+                                      int ply,
+                                      int alpha,
+                                      int beta) {
     if (s == NULL) {
         return 0;
     }
     if (chess_ai_get_backend() != CHESS_AI_BACKEND_NN || !nn_eval_is_loaded()) {
-        return engine_eval_cp_stm(s);
+        return engine_eval_cp_stm_bounded(s, alpha, beta);
     }
     if (ply < 0 || ply >= HCE_MAX_PLY) {
         return nn_eval_cp_stm(s);
@@ -804,7 +818,7 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
     bool in_check = chess_in_check(s, s->side_to_move);
     int stand_pat = 0;
     if (!in_check) {
-        stand_pat = search_eval_cp_stm(s, ctx, ply);
+        stand_pat = search_eval_cp_stm_bounded(s, ctx, ply, alpha, beta);
         if (stand_pat >= beta) {
             return beta;
         }
@@ -927,7 +941,9 @@ static int negamax(GameState *s,
 
     if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
         int margin = ctx_rfp_margin_per_depth(ctx) * depth;
-        if (search_eval_cp_stm(s, ctx, ply) >= beta + margin) {
+        if (search_eval_cp_stm_bounded(s, ctx, ply,
+                                       beta + margin - 1,
+                                       beta + margin) >= beta + margin) {
             return beta;
         }
     }

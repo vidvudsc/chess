@@ -59,6 +59,16 @@ int hce_eval_tune_features(const GameState *s,
                            HceTuneFeatures *black_out,
                            int *phase_out);
 int engine_eval_cp_stm(const GameState *s);
+
+// Lazy eval: when the cheap material+PST+pawn score is further than this
+// margin outside the (alpha, beta) window, skip the expensive eval terms and
+// return the clamped cheap score. The margin must bound the total swing the
+// skipped terms (mobility, king safety, hanging, queen trap, rook files) can
+// add on top of the cheap score.
+#define HCE_LAZY_EVAL_MARGIN 300
+
+int hce_eval_cheap_cp_stm(const GameState *s);
+int engine_eval_cp_stm_bounded(const GameState *s, int alpha, int beta);
 bool hce_nn_leaf_log_set_path(const char *path);
 const char *hce_nn_leaf_log_path(void);
 void hce_nn_leaf_log_set_limit(int limit);

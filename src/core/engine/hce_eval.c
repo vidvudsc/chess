@@ -1238,6 +1238,56 @@ int hce_eval_cp_stm(const GameState *s) {
     return cp_stm;
 }
 
+// Cheap eval: material + piece squares + cached pawn terms only. Skips the
+// attack-union work (mobility, king safety, hanging, queen traps, rook
+// files), which profiling shows is most of the eval cost. Used by the lazy
+// gate below; the omitted terms are bounded by HCE_LAZY_EVAL_MARGIN.
+static void eval_side_cheap(const GameState *s, int side, int *mg_out, int *eg_out) {
+    const PawnEvalTerms *pt = probe_pawn_eval_terms(s, side);
+    int mg = pt->material.mg + pt->piece_square.mg + pt->pawn_structure.mg +
+             pt->passed_pawns.mg + pt->pawn_activity.mg;
+    int eg = pt->material.eg + pt->piece_square.eg + pt->pawn_structure.eg +
+             pt->passed_pawns.eg + pt->pawn_activity.eg;
+    static const int *const pst_mg[PIECE_PAWN] = {
+        k_king_mid_pst, k_queen_pst, k_bishop_pst, k_knight_pst, k_rook_pst,
+    };
+    static const int *const pst_eg[PIECE_PAWN] = {
+        k_king_end_pst, k_queen_pst_eg, k_bishop_pst_eg, k_knight_pst_eg,
+        k_rook_pst_eg,
+    };
+    for (int piece = PIECE_KING; piece < PIECE_PAWN; ++piece) {
+        uint64_t bb = s->bb[side][piece];
+        while (bb != 0) {
+            int sq = chess_pop_lsb(&bb);
+            int view = (side == PIECE_WHITE) ? sq : mirror_sq(sq);
+            mg += hce_piece_value[piece] + pst_mg[piece][view];
+            eg += hce_piece_value[piece] + pst_eg[piece][view];
+        }
+    }
+    *mg_out = mg;
+    *eg_out = eg;
+}
+
+int hce_eval_cheap_cp_stm(const GameState *s) {
+    if (s == NULL) {
+        return 0;
+    }
+    hce_init_tables();
+    int phase = phase_value(s);
+    int wmg = 0;
+    int weg = 0;
+    int bmg = 0;
+    int beg = 0;
+    eval_side_cheap(s, PIECE_WHITE, &wmg, &weg);
+    eval_side_cheap(s, PIECE_BLACK, &bmg, &beg);
+    int mg = wmg - bmg;
+    int eg = weg - beg;
+    int cp_white = (mg * phase + eg * (24 - phase)) / 24;
+    int cp_stm = (s->side_to_move == PIECE_WHITE) ? cp_white : -cp_white;
+    return cp_stm + 12;
+}
+
+
 int hce_eval_tune_features(const GameState *s,
                            HceTuneFeatures *white_out,
                            HceTuneFeatures *black_out,
