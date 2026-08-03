@@ -55,6 +55,10 @@ Only changes developed after that commit count toward the campaign target.
   -5.8 Elo, paired P=41.9%; reverted (branch `hce-corrhist`).
 - Lazy eval gate at margin 300 (+14-15% NPS, +1 depth): 27.5/60, -29.0 Elo,
   paired P=18.5%; reverted (branch `hce-inceval`).
+- Safe-check king danger, weights 12/8/14/18: 28.0/60, -23.2 Elo, paired
+  P=22.7%; reverted (branch `hce-kingsafety`).
+- Safe-check king danger, halved weights 6/4/7/9: 29.0/60, -11.6 Elo,
+  paired P=37.1%; reverted; weights must be fitted, not guessed.
 
 All playing-code candidates above were reverted. The repeated 60-to-120
 collapses reinforce the requirement for 240-game confirmation before any Elo

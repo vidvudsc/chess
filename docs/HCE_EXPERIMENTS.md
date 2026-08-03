@@ -1,5 +1,33 @@
 # HCE Experiments
 
+## 2026-08-03: Safe-check king danger (below gate, parked for texel fitting)
+
+Status: two weight guesses below gate; code parked on branch
+`hce-kingsafety` (3722528). Matches at 120ms, paired colors, baseline
+`8f395fc`.
+
+The king-safety term had no safe-check concept. `AttackUnions` now carries
+per-piece-type attack unions (free — ORed inside the existing loops, NPS
+unchanged), and `king_safety_penalty` adds counts of enemy N/B/R/Q able to
+check from squares the defender does not attack and the attacker does not
+occupy.
+
+- Weights 12/8/14/18 (N/B/R/Q): 60g seed 20260807 -23.2 (28/60, P=24.7%).
+  `current/safechecks_vs_base_60g.json`.
+- Halved 6/4/7/9: 60g seed 20260808 -11.6 (29/60, P=36.3%).
+  `current/safechecks_half_vs_base_60g.json`.
+
+Verdict: the monotone improvement when halving says the feature scale is
+wrong, not necessarily the feature. Hand-guessing eval weights has now
+failed 6+ times in this project; do not try a third guess. Revisit only by
+fitting the four weights (texel / logistic fit on labelled positions),
+ideally inside the planned volume self-play refit.
+
+Infrastructure note: matches now run on the `mlpc` box (`D:\chess-lab`,
+w64devkit gcc, `-std=gnu11`, `timespec_get` replaced by `clock_gettime` on
+the build host for msvcrt compatibility) — the MacBook is no longer used
+for match play.
+
 ## 2026-08-03: Lazy eval gate (rejected)
 
 Status: rejected at the 60g screen; code parked on branch `hce-inceval`.
