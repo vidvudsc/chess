@@ -1,5 +1,53 @@
 # HCE Experiments
 
+## 2026-08-03: Lazy eval gate (rejected)
+
+Status: rejected at the 60g screen; code parked on branch `hce-inceval`.
+
+Hypothesis: profiling (macOS `sample`, 12s middlegame search) shows eval is
+~40% of search time with `compute_attack_unions` alone at ~20%. A cheap
+material+PST+pawn-cache pass that skips the attack-union terms (mobility,
+king safety, hanging, queen trap, rook files) when the cheap score sits more
+than a margin outside the (alpha, beta) window should convert eval time into
+depth.
+
+Measured before the match (branch `hce-inceval`, baseline `854193a`):
+
+- Cheap-vs-full gap: middlegames have a heavy tail — ~8% of evals differ by
+  >300cp (max ~1100cp, driven by hanging/king-safety), so any affordable
+  margin mislabels a real fraction of skipped positions.
+- Margin 300: +14-15% NPS and +1 depth at 4s in middlegames; endgame flat.
+  Margins 200/400 within a few percent of the same speed.
+
+Result: 60g seed 20260806, think 120ms: -29.0 Elo (27.5/60,
+CI95 [-100.9, +40.5], P=20.6%). Below screen gate, no confirm run.
+`current/lazyeval_vs_base_60g.json`.
+
+Verdict: the depth gained does not pay for degraded tactical terms — the
+same lesson as the tactical-patch ablation, from the speed side. Any future
+eval-speed work must keep hanging/king-safety exact (their tail IS the
+signal); "make the tactical terms cheap" remains the honest path.
+
+## 2026-08-03: Pawn-structure correction history (rejected)
+
+Status: rejected after two variants; code parked on branch `hce-corrhist`.
+
+A correction table indexed by (side-to-move, pawn-structure hash) learning
+the static eval's error from searched scores (depth-weighted EMA, quiet
+non-mate nodes with agreeing bound direction, +/-48cp cap, applied in
+`search_eval_cp_stm`). Baseline `854193a`, NPS unchanged.
+
+- v1 per-search table: 60g seed 20260803 +34.9 (P=83.5%) -> 120g fresh seed
+  20260804 -20.3 (56.5/120, CI95 [-64.6, +23.4], P=18.1%). Pooled 180g:
+  49.7%, neutral. `current/corrhist_vs_base_{60g,120g}.json`.
+- v2 game-persistent shared table (relaxed atomics, cleared on
+  `ucinewgame`): 60g seed 20260805 -5.8 (29.5/60, P=42.9%). Below gate.
+  `current/corrhist2_vs_base_60g.json`.
+
+Verdict: at 120ms with the texel-tuned eval, searched-score feedback adds
+nothing. Do not retry material-key/nonpawn-key variants without a
+structurally new idea.
+
 ## 2026-07-16: Post-clock Elo follow-up
 Status: all candidates rejected; engine restored exactly.
 
