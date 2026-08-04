@@ -31,8 +31,11 @@ import numpy as np
 # Number of scalar (material + positional) features and per-side layout.
 N_BASE_SCALAR = 21
 N_EXTRA_SCALAR = 14
-N_SCALAR = N_BASE_SCALAR + N_EXTRA_SCALAR
-SIDE_OLD = 25
+# Stage-B additions: safe checks (4), bishop pair (1), safe mobility (4),
+# per-rank passers (6) — each with an mg and an eg weight.
+N_STAGEB_SCALAR = 30
+N_SCALAR = N_BASE_SCALAR + N_EXTRA_SCALAR + N_STAGEB_SCALAR
+SIDE_OLD = 40  # 23 legacy counts + 15 stage-B counts + residual mg/eg
 PST_PIECES = 6
 PST_SQUARES = 64
 N_PST = PST_PIECES * PST_SQUARES
@@ -144,7 +147,22 @@ PARAM_NAMES = (
      "queen_mg_scale", "queen_eg_scale",
      "pawn_push_mg", "pawn_push_eg",
      "pawn_threat_minor_mg", "pawn_threat_minor_eg",
-     "pawn_threat_major_mg", "pawn_threat_major_eg"]
+     "pawn_threat_major_mg", "pawn_threat_major_eg",
+     "safe_check_n_mg", "safe_check_n_eg",
+     "safe_check_b_mg", "safe_check_b_eg",
+     "safe_check_r_mg", "safe_check_r_eg",
+     "safe_check_q_mg", "safe_check_q_eg",
+     "bishop_pair_mg", "bishop_pair_eg",
+     "mob_safe_n_mg", "mob_safe_n_eg",
+     "mob_safe_b_mg", "mob_safe_b_eg",
+     "mob_safe_r_mg", "mob_safe_r_eg",
+     "mob_safe_q_mg", "mob_safe_q_eg",
+     "passer_rank2_mg", "passer_rank2_eg",
+     "passer_rank3_mg", "passer_rank3_eg",
+     "passer_rank4_mg", "passer_rank4_eg",
+     "passer_rank5_mg", "passer_rank5_eg",
+     "passer_rank6_mg", "passer_rank6_eg",
+     "passer_rank7_mg", "passer_rank7_eg"]
     + [f"pst{p}_{s}_mg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
     + [f"pst{p}_{s}_eg" for p in range(PST_PIECES) for s in range(PST_SQUARES)]
 )
@@ -162,6 +180,11 @@ _SCALAR_DEFAULTS = np.array([
     0, 0,                        # pawn push mg/eg
     0, 0,                        # pawn threat vs minor mg/eg
     0, 0,                        # pawn threat vs major mg/eg
+    0, 0, 0, 0, 0, 0, 0, 0,      # safe checks n/b/r/q (mg, eg) pairs
+    0, 0,                        # bishop pair (mg, eg)
+    0, 0, 0, 0, 0, 0, 0, 0,      # safe mobility n/b/r/q (mg, eg) pairs
+    0, 0, 0, 0, 0, 0,            # passer rank 2/3/4 (mg, eg) pairs
+    0, 0, 0, 0, 0, 0,            # passer rank 5/6/7 (mg, eg) pairs
 ], dtype=np.float64)
 
 DEFAULTS = np.concatenate([
@@ -180,7 +203,11 @@ F_KINGMG, F_KINGEG = 15, 16
 F_HANGING = 17
 F_QUEENMG, F_QUEENEG = 18, 19
 F_PAWN_PUSH, F_PAWN_THREAT_MINOR, F_PAWN_THREAT_MAJOR = 20, 21, 22
-F_RESMG, F_RESEG = 23, 24
+F_SC_N, F_SC_B, F_SC_R, F_SC_Q = 23, 24, 25, 26
+F_BPAIR = 27
+F_MSN, F_MSB, F_MSR, F_MSQ = 28, 29, 30, 31
+F_PR = 32  # passer_rank[0..5] occupy columns 32..37
+F_RESMG, F_RESEG = 38, 39
 
 
 def trunc_div24(a):
@@ -238,6 +265,12 @@ def side_totals_int(side, phase, theta):
           old[:, F_PAWN_PUSH] * scalar[29] +
           old[:, F_PAWN_THREAT_MINOR] * scalar[31] +
           old[:, F_PAWN_THREAT_MAJOR] * scalar[33] +
+          old[:, F_SC_N] * scalar[35] + old[:, F_SC_B] * scalar[37] +
+          old[:, F_SC_R] * scalar[39] + old[:, F_SC_Q] * scalar[41] +
+          old[:, F_BPAIR] * scalar[43] +
+          old[:, F_MSN] * scalar[45] + old[:, F_MSB] * scalar[47] +
+          old[:, F_MSR] * scalar[49] + old[:, F_MSQ] * scalar[51] +
+          sum(old[:, F_PR + r] * scalar[53 + 2 * r] for r in range(6)) +
           old[:, F_RESMG]).astype(np.int64)
     eg = (mat + ps_eg +
           old[:, F_ISO] * scalar[6] + old[:, F_DBL] * scalar[8] +
@@ -251,6 +284,12 @@ def side_totals_int(side, phase, theta):
           old[:, F_PAWN_PUSH] * scalar[30] +
           old[:, F_PAWN_THREAT_MINOR] * scalar[32] +
           old[:, F_PAWN_THREAT_MAJOR] * scalar[34] +
+          old[:, F_SC_N] * scalar[36] + old[:, F_SC_B] * scalar[38] +
+          old[:, F_SC_R] * scalar[40] + old[:, F_SC_Q] * scalar[42] +
+          old[:, F_BPAIR] * scalar[44] +
+          old[:, F_MSN] * scalar[46] + old[:, F_MSB] * scalar[48] +
+          old[:, F_MSR] * scalar[50] + old[:, F_MSQ] * scalar[52] +
+          sum(old[:, F_PR + r] * scalar[54 + 2 * r] for r in range(6)) +
           old[:, F_RESEG]).astype(np.int64)
     return trunc_div24(mg * phase + eg * (24 - phase))
 
@@ -304,6 +343,13 @@ def design_matrix(phase, w, b):
     X[:, 32] = d_old[:, F_PAWN_THREAT_MINOR] * egw
     X[:, 33] = d_old[:, F_PAWN_THREAT_MAJOR] * mgw
     X[:, 34] = d_old[:, F_PAWN_THREAT_MAJOR] * egw
+    # Stage-B mg/eg pairs.
+    stageb_cols = ([F_SC_N, F_SC_B, F_SC_R, F_SC_Q, F_BPAIR,
+                    F_MSN, F_MSB, F_MSR, F_MSQ] +
+                   [F_PR + r for r in range(6)])
+    for i, col in enumerate(stageb_cols):
+        X[:, 35 + 2 * i] = d_old[:, col] * mgw
+        X[:, 36 + 2 * i] = d_old[:, col] * egw
     # PST mg/eg.
     X[:, N_SCALAR:N_SCALAR + N_PST] = d_pst * mgw[:, None]
     X[:, N_SCALAR + N_PST:] = d_pst * egw[:, None]
@@ -328,6 +374,13 @@ def load_tuned_defaults(path):
             values[:N_BASE_SCALAR],
             _SCALAR_DEFAULTS[N_BASE_SCALAR:],
             values[N_BASE_SCALAR:],
+        ])
+    prev_params = N_BASE_SCALAR + N_EXTRA_SCALAR + 2 * N_PST
+    if len(values) == prev_params:
+        values = np.concatenate([
+            values[:N_BASE_SCALAR + N_EXTRA_SCALAR],
+            _SCALAR_DEFAULTS[N_BASE_SCALAR + N_EXTRA_SCALAR:],
+            values[N_BASE_SCALAR + N_EXTRA_SCALAR:],
         ])
     if len(values) != N_PARAMS:
         raise SystemExit(f"expected {N_PARAMS} values in {path}, got {len(values)}")
@@ -367,6 +420,9 @@ def main():
                          "queen-trap scales; freeze established scalars/PSTs.")
     ap.add_argument("--only-new-features", action="store_true",
                     help="Tune only pawn activity/threat weights.")
+    ap.add_argument("--only-stageb", action="store_true",
+                    help="Tune only the stage-B feature weights (safe checks, "
+                         "bishop pair, safe mobility, per-rank passers).")
     ap.add_argument("--out-c", help="Optional path to write tuned PST/material C snippet.")
     ap.add_argument("--initial-tuned-file",
                     help="Use the last TUNED line in this file as the exact current defaults.")
@@ -416,7 +472,9 @@ def main():
     b1, b2, eps = 0.9, 0.999, 1e-8
     Xtr, ctr, ytr = X[tr], c[tr], y[tr]
     ntr = len(tr)
-    if args.only_new_features:
+    if args.only_stageb:
+        active = np.arange(N_BASE_SCALAR + N_EXTRA_SCALAR, N_SCALAR)
+    elif args.only_new_features:
         active = np.arange(N_BASE_SCALAR + 8, N_SCALAR)
     elif args.only_extra_scalars:
         active = np.arange(N_BASE_SCALAR, N_SCALAR)

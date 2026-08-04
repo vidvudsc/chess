@@ -47,6 +47,17 @@ typedef struct HceTuneFeatures {
     int pawn_pushes;            // pawns with an unobstructed single push
     int pawn_threat_minor;      // enemy bishops/knights attacked by pawns
     int pawn_threat_major;      // enemy rooks/queens attacked by pawns
+    // Stage-B columns (zero-weighted in the engine until texel-fitted).
+    int safe_check_n;           // enemy knights able to check us from safe squares
+    int safe_check_b;           // same for bishops
+    int safe_check_r;           // same for rooks
+    int safe_check_q;           // same for queens
+    int bishop_pair;            // 1 if this side has two or more bishops
+    int mob_safe_n;             // mobility to squares enemy pawns do not attack
+    int mob_safe_b;
+    int mob_safe_r;
+    int mob_safe_q;
+    int passer_rank[6];         // passed pawns by relative rank 2..7
     int pst[PIECE_TYPE_COUNT][64];  // piece-square counts (view side, mirrored for black)
     int residual_mg;            // summed mg of all non-tuned terms
     int residual_eg;            // summed eg of all non-tuned terms

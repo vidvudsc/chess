@@ -772,38 +772,32 @@ static int run_tune_dump(const char *infile, const char *outfile, bool quiet_onl
             continue;
         }
         fprintf(fout, "%.1f %d %d", label, phase, eval_true);
-        // White old scalar features.
-        fprintf(fout,
-                " %d %d %d %d %d %d %d %d %d %d %d %d %d"
-                " %d %d %d %d %d %d %d %d %d %d %d %d",
-                w.mat[PIECE_QUEEN], w.mat[PIECE_KNIGHT], w.mat[PIECE_BISHOP],
-                w.mat[PIECE_ROOK], w.mat[PIECE_PAWN], w.isolated, w.doubled,
-                w.mob_n, w.mob_b, w.mob_r, w.mob_q, w.rook_open, w.rook_semi,
-                w.passed_mg, w.passed_eg, w.king_mg, w.king_eg, w.hanging,
-                w.queen_mg, w.queen_eg,
-                w.pawn_pushes, w.pawn_threat_minor, w.pawn_threat_major,
-                w.residual_mg, w.residual_eg);
-        // White PST counts.
-        for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
-            for (int sq = 0; sq < 64; ++sq) {
-                fprintf(fout, " %d", w.pst[piece][sq]);
-            }
-        }
-        // Black old scalar features.
-        fprintf(fout,
-                " %d %d %d %d %d %d %d %d %d %d %d %d %d"
-                " %d %d %d %d %d %d %d %d %d %d %d %d",
-                b.mat[PIECE_QUEEN], b.mat[PIECE_KNIGHT], b.mat[PIECE_BISHOP],
-                b.mat[PIECE_ROOK], b.mat[PIECE_PAWN], b.isolated, b.doubled,
-                b.mob_n, b.mob_b, b.mob_r, b.mob_q, b.rook_open, b.rook_semi,
-                b.passed_mg, b.passed_eg, b.king_mg, b.king_eg, b.hanging,
-                b.queen_mg, b.queen_eg,
-                b.pawn_pushes, b.pawn_threat_minor, b.pawn_threat_major,
-                b.residual_mg, b.residual_eg);
-        // Black PST counts.
-        for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
-            for (int sq = 0; sq < 64; ++sq) {
-                fprintf(fout, " %d", b.pst[piece][sq]);
+        for (int side_i = 0; side_i < 2; ++side_i) {
+            const HceTuneFeatures *f = (side_i == 0) ? &w : &b;
+            // Scalar feature counts (order must match texel_tune.py layout).
+            fprintf(fout,
+                    " %d %d %d %d %d %d %d %d %d %d %d %d %d"
+                    " %d %d %d %d %d %d %d %d %d %d"
+                    " %d %d %d %d %d %d %d %d %d"
+                    " %d %d %d %d %d %d"
+                    " %d %d",
+                    f->mat[PIECE_QUEEN], f->mat[PIECE_KNIGHT], f->mat[PIECE_BISHOP],
+                    f->mat[PIECE_ROOK], f->mat[PIECE_PAWN], f->isolated, f->doubled,
+                    f->mob_n, f->mob_b, f->mob_r, f->mob_q, f->rook_open, f->rook_semi,
+                    f->passed_mg, f->passed_eg, f->king_mg, f->king_eg, f->hanging,
+                    f->queen_mg, f->queen_eg,
+                    f->pawn_pushes, f->pawn_threat_minor, f->pawn_threat_major,
+                    f->safe_check_n, f->safe_check_b, f->safe_check_r, f->safe_check_q,
+                    f->bishop_pair,
+                    f->mob_safe_n, f->mob_safe_b, f->mob_safe_r, f->mob_safe_q,
+                    f->passer_rank[0], f->passer_rank[1], f->passer_rank[2],
+                    f->passer_rank[3], f->passer_rank[4], f->passer_rank[5],
+                    f->residual_mg, f->residual_eg);
+            // PST counts.
+            for (int piece = 0; piece < PIECE_TYPE_COUNT; ++piece) {
+                for (int sq = 0; sq < 64; ++sq) {
+                    fprintf(fout, " %d", f->pst[piece][sq]);
+                }
             }
         }
         if (quiet_only) {
