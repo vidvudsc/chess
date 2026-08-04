@@ -15,7 +15,15 @@ NN_ROOT = ROOT / "src" / "core" / "bot" / "nn"
 sys.path.insert(0, str(NN_ROOT))
 
 from export_inference import export_checkpoint  # noqa: E402
-from features import MIRRORED_HALFKA_DIM, MIRRORED_HALFKP_DIM, encode_fen, encode_fen_halfka  # noqa: E402
+from features import (  # noqa: E402
+    HALFKA_DIM,
+    MIRRORED_HALFKA_DIM,
+    MIRRORED_HALFKA_THREATS_DIM,
+    MIRRORED_HALFKP_DIM,
+    encode_fen,
+    encode_fen_halfka,
+    encode_fen_halfka_threats,
+)
 from model import build_value_model  # noqa: E402
 
 
@@ -66,13 +74,20 @@ def mirrored_index(index: int, planes: int = 10) -> int:
 
 def tensorize_fen(fen: str,
                   mirrored: bool = False,
-                  halfka: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    white, black, stm_white = encode_fen_halfka(fen) if halfka else encode_fen(fen)
+                  halfka: bool = False,
+                  threats: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    encoder = encode_fen_halfka_threats if threats else (encode_fen_halfka if halfka else encode_fen)
+    white, black, stm_white = encoder(fen)
     if mirrored:
         planes = 11 if halfka else 10
-        dummy = MIRRORED_HALFKA_DIM if halfka else MIRRORED_HALFKP_DIM
-        white = [mirrored_index(index, planes) for index in white] or [dummy]
-        black = [mirrored_index(index, planes) for index in black] or [dummy]
+        dummy = (MIRRORED_HALFKA_THREATS_DIM if threats else
+                 MIRRORED_HALFKA_DIM if halfka else MIRRORED_HALFKP_DIM)
+        def mapped(index: int) -> int:
+            if threats and index >= HALFKA_DIM:
+                return MIRRORED_HALFKA_DIM + index - HALFKA_DIM
+            return mirrored_index(index, planes)
+        white = [mapped(index) for index in white] or [dummy]
+        black = [mapped(index) for index in black] or [dummy]
     return (
         torch.tensor(white, dtype=torch.long),
         torch.tensor([0], dtype=torch.long),
@@ -84,9 +99,12 @@ def tensorize_fen(fen: str,
 
 def pytorch_cp(model: torch.nn.Module, fen: str, cp_scale: float) -> float:
     with torch.no_grad():
-        halfka = model.accumulator.num_embeddings == MIRRORED_HALFKA_DIM + 1
+        threats = model.accumulator.num_embeddings == MIRRORED_HALFKA_THREATS_DIM + 1
+        halfka = threats or model.accumulator.num_embeddings == MIRRORED_HALFKA_DIM + 1
         mirrored = halfka or model.accumulator.num_embeddings == MIRRORED_HALFKP_DIM + 1
-        value = model(*tensorize_fen(fen, mirrored=mirrored, halfka=halfka)).item()
+        value = model(*tensorize_fen(
+            fen, mirrored=mirrored, halfka=halfka, threats=threats
+        )).item()
     return value * cp_scale
 
 

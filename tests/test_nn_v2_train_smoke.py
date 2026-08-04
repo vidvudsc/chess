@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parents[1]
 TRAIN = ROOT / "src" / "core" / "bot" / "nn" / "v2" / "train_value.py"
 PRECOMPUTE = ROOT / "src" / "core" / "bot" / "nn" / "v2" / "precompute_features.py"
+EXPORT = ROOT / "src" / "core" / "bot" / "nn" / "export_inference.py"
 UCI = ROOT / "bin" / "chess_uci"
 
 
@@ -771,6 +772,248 @@ def test_json_repeat_is_sharded_across_workers() -> None:
         raise AssertionError(f"JSONL repeat duplicated across workers: got {len(rows)} rows")
 
 
+def test_train_factorized_stockfish_head_export_and_search() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        dataset = tmp_path / "tiny_v12.jsonl"
+        out_dir = tmp_path / "model"
+        export = tmp_path / "nn_eval_v12.bin"
+        write_dataset(dataset)
+
+        subprocess.run(
+            [
+                sys.executable,
+                str(TRAIN),
+                "--input", str(dataset),
+                "--output-dir", str(out_dir),
+                "--export-path", str(export),
+                "--epochs", "1",
+                "--batch-size", "4",
+                "--arch", "stockfish-head-screlu-halfka-hm-buckets-psqt",
+                "--feature-dim", "16",
+                "--bottleneck-dim", "4",
+                "--hidden-dim", "8",
+                "--train-samples", "20",
+                "--val-samples", "20",
+                "--val-buckets", "1",
+                "--lr", "0.01",
+                "--log-every", "0",
+                "--terminal-fixtures",
+                "--device", "cpu",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        raw = export.read_bytes()
+        version = struct.unpack_from("<I", raw, 8)[0]
+        if version != 12:
+            raise AssertionError(f"Stockfish-shaped export should use version 12, got {version}")
+        uci = subprocess.run(
+            [str(UCI)],
+            input=(
+                "uci\n"
+                f"setoption name NNModel value {export}\n"
+                "setoption name Backend value nn\n"
+                "isready\n"
+                "position fen 4k3/8/8/8/8/8/8/4KQ2 w - - 0 1\n"
+                "go movetime 20\n"
+                "quit\n"
+            ),
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if "readyok" not in uci.stdout or "bestmove " not in uci.stdout:
+            raise AssertionError(f"UCI did not search with v12 NNUE:\n{uci.stdout}\n{uci.stderr}")
+
+
+def test_train_full_threats_export_and_search() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        dataset = tmp_path / "tiny_v13.jsonl"
+        out_dir = tmp_path / "model"
+        export = tmp_path / "nn_eval_v13.bin"
+        write_dataset(dataset)
+        subprocess.run(
+            [
+                sys.executable, str(TRAIN),
+                "--input", str(dataset),
+                "--output-dir", str(out_dir),
+                "--export-path", str(export),
+                "--epochs", "1",
+                "--batch-size", "4",
+                "--arch", "stockfish-head-screlu-halfka-threats-hm-buckets-psqt",
+                "--feature-dim", "16",
+                "--bottleneck-dim", "4",
+                "--hidden-dim", "8",
+                "--train-samples", "20",
+                "--val-samples", "20",
+                "--val-buckets", "1",
+                "--loss", "power",
+                "--lr", "0.01",
+                "--log-every", "0",
+                "--device", "cpu",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        version = struct.unpack_from("<I", export.read_bytes(), 8)[0]
+        if version != 13:
+            raise AssertionError(f"Full-Threats export should use version 13, got {version}")
+        probe = ROOT / "bin" / "nn_eval_probe"
+        sequence = subprocess.run(
+            [
+                str(probe), str(export), "--sequence",
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5c6", "d7c6",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if "d7c6" not in sequence.stdout:
+            raise AssertionError(f"v13 incremental sequence failed:\n{sequence.stdout}\n{sequence.stderr}")
+
+
+def test_train_linear_full_threats_export_and_search() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        dataset = tmp_path / "tiny_v14.jsonl"
+        out_dir = tmp_path / "model"
+        export = tmp_path / "nn_eval_v14.bin"
+        write_dataset(dataset)
+        subprocess.run(
+            [
+                sys.executable, str(TRAIN),
+                "--input", str(dataset),
+                "--output-dir", str(out_dir),
+                "--export-path", str(export),
+                "--epochs", "1",
+                "--batch-size", "4",
+                "--arch", "linear-head-screlu-halfka-threats-hm-buckets-psqt",
+                "--feature-dim", "16",
+                "--hidden-dim", "8",
+                "--train-samples", "20",
+                "--val-samples", "20",
+                "--val-buckets", "1",
+                "--loss", "power",
+                "--lr", "0.01",
+                "--log-every", "0",
+                "--device", "cpu",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        version = struct.unpack_from("<I", export.read_bytes(), 8)[0]
+        if version != 15:
+            raise AssertionError(f"linear Full-Threats i8 export should use version 15, got {version}")
+        probe = ROOT / "bin" / "nn_eval_probe"
+        sequence = subprocess.run(
+            [
+                str(probe), str(export), "--sequence",
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5c6", "d7c6",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if "d7c6" not in sequence.stdout:
+            raise AssertionError(f"v15 incremental sequence failed:\n{sequence.stdout}\n{sequence.stderr}")
+        per_row_export = tmp_path / "nn_eval_v17.bin"
+        subprocess.run(
+            [
+                sys.executable,
+                str(EXPORT),
+                "--checkpoint", str(out_dir / "best.pt"),
+                "--output", str(per_row_export),
+                "--per-row-head-scales",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        per_row_version = struct.unpack_from("<I", per_row_export.read_bytes(), 8)[0]
+        if per_row_version != 17:
+            raise AssertionError(
+                f"per-row Full-Threats export should use version 17, got {per_row_version}"
+            )
+        per_row_probe = subprocess.run(
+            [str(probe), str(per_row_export), "--sequence",
+             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+             "e2e4", "e7e5", "g1f3"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if "g1f3" not in per_row_probe.stdout:
+            raise AssertionError(
+                f"v17 incremental sequence failed:\n"
+                f"{per_row_probe.stdout}\n{per_row_probe.stderr}"
+            )
+        king_unblock = subprocess.run(
+            [
+                str(probe), str(export), "--sequence",
+                "n6k/8/8/8/8/8/K7/R7 w - - 0 1",
+                "a2b2",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if "a2b2" not in king_unblock.stdout:
+            raise AssertionError(
+                f"v15 king-unblock incremental sequence failed:\n"
+                f"{king_unblock.stdout}\n{king_unblock.stderr}"
+            )
+        all_i8_export = tmp_path / "nn_eval_v16.bin"
+        subprocess.run(
+            [
+                sys.executable,
+                str(EXPORT),
+                "--checkpoint", str(out_dir / "best.pt"),
+                "--output", str(all_i8_export),
+                "--all-i8-ft",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        version = struct.unpack_from("<I", all_i8_export.read_bytes(), 8)[0]
+        if version != 16:
+            raise AssertionError(f"all-i8 Full-Threats export should use version 16, got {version}")
+        all_i8_sequence = subprocess.run(
+            [
+                str(probe), str(all_i8_export), "--sequence",
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5c6", "d7c6",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if "d7c6" not in all_i8_sequence.stdout:
+            raise AssertionError(
+                f"v16 incremental sequence failed:\n"
+                f"{all_i8_sequence.stdout}\n{all_i8_sequence.stderr}"
+            )
+
+
 def main() -> None:
     test_train_export_and_uci_load()
     test_train_linear_head_export_and_search()
@@ -782,6 +1025,9 @@ def main() -> None:
     test_precompute_train_export()
     test_train_direct_from_normalized_parquet()
     test_json_repeat_is_sharded_across_workers()
+    test_train_factorized_stockfish_head_export_and_search()
+    test_train_full_threats_export_and_search()
+    test_train_linear_full_threats_export_and_search()
     print("test_nn_v2_train_smoke: OK")
 
 

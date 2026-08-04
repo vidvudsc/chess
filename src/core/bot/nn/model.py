@@ -10,6 +10,8 @@ from features import (
     HALFKP_DIM,
     MIRRORED_HALFKA_DIM,
     MIRRORED_HALFKA_DUMMY_FEATURE_INDEX,
+    MIRRORED_HALFKA_THREATS_DIM,
+    MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX,
     MIRRORED_DUMMY_FEATURE_INDEX,
     MIRRORED_HALFKP_DIM,
 )
@@ -169,12 +171,18 @@ def material_buckets_from_features(indices: torch.Tensor,
     bucket from the features keeps training, export parity, and C inference
     on the exact same rule.
     """
-    non_dummy = (indices != dummy_index).to(torch.long)
+    if dummy_index == MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX:
+        non_dummy = (indices < MIRRORED_HALFKA_DIM).to(torch.long)
+    else:
+        non_dummy = (indices != dummy_index).to(torch.long)
     positions = torch.arange(indices.numel(), device=indices.device)
     segment = torch.bucketize(positions, offsets, right=True) - 1
     counts = torch.zeros(offsets.numel(), dtype=torch.long, device=indices.device)
     counts.index_add_(0, segment, non_dummy)
-    piece_count = counts if dummy_index == MIRRORED_HALFKA_DUMMY_FEATURE_INDEX else counts + 2
+    piece_count = counts if dummy_index in {
+        MIRRORED_HALFKA_DUMMY_FEATURE_INDEX,
+        MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX,
+    } else counts + 2
     return torch.clamp((piece_count - 1) // 4, 0, num_buckets - 1)
 
 
@@ -282,7 +290,14 @@ class MirroredHalfKpBucketedPsqtSquaredClippedValueNet(
 
 class MirroredHalfKaBucketedPsqtSquaredClippedValueNet(
         MirroredHalfKpBucketedPsqtSquaredClippedValueNet):
-    """King-aware HalfKAv2_hm with the existing bucketed PSQT head."""
+    """King-aware HalfKAv2_hm with a factorized transformer and PSQT head.
+
+    The king-independent factor rows are training-only virtual features.  Each
+    one is shared by all 32 king buckets for the same relative piece and square,
+    which lets rare king/piece combinations learn useful weights early.  Export
+    coalesces the factors into the real HalfKAv2 rows, so C inference pays no
+    additional cost.
+    """
 
     def __init__(self,
                  accumulator_dim: int = 128,
@@ -297,6 +312,12 @@ class MirroredHalfKaBucketedPsqtSquaredClippedValueNet(
             mode="sum",
             padding_idx=MIRRORED_HALFKA_DUMMY_FEATURE_INDEX,
         )
+        self.accumulator_factor = nn.EmbeddingBag(
+            11 * 64 + 1,
+            accumulator_dim,
+            mode="sum",
+            padding_idx=11 * 64,
+        )
         self.psqt = nn.EmbeddingBag(
             MIRRORED_HALFKA_DIM + 1,
             num_buckets,
@@ -304,9 +325,198 @@ class MirroredHalfKaBucketedPsqtSquaredClippedValueNet(
             padding_idx=MIRRORED_HALFKA_DUMMY_FEATURE_INDEX,
         )
         nn.init.normal_(self.accumulator.weight, mean=0.0, std=0.01)
+        nn.init.zeros_(self.accumulator_factor.weight)
         nn.init.zeros_(self.psqt.weight)
         with torch.no_grad():
             self.accumulator.weight[MIRRORED_HALFKA_DUMMY_FEATURE_INDEX].zero_()
+            self.accumulator_factor.weight[11 * 64].zero_()
+
+    @staticmethod
+    def factor_indices(indices: torch.Tensor) -> torch.Tensor:
+        dummy = MIRRORED_HALFKA_DUMMY_FEATURE_INDEX
+        plane = torch.div(indices, 64, rounding_mode="floor").remainder(11)
+        square = indices.remainder(64)
+        factors = plane * 64 + square
+        return torch.where(indices == dummy, torch.full_like(factors, 11 * 64), factors)
+
+    def forward(self,
+                white_indices: torch.Tensor,
+                white_offsets: torch.Tensor,
+                black_indices: torch.Tensor,
+                black_offsets: torch.Tensor,
+                stm_white: torch.Tensor) -> torch.Tensor:
+        white_acc = self.accumulator(white_indices, white_offsets)
+        white_acc = white_acc + self.accumulator_factor(
+            self.factor_indices(white_indices), white_offsets
+        )
+        black_acc = self.accumulator(black_indices, black_offsets)
+        black_acc = black_acc + self.accumulator_factor(
+            self.factor_indices(black_indices), black_offsets
+        )
+        white_psqt = self.psqt(white_indices, white_offsets)
+        black_psqt = self.psqt(black_indices, black_offsets)
+
+        stm_mask = stm_white.unsqueeze(1)
+        front = torch.where(stm_mask, white_acc, black_acc)
+        back = torch.where(stm_mask, black_acc, white_acc)
+        front_psqt = torch.where(stm_mask, white_psqt, black_psqt)
+
+        x = squared_clipped_relu(torch.cat([front, back], dim=1))
+        bucket = material_buckets_from_features(
+            white_indices,
+            white_offsets,
+            self.accumulator.padding_idx,
+            self.num_buckets,
+        )
+        hidden = squared_clipped_relu(
+            torch.einsum("bhi,bi->bh", self.fc1_weight[bucket], x) + self.fc1_bias[bucket]
+        )
+        positional = (self.out_weight[bucket] * hidden).sum(dim=1) + self.out_bias[bucket]
+        direct = front_psqt.gather(1, bucket.unsqueeze(1)).squeeze(1)
+        return torch.tanh(positional + direct)
+
+
+class MirroredHalfKaStockfishHeadValueNet(
+        MirroredHalfKaBucketedPsqtSquaredClippedValueNet):
+    """Factorized HalfKAv2_hm with eight independent 8->32 layer stacks."""
+
+    def __init__(self,
+                 accumulator_dim: int = 512,
+                 hidden_dim: int = 32,
+                 bottleneck_dim: int = 8,
+                 num_buckets: int = NUM_MATERIAL_BUCKETS) -> None:
+        super().__init__(accumulator_dim, hidden_dim, num_buckets)
+        in_dim = accumulator_dim * 2
+        self.bottleneck_dim = bottleneck_dim
+        self.fc1_weight = nn.Parameter(torch.empty(num_buckets, bottleneck_dim, in_dim))
+        self.fc1_bias = nn.Parameter(torch.empty(num_buckets, bottleneck_dim))
+        self.fc2_weight = nn.Parameter(torch.empty(num_buckets, hidden_dim, bottleneck_dim))
+        self.fc2_bias = nn.Parameter(torch.empty(num_buckets, hidden_dim))
+        self.out_weight = nn.Parameter(torch.empty(num_buckets, hidden_dim))
+        self.out_bias = nn.Parameter(torch.empty(num_buckets))
+
+        nn.init.kaiming_uniform_(self.fc1_weight, a=math.sqrt(5))
+        nn.init.zeros_(self.fc1_bias)
+        nn.init.kaiming_uniform_(self.fc2_weight, a=math.sqrt(5))
+        nn.init.zeros_(self.fc2_bias)
+        out_bound = 1.0 / math.sqrt(hidden_dim)
+        nn.init.uniform_(self.out_weight, -out_bound, out_bound)
+        nn.init.uniform_(self.out_bias, -out_bound, out_bound)
+
+    def forward(self,
+                white_indices: torch.Tensor,
+                white_offsets: torch.Tensor,
+                black_indices: torch.Tensor,
+                black_offsets: torch.Tensor,
+                stm_white: torch.Tensor) -> torch.Tensor:
+        white_acc = self.accumulator(white_indices, white_offsets)
+        white_acc = white_acc + self.accumulator_factor(
+            self.factor_indices(white_indices), white_offsets
+        )
+        black_acc = self.accumulator(black_indices, black_offsets)
+        black_acc = black_acc + self.accumulator_factor(
+            self.factor_indices(black_indices), black_offsets
+        )
+        white_psqt = self.psqt(white_indices, white_offsets)
+        black_psqt = self.psqt(black_indices, black_offsets)
+
+        stm_mask = stm_white.unsqueeze(1)
+        front = torch.where(stm_mask, white_acc, black_acc)
+        back = torch.where(stm_mask, black_acc, white_acc)
+        front_psqt = torch.where(stm_mask, white_psqt, black_psqt)
+        bucket = material_buckets_from_features(
+            white_indices, white_offsets, self.accumulator.padding_idx, self.num_buckets
+        )
+
+        x = squared_clipped_relu(torch.cat([front, back], dim=1))
+        narrow = squared_clipped_relu(
+            torch.einsum("bhi,bi->bh", self.fc1_weight[bucket], x) + self.fc1_bias[bucket]
+        )
+        hidden = squared_clipped_relu(
+            torch.einsum("bhi,bi->bh", self.fc2_weight[bucket], narrow) + self.fc2_bias[bucket]
+        )
+        positional = (self.out_weight[bucket] * hidden).sum(dim=1) + self.out_bias[bucket]
+        direct = front_psqt.gather(1, bucket.unsqueeze(1)).squeeze(1)
+        return torch.tanh(positional + direct)
+
+
+class MirroredHalfKaThreatsBucketedPsqtValueNet(
+        MirroredHalfKaBucketedPsqtSquaredClippedValueNet):
+    """Current production head augmented with compressed Full Threats rows."""
+
+    def __init__(self,
+                 accumulator_dim: int = 128,
+                 hidden_dim: int = 16,
+                 num_buckets: int = NUM_MATERIAL_BUCKETS) -> None:
+        super().__init__(accumulator_dim, hidden_dim, num_buckets)
+        self.accumulator = nn.EmbeddingBag(
+            MIRRORED_HALFKA_THREATS_DIM + 1,
+            accumulator_dim,
+            mode="sum",
+            padding_idx=MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX,
+        )
+        self.psqt = nn.EmbeddingBag(
+            MIRRORED_HALFKA_THREATS_DIM + 1,
+            num_buckets,
+            mode="sum",
+            padding_idx=MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX,
+        )
+        nn.init.normal_(self.accumulator.weight, mean=0.0, std=0.01)
+        nn.init.zeros_(self.psqt.weight)
+        with torch.no_grad():
+            self.accumulator.weight[MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX].zero_()
+            self.psqt.weight[MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX].zero_()
+        psqt_mask = torch.ones_like(self.psqt.weight)
+        psqt_mask[MIRRORED_HALFKA_DIM:MIRRORED_HALFKA_THREATS_DIM].zero_()
+        self.register_buffer("_psqt_grad_mask", psqt_mask, persistent=False)
+        self.psqt.weight.register_hook(lambda grad: grad * self._psqt_grad_mask)
+
+    @staticmethod
+    def factor_indices(indices: torch.Tensor) -> torch.Tensor:
+        base = MirroredHalfKaBucketedPsqtSquaredClippedValueNet.factor_indices(indices)
+        dummy = torch.full_like(base, 11 * 64)
+        return torch.where(indices < MIRRORED_HALFKA_DIM, base, dummy)
+
+
+class MirroredHalfKaThreatsStockfishHeadValueNet(MirroredHalfKaStockfishHeadValueNet):
+    """Stockfish-shaped head with compressed Full Threats input rows."""
+
+    def __init__(self,
+                 accumulator_dim: int = 512,
+                 hidden_dim: int = 32,
+                 bottleneck_dim: int = 8,
+                 num_buckets: int = NUM_MATERIAL_BUCKETS) -> None:
+        super().__init__(accumulator_dim, hidden_dim, bottleneck_dim, num_buckets)
+        self.accumulator = nn.EmbeddingBag(
+            MIRRORED_HALFKA_THREATS_DIM + 1,
+            accumulator_dim,
+            mode="sum",
+            padding_idx=MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX,
+        )
+        self.psqt = nn.EmbeddingBag(
+            MIRRORED_HALFKA_THREATS_DIM + 1,
+            num_buckets,
+            mode="sum",
+            padding_idx=MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX,
+        )
+        nn.init.normal_(self.accumulator.weight, mean=0.0, std=0.01)
+        nn.init.zeros_(self.psqt.weight)
+        with torch.no_grad():
+            self.accumulator.weight[MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX].zero_()
+            self.psqt.weight[MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX].zero_()
+
+        # Threat inputs carry tactical context into the transformer. They do
+        # not contribute to the material/PSQT bypass, matching Stockfish.
+        psqt_mask = torch.ones_like(self.psqt.weight)
+        psqt_mask[MIRRORED_HALFKA_DIM:MIRRORED_HALFKA_THREATS_DIM].zero_()
+        self.register_buffer("_psqt_grad_mask", psqt_mask, persistent=False)
+        self.psqt.weight.register_hook(lambda grad: grad * self._psqt_grad_mask)
+
+    @staticmethod
+    def factor_indices(indices: torch.Tensor) -> torch.Tensor:
+        base = MirroredHalfKaBucketedPsqtSquaredClippedValueNet.factor_indices(indices)
+        dummy = torch.full_like(base, 11 * 64)
+        return torch.where(indices < MIRRORED_HALFKA_DIM, base, dummy)
 
 
 class HalfKpBottleneckValueNet(nn.Module):
@@ -417,6 +627,23 @@ def build_value_model(arch: str,
         )
     if arch == "linear-head-screlu-halfka-hm-buckets-psqt":
         return MirroredHalfKaBucketedPsqtSquaredClippedValueNet(
+            accumulator_dim=accumulator_dim,
+            hidden_dim=hidden_dim,
+        )
+    if arch == "stockfish-head-screlu-halfka-hm-buckets-psqt":
+        return MirroredHalfKaStockfishHeadValueNet(
+            accumulator_dim=accumulator_dim,
+            hidden_dim=hidden_dim,
+            bottleneck_dim=bottleneck_dim if bottleneck_dim is not None else 8,
+        )
+    if arch == "stockfish-head-screlu-halfka-threats-hm-buckets-psqt":
+        return MirroredHalfKaThreatsStockfishHeadValueNet(
+            accumulator_dim=accumulator_dim,
+            hidden_dim=hidden_dim,
+            bottleneck_dim=bottleneck_dim if bottleneck_dim is not None else 8,
+        )
+    if arch == "linear-head-screlu-halfka-threats-hm-buckets-psqt":
+        return MirroredHalfKaThreatsBucketedPsqtValueNet(
             accumulator_dim=accumulator_dim,
             hidden_dim=hidden_dim,
         )

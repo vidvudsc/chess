@@ -27,11 +27,16 @@ if str(NN_ROOT) not in sys.path:
 from export_inference import export_checkpoint  # noqa: E402
 from features import (  # noqa: E402
     DUMMY_FEATURE_INDEX,
+    HALFKA_DIM,
     HALFKA_DUMMY_FEATURE_INDEX,
+    HALFKA_THREATS_DUMMY_FEATURE_INDEX,
+    MIRRORED_HALFKA_DIM,
     MIRRORED_DUMMY_FEATURE_INDEX,
     MIRRORED_HALFKA_DUMMY_FEATURE_INDEX,
+    MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX,
     encode_fen,
     encode_fen_halfka,
+    encode_fen_halfka_threats,
 )
 from model import build_value_model  # noqa: E402
 
@@ -484,16 +489,35 @@ def mirror_halfkp_indices(indices: torch.Tensor,
     )
 
 
-def mirror_batch_features(batch: Batch, halfka: bool = False) -> Batch:
+def mirror_batch_features(batch: Batch,
+                          halfka: bool = False,
+                          threats: bool = False) -> Batch:
     kwargs = {
         "planes": 11,
         "source_dummy": HALFKA_DUMMY_FEATURE_INDEX,
         "target_dummy": MIRRORED_HALFKA_DUMMY_FEATURE_INDEX,
     } if halfka else {}
+    def mapped(indices: torch.Tensor) -> torch.Tensor:
+        if not threats:
+            return mirror_halfkp_indices(indices, **kwargs)
+        base = mirror_halfkp_indices(
+            indices,
+            planes=11,
+            source_dummy=HALFKA_THREATS_DUMMY_FEATURE_INDEX,
+            target_dummy=MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX,
+        )
+        threat = MIRRORED_HALFKA_DIM + (indices - HALFKA_DIM)
+        combined = torch.where(indices < HALFKA_DIM, base, threat)
+        return torch.where(
+            indices == HALFKA_THREATS_DUMMY_FEATURE_INDEX,
+            torch.full_like(combined, MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX),
+            combined,
+        )
+
     return Batch(
-        white_indices=mirror_halfkp_indices(batch.white_indices, **kwargs),
+        white_indices=mapped(batch.white_indices),
         white_offsets=batch.white_offsets,
-        black_indices=mirror_halfkp_indices(batch.black_indices, **kwargs),
+        black_indices=mapped(batch.black_indices),
         black_offsets=batch.black_offsets,
         stm_white=batch.stm_white,
         target=batch.target,
@@ -501,8 +525,15 @@ def mirror_batch_features(batch: Batch, halfka: bool = False) -> Batch:
     )
 
 
-def weighted_loss(pred: torch.Tensor, target: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-    loss = F.smooth_l1_loss(pred, target, reduction="none", beta=0.05)
+def weighted_loss(pred: torch.Tensor,
+                  target: torch.Tensor,
+                  weight: torch.Tensor,
+                  loss_kind: str = "smooth-l1",
+                  loss_power: float = 2.5) -> torch.Tensor:
+    if loss_kind == "power":
+        loss = torch.abs(pred - target).pow(loss_power)
+    else:
+        loss = F.smooth_l1_loss(pred, target, reduction="none", beta=0.05)
     return (loss * weight).sum() / weight.sum().clamp_min(1e-8)
 
 
@@ -511,7 +542,10 @@ def evaluate(model: nn.Module,
              loader: DataLoader,
              device: torch.device,
              mirrored: bool = False,
-             halfka: bool = False) -> dict[str, float]:
+             halfka: bool = False,
+             threats: bool = False,
+             loss_kind: str = "smooth-l1",
+             loss_power: float = 2.5) -> dict[str, float]:
     model.eval()
     total_loss = 0.0
     total_mae = 0.0
@@ -520,7 +554,7 @@ def evaluate(model: nn.Module,
     for batch in loader:
         batch = move_batch(batch, device)
         if mirrored:
-            batch = mirror_batch_features(batch, halfka=halfka)
+            batch = mirror_batch_features(batch, halfka=halfka, threats=threats)
         pred = model(
             batch.white_indices,
             batch.white_offsets,
@@ -528,7 +562,7 @@ def evaluate(model: nn.Module,
             batch.black_offsets,
             batch.stm_white,
         )
-        loss = weighted_loss(pred, batch.target, batch.weight)
+        loss = weighted_loss(pred, batch.target, batch.weight, loss_kind, loss_power)
         mae = (torch.abs(pred - batch.target) * batch.weight).sum() / batch.weight.sum().clamp_min(1e-8)
         total_loss += float(loss.item())
         total_mae += float(mae.item())
@@ -551,6 +585,9 @@ def train_epoch(model: nn.Module,
                 log_every: int,
                 mirrored: bool = False,
                 halfka: bool = False,
+                threats: bool = False,
+                loss_kind: str = "smooth-l1",
+                loss_power: float = 2.5,
                 save_callback: Callable[[int, dict[str, float], str], None] | None = None) -> dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -574,7 +611,7 @@ def train_epoch(model: nn.Module,
         for idx, batch in enumerate(loader, start=1):
             batch = move_batch(batch, device)
             if mirrored:
-                batch = mirror_batch_features(batch, halfka=halfka)
+                batch = mirror_batch_features(batch, halfka=halfka, threats=threats)
             optimizer.zero_grad(set_to_none=True)
             pred = model(
                 batch.white_indices,
@@ -583,7 +620,7 @@ def train_epoch(model: nn.Module,
                 batch.black_offsets,
                 batch.stm_white,
             )
-            loss = weighted_loss(pred, batch.target, batch.weight)
+            loss = weighted_loss(pred, batch.target, batch.weight, loss_kind, loss_power)
             mae = (torch.abs(pred - batch.target) * batch.weight).sum() / batch.weight.sum().clamp_min(1e-8)
             loss.backward()
             optimizer.step()
@@ -643,6 +680,140 @@ def resolve_device(raw: str) -> torch.device:
     return torch.device("cpu")
 
 
+def initialize_from_checkpoint(model: nn.Module,
+                               state: dict[str, torch.Tensor],
+                               halfka: bool) -> list[str]:
+    """Load every compatible tensor and migrate mirrored HalfKP rows to HalfKAv2.
+
+    This deliberately permits width and head changes.  Learned transformer and
+    PSQT channels are retained in the overlapping dimensions while new channels,
+    king rows, factor rows, and layers keep their normal initialization.
+    """
+    target = model.state_dict()
+    copied: list[str] = []
+
+    for name, source in state.items():
+        if name in target and target[name].shape == source.shape:
+            target[name].copy_(source)
+            copied.append(name)
+
+    source_acc = state.get("accumulator.weight")
+    destination_acc = target.get("accumulator.weight")
+    source_is_halfkp = (
+        source_acc is not None
+        and source_acc.shape[0] == MIRRORED_DUMMY_FEATURE_INDEX + 1
+    )
+    source_halfka_dummy = None
+    if source_acc is not None:
+        if source_acc.shape[0] == MIRRORED_HALFKA_DUMMY_FEATURE_INDEX + 1:
+            source_halfka_dummy = MIRRORED_HALFKA_DUMMY_FEATURE_INDEX
+        elif source_acc.shape[0] == MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX + 1:
+            source_halfka_dummy = MIRRORED_HALFKA_THREATS_DUMMY_FEATURE_INDEX
+    source_is_halfka = source_halfka_dummy is not None
+    if halfka and source_is_halfkp and destination_acc is not None:
+        destination_acc.zero_()
+        width = min(source_acc.shape[1], destination_acc.shape[1])
+        for king_bucket in range(32):
+            for plane in range(10):
+                old_start = (king_bucket * 10 + plane) * 64
+                new_start = (king_bucket * 11 + plane) * 64
+                destination_acc[new_start:new_start + 64, :width].copy_(
+                    source_acc[old_start:old_start + 64, :width]
+                )
+        destination_acc[-1].zero_()
+        copied.append(f"accumulator.weight[:,:{width}](HalfKP->HalfKAv2)")
+
+        if "psqt.weight" in state and "psqt.weight" in target:
+            source_psqt = state["psqt.weight"]
+            destination_psqt = target["psqt.weight"]
+            destination_psqt.zero_()
+            psqt_width = min(source_psqt.shape[1], destination_psqt.shape[1])
+            for king_bucket in range(32):
+                for plane in range(10):
+                    old_start = (king_bucket * 10 + plane) * 64
+                    new_start = (king_bucket * 11 + plane) * 64
+                    destination_psqt[new_start:new_start + 64, :psqt_width].copy_(
+                        source_psqt[old_start:old_start + 64, :psqt_width]
+                    )
+            destination_psqt[-1].zero_()
+            copied.append("psqt.weight(HalfKP->HalfKAv2)")
+
+    if halfka and source_is_halfka and destination_acc is not None:
+        rows = min(source_halfka_dummy, destination_acc.shape[0] - 1)
+        width = min(source_acc.shape[1], destination_acc.shape[1])
+        destination_acc[:rows, :width].copy_(source_acc[:rows, :width])
+        destination_acc[-1].zero_()
+        copied.append(f"accumulator.weight[:{rows},:{width}](HalfKAv2 overlap)")
+        if "psqt.weight" in state and "psqt.weight" in target:
+            source_psqt = state["psqt.weight"]
+            destination_psqt = target["psqt.weight"]
+            psqt_rows = min(rows, source_psqt.shape[0], destination_psqt.shape[0])
+            psqt_width = min(source_psqt.shape[1], destination_psqt.shape[1])
+            destination_psqt[:psqt_rows, :psqt_width].copy_(
+                source_psqt[:psqt_rows, :psqt_width]
+            )
+            destination_psqt[-1].zero_()
+            copied.append("psqt.weight(HalfKAv2 overlap)")
+
+    if "accumulator_factor.weight" in state and "accumulator_factor.weight" in target:
+        source = state["accumulator_factor.weight"]
+        destination = target["accumulator_factor.weight"]
+        rows = min(source.shape[0], destination.shape[0])
+        width = min(source.shape[1], destination.shape[1])
+        destination[:rows, :width].copy_(source[:rows, :width])
+        destination[-1].zero_()
+        copied.append(f"accumulator_factor.weight[:{rows},:{width}]")
+
+    # A wider bucketed head can reuse both perspective halves of an older
+    # network. Zero the destination first so newly added channels do not alter
+    # the warm-started function; their accumulator values remain initialized
+    # and begin learning as soon as the corresponding head weights get a
+    # gradient.
+    if "fc1_weight" in state and "fc1_weight" in target:
+        source = state["fc1_weight"]
+        destination = target["fc1_weight"]
+        if source.ndim == 3 and destination.ndim == 3 and source.shape != destination.shape:
+            buckets = min(source.shape[0], destination.shape[0])
+            outputs = min(source.shape[1], destination.shape[1])
+            source_half = source.shape[2] // 2
+            destination_half = destination.shape[2] // 2
+            channels = min(source_half, destination_half)
+            if source.shape[2] == destination.shape[2] and destination.shape[1] > source.shape[1]:
+                # Preserve the normal random initialization of newly added
+                # hidden units. Their output weights are zeroed below, so the
+                # warm start is function-exact while those units still receive
+                # a useful output-weight gradient on the first optimizer step.
+                destination[:buckets, :outputs].copy_(source[:buckets, :outputs])
+            else:
+                destination.zero_()
+                destination[:buckets, :outputs, :channels].copy_(
+                    source[:buckets, :outputs, :channels]
+                )
+                destination[:buckets, :outputs,
+                            destination_half:destination_half + channels].copy_(
+                    source[:buckets, :outputs, source_half:source_half + channels]
+                )
+            copied.append(f"fc1_weight[:{outputs},perspective[:{channels}]]")
+    for name in ("fc1_bias", "out_weight", "out_bias"):
+        if name not in state or name not in target or state[name].shape == target[name].shape:
+            continue
+        source = state[name]
+        destination = target[name]
+        if (name == "fc1_bias" and source.ndim == 2 and destination.ndim == 2 and
+                source.shape[0] == destination.shape[0] and
+                destination.shape[1] > source.shape[1]):
+            destination[:, :source.shape[1]].copy_(source)
+            copied.append(f"{name}(hidden overlap)")
+            continue
+        destination.zero_()
+        slices = tuple(slice(0, min(a, b)) for a, b in zip(source.shape, destination.shape))
+        destination[slices].copy_(source[slices])
+        copied.append(f"{name}(overlap)")
+
+    model.load_state_dict(target)
+    return copied
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train the NNUE v2 value model from v2 dataset rows.")
     parser.add_argument("--input", type=Path, default=None, help="v2 JSONL dataset.")
@@ -670,6 +841,9 @@ def build_parser() -> argparse.ArgumentParser:
                             "linear-head-screlu-hm-buckets",
                             "linear-head-screlu-hm-buckets-psqt",
                             "linear-head-screlu-halfka-hm-buckets-psqt",
+                            "linear-head-screlu-halfka-threats-hm-buckets-psqt",
+                            "stockfish-head-screlu-halfka-hm-buckets-psqt",
+                            "stockfish-head-screlu-halfka-threats-hm-buckets-psqt",
                             "bottleneck-head",
                             "bottleneck-head-crelu",
                             "bottleneck-head-screlu",
@@ -682,6 +856,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hidden-dim", type=int, default=40)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
+    parser.add_argument("--loss", choices=["smooth-l1", "power"], default="smooth-l1",
+                        help="Training objective. 'power' matches the high-error emphasis used by nnue-pytorch.")
+    parser.add_argument("--loss-power", type=float, default=2.5,
+                        help="Exponent for --loss power (nnue-pytorch commonly uses 2.5).")
     parser.add_argument("--min-depth", type=int, default=18)
     parser.add_argument("--min-knodes", type=int, default=0)
     parser.add_argument("--cp-scale", type=float, default=600.0,
@@ -739,8 +917,17 @@ def main() -> int:
         print(f"[init] input_features={args.input_features}", flush=True)
     print(f"[init] output_dir={args.output_dir}", flush=True)
     print(f"[init] device={device}", flush=True)
-    halfka = args.arch == "linear-head-screlu-halfka-hm-buckets-psqt"
-    encoder = encode_fen_halfka if halfka else encode_fen
+    halfka = args.arch in {
+        "linear-head-screlu-halfka-hm-buckets-psqt",
+        "linear-head-screlu-halfka-threats-hm-buckets-psqt",
+        "stockfish-head-screlu-halfka-hm-buckets-psqt",
+        "stockfish-head-screlu-halfka-threats-hm-buckets-psqt",
+    }
+    threats = args.arch in {
+        "linear-head-screlu-halfka-threats-hm-buckets-psqt",
+        "stockfish-head-screlu-halfka-threats-hm-buckets-psqt",
+    }
+    encoder = encode_fen_halfka_threats if threats else (encode_fen_halfka if halfka else encode_fen)
 
     def make_dataset(split: str, sample_limit: int) -> IterableDataset:
         if args.input_features is not None:
@@ -817,26 +1004,10 @@ def main() -> int:
     if args.init_checkpoint is not None:
         payload = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
         state = payload["model_state"]
-        if halfka and state["accumulator.weight"].shape[0] == MIRRORED_DUMMY_FEATURE_INDEX + 1:
-            target = model.state_dict()
-            for name, value in state.items():
-                if name not in {"accumulator.weight", "psqt.weight"}:
-                    target[name] = value
-            for name in ("accumulator.weight", "psqt.weight"):
-                source = state[name]
-                destination = target[name]
-                for king_bucket in range(32):
-                    for plane in range(10):
-                        old_start = (king_bucket * 10 + plane) * 64
-                        new_start = (king_bucket * 11 + plane) * 64
-                        destination[new_start:new_start + 64].copy_(source[old_start:old_start + 64])
-                    king_start = (king_bucket * 11 + 10) * 64
-                    destination[king_start:king_start + 64].zero_()
-                target[name] = destination
-            model.load_state_dict(target)
-            print("[init] expanded HalfKP weights into king-aware HalfKAv2", flush=True)
-        else:
-            model.load_state_dict(state)
+        copied = initialize_from_checkpoint(model, state, halfka=halfka)
+        if not copied:
+            raise ValueError(f"checkpoint has no compatible model tensors: {args.init_checkpoint}")
+        print(f"[init] migrated {len(copied)} tensors: {', '.join(copied)}", flush=True)
         print(f"[init] loaded checkpoint={args.init_checkpoint}", flush=True)
     if args.halfka_new_features_only:
         if not halfka or args.init_checkpoint is None:
@@ -862,6 +1033,9 @@ def main() -> int:
         "linear-head-screlu-hm-buckets",
         "linear-head-screlu-hm-buckets-psqt",
         "linear-head-screlu-halfka-hm-buckets-psqt",
+        "linear-head-screlu-halfka-threats-hm-buckets-psqt",
+        "stockfish-head-screlu-halfka-hm-buckets-psqt",
+        "stockfish-head-screlu-halfka-threats-hm-buckets-psqt",
     }
 
     best_loss: float | None = None
@@ -919,6 +1093,9 @@ def main() -> int:
                 args.log_every,
                 mirrored=mirrored,
                 halfka=halfka,
+                threats=threats,
+                loss_kind=args.loss,
+                loss_power=args.loss_power,
                 save_callback=save_during_epoch,
             )
         except TrainingInterrupted as exc:
@@ -939,11 +1116,19 @@ def main() -> int:
             )
             return 130
         print(f"[epoch {epoch}] val", flush=True)
-        val_metrics = evaluate(model, val_loader, device, mirrored=mirrored, halfka=halfka)
+        val_metrics = evaluate(
+            model, val_loader, device, mirrored=mirrored, halfka=halfka,
+            threats=threats,
+            loss_kind=args.loss, loss_power=args.loss_power,
+        )
         if val_metrics["rows"] == 0.0 and args.allow_train_val_fallback:
             print("[epoch {epoch}] val split empty; falling back to all rows for smoke validation".format(epoch=epoch), flush=True)
             val_loader = make_val_loader("all")
-            val_metrics = evaluate(model, val_loader, device, mirrored=mirrored, halfka=halfka)
+            val_metrics = evaluate(
+                model, val_loader, device, mirrored=mirrored, halfka=halfka,
+                threats=threats,
+                loss_kind=args.loss, loss_power=args.loss_power,
+            )
         history.append({"epoch": epoch, "train": train_metrics, "val": val_metrics})
         print(
             f"[epoch {epoch}] train_loss={train_metrics['loss']:.5f} "
