@@ -7,6 +7,7 @@
 #include "chess_state.h"
 
 #define NN_MAX_ACC_DIM 512u
+#define NN_MAX_ACTIVE_THREATS 256u
 
 typedef struct NnAccumulatorFrame {
     bool valid;
@@ -22,10 +23,15 @@ typedef struct NnAccumulatorFrame {
     };
     int32_t white_psqt[32];
     int32_t black_psqt[32];
+    uint16_t white_threats[NN_MAX_ACTIVE_THREATS];
+    uint16_t black_threats[NN_MAX_ACTIVE_THREATS];
+    uint16_t white_threat_count;
+    uint16_t black_threat_count;
 } NnAccumulatorFrame;
 
 bool nn_eval_load_model(const char *path);
 bool nn_eval_is_loaded(void);
+bool nn_eval_uses_full_threats(void);
 const char *nn_eval_model_path(void);
 int nn_eval_cp_stm(const GameState *state);
 bool nn_eval_build_frame(const GameState *state, NnAccumulatorFrame *frame);

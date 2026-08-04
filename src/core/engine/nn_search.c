@@ -35,6 +35,10 @@
 #define HCE_NN_EVAL_CACHE_BITS 16
 #define HCE_NN_EVAL_CACHE_SIZE (1u << HCE_NN_EVAL_CACHE_BITS)
 #define HCE_NN_EVAL_CACHE_MASK (HCE_NN_EVAL_CACHE_SIZE - 1u)
+#define HCE_NN_PAWN_CORRECTION_BITS 14
+#define HCE_NN_PAWN_CORRECTION_SIZE (1u << HCE_NN_PAWN_CORRECTION_BITS)
+#define HCE_NN_PAWN_CORRECTION_MASK (HCE_NN_PAWN_CORRECTION_SIZE - 1u)
+#define HCE_NN_PAWN_CORRECTION_GRAIN 64
 
 typedef enum HceTtBound {
     HCE_TT_NONE = 0,
@@ -62,14 +66,23 @@ typedef struct HceSearchProfile {
     const char *name;
     int eval_scale_permille;
     int qsearch_delta_margin;
+    int capture_see_ordering;
+    int check_extensions;
+    int countermove_ordering;
+    int iteration_start_percent;
     int static_prune_margin_per_depth;
     int null_move_base_reduction;
+    int null_move_eval_gate;
     int lmr_base_reduction;
     int lmr_depth_bonus_threshold;
     int lmr_late_move_threshold;
     int lmr_good_history_threshold;
     int lmr_bad_history_threshold;
     int lmr_backend_adjust;
+    int history_gravity;
+    int internal_reduction;
+    int probcut_min_depth;
+    int probcut_margin;
     int lmp_max_depth;
     int lmp_base_moves;
     int futility_max_depth;
@@ -79,6 +92,8 @@ typedef struct HceSearchProfile {
     int aspiration_base;
     int aspiration_depth_scale;
     int twofold_draw;
+    int pawn_correction_weight_permille;
+    int structure_correction_weight_permille;
 } HceSearchProfile;
 
 typedef struct HceSearchContext {
@@ -93,6 +108,7 @@ typedef struct HceSearchContext {
     int policy_root_bonus;
     const HceSearchProfile *profile;
     Move killer[HCE_MAX_PLY][2];
+    Move countermove[64][64];
     int history[PIECE_COLOR_COUNT][64][64];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
     HceEvalCacheEntry nn_eval_cache[HCE_NN_EVAL_CACHE_SIZE];
@@ -102,14 +118,23 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .name = "classic",
     .eval_scale_permille = 1000,
     .qsearch_delta_margin = 120,
+    .capture_see_ordering = 0,
+    .check_extensions = 1,
+    .countermove_ordering = 0,
+    .iteration_start_percent = 55,
     .static_prune_margin_per_depth = 90,
     .null_move_base_reduction = 2,
+    .null_move_eval_gate = 0,
     .lmr_base_reduction = 1,
     .lmr_depth_bonus_threshold = 6,
     .lmr_late_move_threshold = 6,
     .lmr_good_history_threshold = 12000,
     .lmr_bad_history_threshold = -8000,
     .lmr_backend_adjust = 0,
+    .history_gravity = 0,
+    .internal_reduction = 0,
+    .probcut_min_depth = 0,
+    .probcut_margin = 200,
     .lmp_max_depth = 0,
     .lmp_base_moves = 4,
     .futility_max_depth = 0,
@@ -119,56 +144,85 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .aspiration_base = 24,
     .aspiration_depth_scale = 6,
     .twofold_draw = 0,
+    .pawn_correction_weight_permille = 0,
+    .structure_correction_weight_permille = 0,
 };
 
 static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .name = "nn",
     .eval_scale_permille = 800,
-    .qsearch_delta_margin = 120,
+    .qsearch_delta_margin = 300,
+    .capture_see_ordering = 0,
+    .check_extensions = 1,
+    .countermove_ordering = 0,
+    .iteration_start_percent = 85,
     .static_prune_margin_per_depth = 80,
-    .null_move_base_reduction = 1,
+    .null_move_base_reduction = 2,
+    .null_move_eval_gate = 0,
     .lmr_base_reduction = 1,
     .lmr_depth_bonus_threshold = 6,
     .lmr_late_move_threshold = 6,
     .lmr_good_history_threshold = 12000,
     .lmr_bad_history_threshold = -8000,
     .lmr_backend_adjust = 0,
+    .history_gravity = 0,
+    .internal_reduction = 1,
+    .probcut_min_depth = 0,
+    .probcut_margin = 200,
     .lmp_max_depth = 2,
     .lmp_base_moves = 4,
-    .futility_max_depth = 0,
+    .futility_max_depth = 2,
     .futility_margin_per_depth = 100,
     .see_prune_max_depth = 0,
     .see_prune_margin_per_depth = 40,
     .aspiration_base = 40,
     .aspiration_depth_scale = 10,
     .twofold_draw = 1,
+    .pawn_correction_weight_permille = 0,
+    .structure_correction_weight_permille = 0,
 };
 
 static HceSearchProfile g_hce_search_profile_nn = {
     .name = "nn",
     .eval_scale_permille = 800,
-    .qsearch_delta_margin = 120,
+    .qsearch_delta_margin = 300,
+    .capture_see_ordering = 0,
+    .check_extensions = 1,
+    .countermove_ordering = 0,
+    .iteration_start_percent = 85,
     .static_prune_margin_per_depth = 80,
-    .null_move_base_reduction = 1,
+    .null_move_base_reduction = 2,
+    .null_move_eval_gate = 0,
     .lmr_base_reduction = 1,
     .lmr_depth_bonus_threshold = 6,
     .lmr_late_move_threshold = 6,
     .lmr_good_history_threshold = 12000,
     .lmr_bad_history_threshold = -8000,
     .lmr_backend_adjust = 0,
+    .history_gravity = 0,
+    .internal_reduction = 1,
+    .probcut_min_depth = 0,
+    .probcut_margin = 200,
     .lmp_max_depth = 2,
     .lmp_base_moves = 4,
-    .futility_max_depth = 0,
+    .futility_max_depth = 2,
     .futility_margin_per_depth = 100,
     .see_prune_max_depth = 0,
     .see_prune_margin_per_depth = 40,
     .aspiration_base = 40,
     .aspiration_depth_scale = 10,
     .twofold_draw = 1,
+    .pawn_correction_weight_permille = 0,
+    .structure_correction_weight_permille = 0,
 };
 
 static HceTtEntry g_hce_tt[HCE_TT_SIZE];
 static uint8_t g_hce_tt_generation = 0;
+static int16_t g_nn_pawn_correction[PIECE_COLOR_COUNT][HCE_NN_PAWN_CORRECTION_SIZE];
+static int16_t g_nn_minor_correction[PIECE_COLOR_COUNT][HCE_NN_PAWN_CORRECTION_SIZE];
+static int16_t
+    g_nn_nonpawn_correction[PIECE_COLOR_COUNT][PIECE_COLOR_COUNT][HCE_NN_PAWN_CORRECTION_SIZE];
+static char g_nn_pawn_correction_model_path[1024];
 static atomic_flag g_hce_lock = ATOMIC_FLAG_INIT;
 static FILE *g_nn_leaf_log_fp = NULL;
 static char g_nn_leaf_log_path[512] = {0};
@@ -246,6 +300,26 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.qsearch_delta_margin;
         return true;
     }
+    if (hce_option_ieq(name, "NNCaptureSeeOrdering") ||
+        hce_option_ieq(name, "CaptureSeeOrdering")) {
+        *out = &g_hce_search_profile_nn.capture_see_ordering;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNCheckExtensions") ||
+        hce_option_ieq(name, "CheckExtensions")) {
+        *out = &g_hce_search_profile_nn.check_extensions;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNCountermoveOrdering") ||
+        hce_option_ieq(name, "CountermoveOrdering")) {
+        *out = &g_hce_search_profile_nn.countermove_ordering;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNIterationStartPercent") ||
+        hce_option_ieq(name, "IterationStartPercent")) {
+        *out = &g_hce_search_profile_nn.iteration_start_percent;
+        return true;
+    }
     if (hce_option_ieq(name, "NNStaticPruneMargin") || hce_option_ieq(name, "StaticPruneMargin")) {
         *out = &g_hce_search_profile_nn.static_prune_margin_per_depth;
         return true;
@@ -254,8 +328,33 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.null_move_base_reduction;
         return true;
     }
+    if (hce_option_ieq(name, "NNNullMoveEvalGate") ||
+        hce_option_ieq(name, "NullMoveEvalGate")) {
+        *out = &g_hce_search_profile_nn.null_move_eval_gate;
+        return true;
+    }
     if (hce_option_ieq(name, "NNLmrBackendAdjust") || hce_option_ieq(name, "LmrBackendAdjust")) {
         *out = &g_hce_search_profile_nn.lmr_backend_adjust;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNHistoryGravity") ||
+        hce_option_ieq(name, "HistoryGravity")) {
+        *out = &g_hce_search_profile_nn.history_gravity;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNInternalReduction") ||
+        hce_option_ieq(name, "InternalReduction")) {
+        *out = &g_hce_search_profile_nn.internal_reduction;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNProbCutMinDepth") ||
+        hce_option_ieq(name, "ProbCutMinDepth")) {
+        *out = &g_hce_search_profile_nn.probcut_min_depth;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNProbCutMargin") ||
+        hce_option_ieq(name, "ProbCutMargin")) {
+        *out = &g_hce_search_profile_nn.probcut_margin;
         return true;
     }
     if (hce_option_ieq(name, "NNLmpMaxDepth") || hce_option_ieq(name, "LmpMaxDepth")) {
@@ -294,6 +393,16 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.twofold_draw;
         return true;
     }
+    if (hce_option_ieq(name, "NNPawnCorrectionWeight") ||
+        hce_option_ieq(name, "PawnCorrectionWeight")) {
+        *out = &g_hce_search_profile_nn.pawn_correction_weight_permille;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNStructureCorrectionWeight") ||
+        hce_option_ieq(name, "StructureCorrectionWeight")) {
+        *out = &g_hce_search_profile_nn.structure_correction_weight_permille;
+        return true;
+    }
     return false;
 }
 
@@ -310,8 +419,26 @@ bool hce_nn_search_set_option(const char *name, int value) {
         if (value < -4 || value > 4) {
             return false;
         }
-    } else if (field == &g_hce_search_profile_nn.twofold_draw) {
+    } else if (field == &g_hce_search_profile_nn.twofold_draw ||
+               field == &g_hce_search_profile_nn.check_extensions ||
+               field == &g_hce_search_profile_nn.countermove_ordering ||
+               field == &g_hce_search_profile_nn.null_move_eval_gate ||
+               field == &g_hce_search_profile_nn.history_gravity ||
+               field == &g_hce_search_profile_nn.internal_reduction) {
         if (value < 0 || value > 1) {
+            return false;
+        }
+    } else if (field == &g_hce_search_profile_nn.capture_see_ordering) {
+        if (value < 0 || value > 2) {
+            return false;
+        }
+    } else if (field == &g_hce_search_profile_nn.iteration_start_percent) {
+        if (value < 1 || value > 100) {
+            return false;
+        }
+    } else if (field == &g_hce_search_profile_nn.pawn_correction_weight_permille ||
+               field == &g_hce_search_profile_nn.structure_correction_weight_permille) {
+        if (value < 0 || value > 2000) {
             return false;
         }
     } else if (value < 0 || value > 10000) {
@@ -331,6 +458,10 @@ int hce_nn_search_get_option(const char *name) {
 
 void hce_nn_search_reset_options(void) {
     g_hce_search_profile_nn = HCE_SEARCH_PROFILE_NN_DEFAULT;
+    memset(g_nn_pawn_correction, 0, sizeof(g_nn_pawn_correction));
+    memset(g_nn_minor_correction, 0, sizeof(g_nn_minor_correction));
+    memset(g_nn_nonpawn_correction, 0, sizeof(g_nn_nonpawn_correction));
+    g_nn_pawn_correction_model_path[0] = '\0';
 }
 
 static int64_t now_ms(void) {
@@ -659,14 +790,22 @@ static void search_prepare_nn_child_frame(const GameState *child,
         return;
     }
 
+    if (nn_eval_uses_full_threats()) {
+        /*
+         * Full Threats updates must collect and diff both attack sets.  Keep
+         * them lazy: search_ensure_nn_frame() applies the incremental update
+         * only if this child reaches an evaluation, avoiding work on TT hits,
+         * pruned nodes, and immediate cutoffs.
+         */
+        ctx->nn_frames[child_ply].valid = false;
+        return;
+    }
+
     NnAccumulatorFrame *child_frame = &ctx->nn_frames[child_ply];
     const NnAccumulatorFrame *parent = &ctx->nn_frames[parent_ply];
     const UndoRecord *undo = &child->undo_stack[child->ply - 1];
-    if (!parent->valid || parent->key != undo->hash_prev) {
-        child_frame->valid = false;
-        return;
-    }
-    if (!nn_eval_update_frame(child, undo, parent, child_frame)) {
+    if (!parent->valid || parent->key != undo->hash_prev ||
+        !nn_eval_update_frame(child, undo, parent, child_frame)) {
         child_frame->valid = false;
     }
 }
@@ -714,6 +853,12 @@ static int search_eval_cp_stm(const GameState *s,
         return score;
     }
 
+    int cached_score = 0;
+    if (search_nn_eval_cache_probe(ctx, s->zobrist_hash, &cached_score)) {
+        search_log_nn_leaf(s, ctx, ply, depth, phase, cached_score);
+        return cached_score;
+    }
+
     NnAccumulatorFrame *frame = &ctx->nn_frames[ply];
     if (!search_ensure_nn_frame(s, ctx, ply)) {
         int score = search_scale_eval_for_profile(ctx, nn_eval_cp_stm(s));
@@ -722,11 +867,6 @@ static int search_eval_cp_stm(const GameState *s,
     }
 
     if (frame->valid && frame->key == s->zobrist_hash) {
-        int cached_score = 0;
-        if (search_nn_eval_cache_probe(ctx, s->zobrist_hash, &cached_score)) {
-            search_log_nn_leaf(s, ctx, ply, depth, phase, cached_score);
-            return cached_score;
-        }
         int score = search_scale_eval_for_profile(ctx, nn_eval_cp_stm_from_frame(s, frame));
         search_nn_eval_cache_store(ctx, s->zobrist_hash, score);
         search_log_nn_leaf(s, ctx, ply, depth, phase, score);
@@ -749,11 +889,15 @@ static int captured_piece_for_move(const GameState *s, Move m) {
     return s->sq_piece[target_sq];
 }
 
-static int search_move_extension(const GameState *s_after_move, Move m, int depth) {
+static int search_move_extension(const GameState *s_after_move,
+                                 Move m,
+                                 int depth,
+                                 const HceSearchContext *ctx) {
     if (depth <= 2) {
         return 0;
     }
-    if (chess_in_check(s_after_move, s_after_move->side_to_move)) {
+    if (search_profile(ctx)->check_extensions != 0 &&
+        chess_in_check(s_after_move, s_after_move->side_to_move)) {
         return 1;
     }
     if (move_has_flag(m, MOVE_FLAG_PROMOTION)) {
@@ -995,7 +1139,21 @@ static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext
         if (victim == PIECE_NONE) {
             victim = PIECE_PAWN;
         }
-        score += 1000000 + hce_piece_value[victim] * 16 - hce_piece_value[attacker];
+        int material_order = hce_piece_value[victim] * 16 - hce_piece_value[attacker];
+        if (search_profile(ctx)->capture_see_ordering != 0) {
+            int see = static_exchange_eval(s, m);
+            /*
+             * Mode 1 only improves ordering within the capture stage. Mode 2
+             * additionally demotes losing captures behind strong quiet moves.
+             */
+            int capture_stage =
+                search_profile(ctx)->capture_see_ordering >= 2 && see < 0
+                    ? 100000
+                    : 1000000;
+            score += capture_stage + material_order + see * 8;
+        } else {
+            score += 1000000 + material_order;
+        }
     } else {
         if (ply >= 0 && ply < HCE_MAX_PLY) {
             if (ctx->killer[ply][0] == m) {
@@ -1003,6 +1161,11 @@ static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext
             } else if (ctx->killer[ply][1] == m) {
                 score += 850000;
             }
+        }
+        if (search_profile(ctx)->countermove_ordering != 0 &&
+            s->has_last_move &&
+            ctx->countermove[move_from(s->last_move)][move_to(s->last_move)] == m) {
+            score += 800000;
         }
         score += ctx->history[s->side_to_move][move_from(m)][move_to(m)];
     }
@@ -1085,6 +1248,19 @@ static void update_killer(HceSearchContext *ctx, int ply, Move move) {
     ctx->killer[ply][0] = move;
 }
 
+static void update_countermove(HceSearchContext *ctx,
+                               const GameState *s,
+                               Move move) {
+    if (ctx == NULL ||
+        s == NULL ||
+        !s->has_last_move ||
+        !is_quiet_move(move) ||
+        search_profile(ctx)->countermove_ordering == 0) {
+        return;
+    }
+    ctx->countermove[move_from(s->last_move)][move_to(s->last_move)] = move;
+}
+
 static int history_bonus(int depth) {
     if (depth < 1) {
         depth = 1;
@@ -1097,6 +1273,34 @@ static void history_update_delta(HceSearchContext *ctx, int side, Move move, int
         return;
     }
     int *hist = &ctx->history[side][move_from(move)][move_to(move)];
+    if (search_profile(ctx)->history_gravity != 0) {
+        /*
+         * Search contexts are rebuilt for every played move, so the old
+         * depth-squared bonus almost never reached the LMR history bands.
+         * Scale it into a bounded gravity update: new evidence matters
+         * immediately, while repeated updates asymptotically saturate.
+         */
+        const int limit = 16384;
+        /*
+         * A 32x scale reacted too sharply in short searches.  The 16x scale
+         * still reaches the LMR history bands after repeated evidence while
+         * retaining more of the previous ordering signal.
+         */
+        int scaled = delta * 16;
+        if (scaled > limit) {
+            scaled = limit;
+        } else if (scaled < -limit) {
+            scaled = -limit;
+        }
+        int magnitude = scaled >= 0 ? scaled : -scaled;
+        *hist += scaled - (*hist * magnitude) / limit;
+        if (*hist > limit) {
+            *hist = limit;
+        } else if (*hist < -limit) {
+            *hist = -limit;
+        }
+        return;
+    }
     *hist += delta;
     if (*hist > 240000) {
         *hist = 240000;
@@ -1123,6 +1327,159 @@ static void penalize_quiet_history(HceSearchContext *ctx,
     }
 }
 
+static uint32_t pawn_correction_index(const GameState *s) {
+    uint64_t white = s->bb[PIECE_WHITE][PIECE_PAWN];
+    uint64_t black = s->bb[PIECE_BLACK][PIECE_PAWN];
+    uint64_t mixed = white * UINT64_C(0x9E3779B185EBCA87);
+    mixed ^= (black << 23) | (black >> 41);
+    mixed ^= mixed >> 29;
+    mixed *= UINT64_C(0xC2B2AE3D27D4EB4F);
+    return (uint32_t)(mixed & HCE_NN_PAWN_CORRECTION_MASK);
+}
+
+static uint64_t correction_mix64(uint64_t value) {
+    value ^= value >> 30;
+    value *= UINT64_C(0xBF58476D1CE4E5B9);
+    value ^= value >> 27;
+    value *= UINT64_C(0x94D049BB133111EB);
+    return value ^ (value >> 31);
+}
+
+static uint64_t correction_rotate64(uint64_t value, unsigned shift) {
+    return (value << shift) | (value >> (64U - shift));
+}
+
+static uint32_t minor_correction_index(const GameState *s) {
+    uint64_t mixed = s->bb[PIECE_WHITE][PIECE_KNIGHT];
+    mixed ^= correction_rotate64(s->bb[PIECE_WHITE][PIECE_BISHOP], 13);
+    mixed ^= correction_rotate64(s->bb[PIECE_BLACK][PIECE_KNIGHT], 29);
+    mixed ^= correction_rotate64(s->bb[PIECE_BLACK][PIECE_BISHOP], 47);
+    return (uint32_t)(correction_mix64(mixed) & HCE_NN_PAWN_CORRECTION_MASK);
+}
+
+static uint32_t nonpawn_correction_index(const GameState *s, int color) {
+    uint64_t mixed = s->bb[color][PIECE_KNIGHT];
+    mixed ^= correction_rotate64(s->bb[color][PIECE_BISHOP], 11);
+    mixed ^= correction_rotate64(s->bb[color][PIECE_ROOK], 23);
+    mixed ^= correction_rotate64(s->bb[color][PIECE_QUEEN], 37);
+    mixed ^= correction_rotate64(s->bb[color][PIECE_KING], 53);
+    mixed ^= color == PIECE_WHITE
+                 ? UINT64_C(0x9E3779B97F4A7C15)
+                 : UINT64_C(0xD1B54A32D192ED03);
+    return (uint32_t)(correction_mix64(mixed) & HCE_NN_PAWN_CORRECTION_MASK);
+}
+
+static int apply_eval_correction(const GameState *s,
+                                 const HceSearchContext *ctx,
+                                 int raw_eval) {
+    const HceSearchProfile *profile = search_profile(ctx);
+    if (profile->pawn_correction_weight_permille <= 0 &&
+        profile->structure_correction_weight_permille <= 0) {
+        return raw_eval;
+    }
+    int side = s->side_to_move;
+    uint32_t pawn_index = pawn_correction_index(s);
+    int pawn_stored = g_nn_pawn_correction[side][pawn_index];
+    int adjusted = raw_eval;
+    if (profile->pawn_correction_weight_permille > 0) {
+        adjusted += (pawn_stored / HCE_NN_PAWN_CORRECTION_GRAIN) *
+                    profile->pawn_correction_weight_permille / 1000;
+    }
+    if (profile->structure_correction_weight_permille > 0) {
+        int minor_stored =
+            g_nn_minor_correction[side][minor_correction_index(s)];
+        int white_stored =
+            g_nn_nonpawn_correction[side][PIECE_WHITE][
+                nonpawn_correction_index(s, PIECE_WHITE)];
+        int black_stored =
+            g_nn_nonpawn_correction[side][PIECE_BLACK][
+                nonpawn_correction_index(s, PIECE_BLACK)];
+        /*
+         * Keep the current Stockfish relative mix, normalized back to one
+         * correction estimate so independently learned tables cannot add the
+         * same error four times.
+         */
+        int64_t combined =
+            INT64_C(15341) * pawn_stored +
+            INT64_C(10569) * minor_stored +
+            INT64_C(12906) * ((int64_t)white_stored + black_stored);
+        const int64_t denominator =
+            INT64_C(15341) + INT64_C(10569) + INT64_C(12906) * 2;
+        int correction_cp =
+            (int)(combined / denominator / HCE_NN_PAWN_CORRECTION_GRAIN);
+        adjusted += correction_cp *
+                    profile->structure_correction_weight_permille / 1000;
+    }
+    if (adjusted >= HCE_MATE_THRESHOLD) {
+        adjusted = HCE_MATE_THRESHOLD - 1;
+    } else if (adjusted <= -HCE_MATE_THRESHOLD) {
+        adjusted = -HCE_MATE_THRESHOLD + 1;
+    }
+    return adjusted;
+}
+
+static void update_correction_entry(int16_t *entry,
+                                    int target,
+                                    int learning) {
+    if (learning < 1) {
+        learning = 1;
+    } else if (learning > 96) {
+        learning = 96;
+    }
+    int updated = (int)*entry + (target - (int)*entry) * learning / 256;
+    if (updated > INT16_MAX) {
+        updated = INT16_MAX;
+    } else if (updated < INT16_MIN) {
+        updated = INT16_MIN;
+    }
+    *entry = (int16_t)updated;
+}
+
+static void update_eval_correction(const GameState *s,
+                                   HceSearchContext *ctx,
+                                   int depth,
+                                   int raw_eval,
+                                   int searched_score) {
+    const HceSearchProfile *profile = search_profile(ctx);
+    if ((profile->pawn_correction_weight_permille <= 0 &&
+         profile->structure_correction_weight_permille <= 0) ||
+        searched_score >= HCE_MATE_THRESHOLD ||
+        searched_score <= -HCE_MATE_THRESHOLD) {
+        return;
+    }
+    int error = searched_score - raw_eval;
+    if (error > 256) {
+        error = 256;
+    } else if (error < -256) {
+        error = -256;
+    }
+    int side = s->side_to_move;
+    int target = error * HCE_NN_PAWN_CORRECTION_GRAIN;
+    int learning = depth * 8;
+    if (learning < 8) {
+        learning = 8;
+    } else if (learning > 64) {
+        learning = 64;
+    }
+    update_correction_entry(
+        &g_nn_pawn_correction[side][pawn_correction_index(s)],
+        target,
+        learning);
+    if (profile->structure_correction_weight_permille > 0) {
+        update_correction_entry(
+            &g_nn_minor_correction[side][minor_correction_index(s)],
+            target,
+            learning * 150 / 128);
+        for (int color = PIECE_WHITE; color <= PIECE_BLACK; ++color) {
+            update_correction_entry(
+                &g_nn_nonpawn_correction[side][color][
+                    nonpawn_correction_index(s, color)],
+                target,
+                learning * 186 / 128);
+        }
+    }
+}
+
 
 static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchContext *ctx) {
     if (should_stop(ctx)) {
@@ -1135,8 +1492,9 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
     }
 
     bool in_check = chess_in_check(s, s->side_to_move);
-    int stand_pat = search_eval_cp_stm(s, ctx, ply, 0, "qsearch");
+    int stand_pat = 0;
     if (!in_check) {
+        stand_pat = search_eval_cp_stm(s, ctx, ply, 0, "qsearch");
         if (stand_pat >= beta) {
             return beta;
         }
@@ -1244,11 +1602,28 @@ static int negamax(GameState *s,
 
     bool in_check = chess_in_check(s, s->side_to_move);
     const HceSearchProfile *profile = search_profile(ctx);
+    if (profile->internal_reduction != 0 &&
+        depth >= 5 &&
+        !in_check &&
+        tt_move == 0) {
+        depth -= 1;
+    }
     bool static_eval_valid = false;
+    int raw_static_eval = 0;
     int static_eval = 0;
+    bool null_move_candidate =
+        ply > 0 &&
+        depth >= 3 &&
+        !in_check &&
+        beta < HCE_MATE_THRESHOLD &&
+        has_non_pawn_material(s, s->side_to_move);
     if (!in_check &&
-        (depth <= 3 || (profile->futility_max_depth > 0 && depth <= profile->futility_max_depth))) {
-        static_eval = search_eval_cp_stm(s, ctx, ply, depth, "static_eval");
+        (depth <= 3 ||
+         (profile->futility_max_depth > 0 && depth <= profile->futility_max_depth) ||
+         (profile->null_move_eval_gate != 0 && null_move_candidate) ||
+         (profile->probcut_min_depth > 0 && depth >= profile->probcut_min_depth))) {
+        raw_static_eval = search_eval_cp_stm(s, ctx, ply, depth, "static_eval");
+        static_eval = apply_eval_correction(s, ctx, raw_static_eval);
         static_eval_valid = true;
     }
     if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
@@ -1258,11 +1633,9 @@ static int negamax(GameState *s,
         }
     }
 
-    if (ply > 0 &&
-        depth >= 3 &&
-        !in_check &&
-        beta < HCE_MATE_THRESHOLD &&
-        has_non_pawn_material(s, s->side_to_move)) {
+    if (null_move_candidate &&
+        (profile->null_move_eval_gate == 0 ||
+         (static_eval_valid && static_eval >= beta))) {
         int reduction = search_profile(ctx)->null_move_base_reduction + depth / 4;
         if (reduction > depth - 1) {
             reduction = depth - 1;
@@ -1270,6 +1643,9 @@ static int negamax(GameState *s,
         if (reduction > 0) {
             ctx->nodes += 1;
             NullMoveUndo null_undo;
+            if (nn_eval_uses_full_threats()) {
+                (void)search_ensure_nn_frame(s, ctx, ply);
+            }
             make_null_move(s, &null_undo);
             search_prepare_nn_null_frame(s, ctx, ply, ply + 1);
             int score = -negamax(s,
@@ -1297,8 +1673,61 @@ static int negamax(GameState *s,
         }
         return 0;
     }
+    if (!in_check &&
+        profile->probcut_min_depth > 0 &&
+        depth >= profile->probcut_min_depth &&
+        beta < HCE_MATE_THRESHOLD - profile->probcut_margin) {
+        int probcut_beta = beta + profile->probcut_margin;
+        int see_threshold = probcut_beta - static_eval;
+        if (nn_eval_uses_full_threats()) {
+            (void)search_ensure_nn_frame(s, ctx, ply);
+        }
+        for (int i = 0; i < n; ++i) {
+            Move m = moves[i];
+            if ((!move_has_flag(m, MOVE_FLAG_CAPTURE) &&
+                 !move_has_flag(m, MOVE_FLAG_PROMOTION)) ||
+                static_exchange_eval(s, m) < see_threshold) {
+                continue;
+            }
+            if (!chess_make_move_trusted(s, m)) {
+                continue;
+            }
+            ctx->nodes += 1;
+            search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
+            int score = -quiescence(
+                s, -probcut_beta, -probcut_beta + 1, ply + 1, ctx);
+            int probcut_depth = depth - 4;
+            if (!ctx->timed_out && score >= probcut_beta && probcut_depth > 0) {
+                score = -negamax(
+                    s,
+                    probcut_depth,
+                    -probcut_beta,
+                    -probcut_beta + 1,
+                    ply + 1,
+                    ctx,
+                    NULL);
+            }
+            chess_undo_move(s);
+            if (ctx->timed_out) {
+                return alpha;
+            }
+            if (score >= probcut_beta) {
+                tt_store(
+                    s->zobrist_hash,
+                    probcut_depth + 1,
+                    ply,
+                    beta,
+                    HCE_TT_LOWER,
+                    m);
+                return beta;
+            }
+        }
+    }
     int move_scores[CHESS_MAX_MOVES];
     score_moves(s, move_scores, moves, n, tt_move, ctx, ply);
+    if (nn_eval_uses_full_threats()) {
+        (void)search_ensure_nn_frame(s, ctx, ply);
+    }
 
     Move best_move = moves[0];
     int best_score = -HCE_INF;
@@ -1338,7 +1767,7 @@ static int negamax(GameState *s,
         ctx->nodes += 1;
         search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
 
-        int extension = search_move_extension(s, m, depth);
+        int extension = search_move_extension(s, m, depth, ctx);
 
         int score;
         int next_depth = depth - 1 + extension;
@@ -1400,9 +1829,13 @@ static int negamax(GameState *s,
             alpha = score;
             if (alpha >= beta) {
                 update_killer(ctx, ply, m);
+                update_countermove(ctx, s, m);
                 update_history(ctx, side, m, depth);
                 if (has_non_pawn_material(s, side)) {
                     penalize_quiet_history(ctx, side, failed_quiets, failed_quiet_count, depth);
+                }
+                if (quiet && static_eval_valid && beta > raw_static_eval) {
+                    update_eval_correction(s, ctx, depth, raw_static_eval, beta);
                 }
                 tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
                 if (best_move_out != NULL) {
@@ -1427,6 +1860,12 @@ static int negamax(GameState *s,
         bound = HCE_TT_LOWER;
     }
     if (!ctx->timed_out) {
+        if (static_eval_valid && is_quiet_move(best_move)) {
+            if (bound == HCE_TT_EXACT ||
+                (bound == HCE_TT_UPPER && best_score < raw_static_eval)) {
+                update_eval_correction(s, ctx, depth, raw_static_eval, best_score);
+            }
+        }
         tt_store(s->zobrist_hash, depth, ply, best_score, bound, best_move);
     }
     if (best_move_out != NULL) {
@@ -1475,7 +1914,7 @@ static int search_root(GameState *root,
         ctx->nodes += 1;
         search_prepare_nn_child_frame(&child, ctx, 0, 1);
 
-        int extension = search_move_extension(&child, m, depth);
+        int extension = search_move_extension(&child, m, depth, ctx);
         int next_depth = depth - 1 + extension;
 
         if (searched == 0) {
@@ -1672,6 +2111,20 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     HceSearchContext ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.profile = search_profile_for_current_backend();
+    if (ctx.profile->pawn_correction_weight_permille > 0 ||
+        ctx.profile->structure_correction_weight_permille > 0) {
+        const char *model_path = nn_eval_model_path();
+        if (model_path != NULL &&
+            strcmp(model_path, g_nn_pawn_correction_model_path) != 0) {
+            memset(g_nn_pawn_correction, 0, sizeof(g_nn_pawn_correction));
+            memset(g_nn_minor_correction, 0, sizeof(g_nn_minor_correction));
+            memset(g_nn_nonpawn_correction, 0, sizeof(g_nn_nonpawn_correction));
+            snprintf(g_nn_pawn_correction_model_path,
+                     sizeof(g_nn_pawn_correction_model_path),
+                     "%s",
+                     model_path);
+        }
+    }
     ctx.start_ms = now_ms();
     int think_ms = (override_ms > 0) ? override_ms : ((cfg != NULL && cfg->think_time_ms > 0) ? cfg->think_time_ms : 120);
     int hard_ms = think_ms;
@@ -1717,7 +2170,8 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
                     soft_budget = hard_ms;
                 }
             }
-            if (elapsed * 100 >= soft_budget * 55) {
+            if (elapsed * 100 >=
+                soft_budget * ctx.profile->iteration_start_percent) {
                 break;
             }
         }

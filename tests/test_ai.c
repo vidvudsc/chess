@@ -98,6 +98,79 @@ static void assert_incremental_nn_matches_rebuild(GameState *s, const char *uci)
 }
 
 int main(void) {
+    chess_ai_reset_nn_search_options();
+    must(chess_ai_get_nn_search_option("NNQDeltaMargin") == 300,
+         "NN search reset should restore the validated qsearch delta margin");
+    must(chess_ai_get_nn_search_option("NNNullMoveBaseReduction") == 2,
+         "NN search reset should restore the validated null-move reduction");
+    must(chess_ai_get_nn_search_option("NNNullMoveEvalGate") == 0,
+         "NN null-move eval gate should remain disabled until promoted");
+    must(chess_ai_get_nn_search_option("NNHistoryGravity") == 0,
+         "NN history gravity should remain disabled until promoted");
+    must(chess_ai_get_nn_search_option("NNInternalReduction") == 1,
+         "NN internal reduction should restore the validated default");
+    must(chess_ai_get_nn_search_option("NNProbCutMinDepth") == 0,
+         "NN ProbCut should remain disabled until promoted");
+    must(chess_ai_get_nn_search_option("NNProbCutMargin") == 200,
+         "NN ProbCut should restore its conservative margin");
+    must(chess_ai_get_nn_search_option("NNFutilityMaxDepth") == 2,
+         "NN search reset should restore the validated futility depth");
+    must(chess_ai_get_nn_search_option("NNPawnCorrectionWeight") == 0,
+         "NN pawn correction should remain disabled until promoted");
+    must(chess_ai_get_nn_search_option("NNStructureCorrectionWeight") == 0,
+         "NN structure correction should remain disabled until promoted");
+    must(chess_ai_get_nn_search_option("NNCaptureSeeOrdering") == 0,
+         "NN capture SEE ordering should remain disabled until promoted");
+    must(chess_ai_get_nn_search_option("NNCheckExtensions") == 1,
+         "NN check extensions should remain enabled until strength-gated");
+    must(chess_ai_get_nn_search_option("NNCountermoveOrdering") == 0,
+         "NN countermove ordering should remain disabled until strength-gated");
+    must(chess_ai_get_nn_search_option("NNIterationStartPercent") == 85,
+         "NN iteration start threshold should restore the validated default");
+    must(chess_ai_set_nn_search_option("NNPawnCorrectionWeight", 1000),
+         "NN pawn correction test weight should be accepted");
+    must(!chess_ai_set_nn_search_option("NNPawnCorrectionWeight", 2001),
+         "NN pawn correction should reject out-of-range weights");
+    must(chess_ai_set_nn_search_option("NNStructureCorrectionWeight", 1000),
+         "NN structure correction test weight should be accepted");
+    must(!chess_ai_set_nn_search_option("NNStructureCorrectionWeight", 2001),
+         "NN structure correction should reject out-of-range weights");
+    must(chess_ai_set_nn_search_option("NNCaptureSeeOrdering", 1),
+         "NN capture SEE ordering should accept its enabled value");
+    must(chess_ai_set_nn_search_option("NNCaptureSeeOrdering", 2),
+         "NN capture SEE ordering should accept its demotion mode");
+    must(!chess_ai_set_nn_search_option("NNCaptureSeeOrdering", 3),
+         "NN capture SEE ordering should reject out-of-range modes");
+    must(chess_ai_set_nn_search_option("NNCheckExtensions", 0),
+         "NN check extensions should accept the disabled value");
+    must(!chess_ai_set_nn_search_option("NNCheckExtensions", 2),
+         "NN check extensions should reject non-boolean values");
+    must(chess_ai_set_nn_search_option("NNCountermoveOrdering", 1),
+         "NN countermove ordering should accept its enabled value");
+    must(!chess_ai_set_nn_search_option("NNCountermoveOrdering", 2),
+         "NN countermove ordering should reject non-boolean values");
+    must(chess_ai_set_nn_search_option("NNIterationStartPercent", 85),
+         "NN iteration start threshold should accept a normal percentage");
+    must(!chess_ai_set_nn_search_option("NNIterationStartPercent", 101),
+         "NN iteration start threshold should reject invalid percentages");
+    must(chess_ai_set_nn_search_option("NNNullMoveEvalGate", 1),
+         "NN null-move eval gate should accept the enabled value");
+    must(!chess_ai_set_nn_search_option("NNNullMoveEvalGate", 2),
+         "NN null-move eval gate should reject non-boolean values");
+    must(chess_ai_set_nn_search_option("NNHistoryGravity", 1),
+         "NN history gravity should accept the enabled value");
+    must(!chess_ai_set_nn_search_option("NNHistoryGravity", 2),
+         "NN history gravity should reject non-boolean values");
+    must(chess_ai_set_nn_search_option("NNInternalReduction", 1),
+         "NN internal reduction should accept the enabled value");
+    must(!chess_ai_set_nn_search_option("NNInternalReduction", 2),
+         "NN internal reduction should reject non-boolean values");
+    must(chess_ai_set_nn_search_option("NNProbCutMinDepth", 5),
+         "NN ProbCut depth should be configurable");
+    must(chess_ai_set_nn_search_option("NNProbCutMargin", 240),
+         "NN ProbCut margin should be configurable");
+    chess_ai_reset_nn_search_options();
+
     MatchConfig cfg = {
         .clock_enabled = false,
         .initial_ms = 0,

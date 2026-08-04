@@ -300,9 +300,18 @@ static void parse_setoption(const char *line, UciOptions *opt) {
 
     if (str_ieq(name_buf, "NNEvalScale") ||
         str_ieq(name_buf, "NNQDeltaMargin") ||
+        str_ieq(name_buf, "NNCaptureSeeOrdering") ||
+        str_ieq(name_buf, "NNCheckExtensions") ||
+        str_ieq(name_buf, "NNCountermoveOrdering") ||
+        str_ieq(name_buf, "NNIterationStartPercent") ||
         str_ieq(name_buf, "NNStaticPruneMargin") ||
         str_ieq(name_buf, "NNNullMoveBaseReduction") ||
+        str_ieq(name_buf, "NNNullMoveEvalGate") ||
         str_ieq(name_buf, "NNLmrBackendAdjust") ||
+        str_ieq(name_buf, "NNHistoryGravity") ||
+        str_ieq(name_buf, "NNInternalReduction") ||
+        str_ieq(name_buf, "NNProbCutMinDepth") ||
+        str_ieq(name_buf, "NNProbCutMargin") ||
         str_ieq(name_buf, "NNLmpMaxDepth") ||
         str_ieq(name_buf, "NNLmpBaseMoves") ||
         str_ieq(name_buf, "NNFutilityMaxDepth") ||
@@ -311,7 +320,9 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         str_ieq(name_buf, "NNSeePruneMargin") ||
         str_ieq(name_buf, "NNAspirationBase") ||
         str_ieq(name_buf, "NNAspirationDepthScale") ||
-        str_ieq(name_buf, "NNTwofoldDraw")) {
+        str_ieq(name_buf, "NNTwofoldDraw") ||
+        str_ieq(name_buf, "NNPawnCorrectionWeight") ||
+        str_ieq(name_buf, "NNStructureCorrectionWeight")) {
         if (!set_nn_search_option_from_uci(name_buf, value_buf)) {
             printf("info string failed to set %s to %s\n", name_buf, value_buf);
             fflush(stdout);
@@ -683,12 +694,30 @@ static void print_uci_intro(const UciOptions *opt) {
            chess_ai_get_nn_search_option("NNEvalScale"));
     printf("option name NNQDeltaMargin type spin default %d min 0 max 10000\n",
            chess_ai_get_nn_search_option("NNQDeltaMargin"));
+    printf("option name NNCaptureSeeOrdering type spin default %d min 0 max 2\n",
+           chess_ai_get_nn_search_option("NNCaptureSeeOrdering"));
+    printf("option name NNCheckExtensions type spin default %d min 0 max 1\n",
+           chess_ai_get_nn_search_option("NNCheckExtensions"));
+    printf("option name NNCountermoveOrdering type spin default %d min 0 max 1\n",
+           chess_ai_get_nn_search_option("NNCountermoveOrdering"));
+    printf("option name NNIterationStartPercent type spin default %d min 1 max 100\n",
+           chess_ai_get_nn_search_option("NNIterationStartPercent"));
     printf("option name NNStaticPruneMargin type spin default %d min 0 max 10000\n",
            chess_ai_get_nn_search_option("NNStaticPruneMargin"));
     printf("option name NNNullMoveBaseReduction type spin default %d min 0 max 10000\n",
            chess_ai_get_nn_search_option("NNNullMoveBaseReduction"));
+    printf("option name NNNullMoveEvalGate type spin default %d min 0 max 1\n",
+           chess_ai_get_nn_search_option("NNNullMoveEvalGate"));
     printf("option name NNLmrBackendAdjust type spin default %d min -4 max 4\n",
            chess_ai_get_nn_search_option("NNLmrBackendAdjust"));
+    printf("option name NNHistoryGravity type spin default %d min 0 max 1\n",
+           chess_ai_get_nn_search_option("NNHistoryGravity"));
+    printf("option name NNInternalReduction type spin default %d min 0 max 1\n",
+           chess_ai_get_nn_search_option("NNInternalReduction"));
+    printf("option name NNProbCutMinDepth type spin default %d min 0 max 12\n",
+           chess_ai_get_nn_search_option("NNProbCutMinDepth"));
+    printf("option name NNProbCutMargin type spin default %d min 0 max 1000\n",
+           chess_ai_get_nn_search_option("NNProbCutMargin"));
     printf("option name NNLmpMaxDepth type spin default %d min 0 max 8\n",
            chess_ai_get_nn_search_option("NNLmpMaxDepth"));
     printf("option name NNLmpBaseMoves type spin default %d min 0 max 100\n",
@@ -707,6 +736,10 @@ static void print_uci_intro(const UciOptions *opt) {
            chess_ai_get_nn_search_option("NNAspirationDepthScale"));
     printf("option name NNTwofoldDraw type spin default %d min 0 max 1\n",
            chess_ai_get_nn_search_option("NNTwofoldDraw"));
+    printf("option name NNPawnCorrectionWeight type spin default %d min 0 max 2000\n",
+           chess_ai_get_nn_search_option("NNPawnCorrectionWeight"));
+    printf("option name NNStructureCorrectionWeight type spin default %d min 0 max 2000\n",
+           chess_ai_get_nn_search_option("NNStructureCorrectionWeight"));
     printf("option name BookFile type string default auto\n");
     printf("option name PolicyRootHints type string default \n");
     printf("option name PolicyRootBonus type spin default %d min 0 max 1000000\n", opt->policy_root_bonus);

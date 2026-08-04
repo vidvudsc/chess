@@ -17,6 +17,7 @@
 #endif
 
 #include "chess_types.h"
+#include "hce_internal.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #define NN_MAYBE_UNUSED __attribute__((unused))
@@ -37,11 +38,28 @@
 #define NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC 9u
 #define NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS 10u
 #define NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT 11u
+#define NN_VERSION_STOCKFISH_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT 12u
+#define NN_VERSION_STOCKFISH_THREATS_SCRELU_I16_ACC_BUCKETS_PSQT 13u
+#define NN_VERSION_LINEAR_THREATS_SCRELU_I16_ACC_BUCKETS_PSQT 14u
+#define NN_VERSION_LINEAR_THREATS_I8_SCRELU_I16_ACC_BUCKETS_PSQT 15u
+#define NN_VERSION_LINEAR_THREATS_ALL_I8_SCRELU_I16_ACC_BUCKETS_PSQT 16u
+#define NN_VERSION_LINEAR_THREATS_PER_ROW_I8_SCRELU_I16_ACC_BUCKETS_PSQT 17u
+#define NN_VERSION_IS_LINEAR_BUCKETED_PSQT(v) \
+    ((v) == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT || \
+     (v) == NN_VERSION_LINEAR_THREATS_SCRELU_I16_ACC_BUCKETS_PSQT || \
+     (v) == NN_VERSION_LINEAR_THREATS_I8_SCRELU_I16_ACC_BUCKETS_PSQT || \
+     (v) == NN_VERSION_LINEAR_THREATS_ALL_I8_SCRELU_I16_ACC_BUCKETS_PSQT || \
+     (v) == NN_VERSION_LINEAR_THREATS_PER_ROW_I8_SCRELU_I16_ACC_BUCKETS_PSQT)
+#define NN_VERSION_IS_STOCKFISH_HEAD(v) \
+    ((v) == NN_VERSION_STOCKFISH_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT || \
+     (v) == NN_VERSION_STOCKFISH_THREATS_SCRELU_I16_ACC_BUCKETS_PSQT)
 #define NN_MAX_OUTPUT_BUCKETS 32u
 #define NN_MAX_HIDDEN_DIM 128u
 #define NN_EXPECTED_HALFKP_DIM (64u * 10u * 64u)
 #define NN_EXPECTED_HALFKP_HM_DIM (32u * 10u * 64u)
 #define NN_EXPECTED_HALFKA_HM_DIM (32u * 11u * 64u)
+#define NN_FULL_THREATS_DIM 59808u
+#define NN_EXPECTED_HALFKA_THREATS_HM_DIM (NN_EXPECTED_HALFKA_HM_DIM + NN_FULL_THREATS_DIM)
 #define NN_MAX_TRANSFORM_DIM (NN_MAX_ACC_DIM * 2u)
 #define NN_CP_FALLBACK 0
 #define NN_ACT_QMAX 32767
@@ -80,11 +98,15 @@ typedef struct NnEvalModel {
     char path[1024];
     NnEvalHeader header;
     int16_t *acc_weight;
+    int8_t *acc_weight_i8;
+    int8_t *threat_weight;
     int8_t *fc1_weight;
+    float *fc1_row_scales;
     float *fc1_bias;
     int8_t *fc2_weight;
     float *fc2_bias;
     int8_t *out_weight;
+    float *out_row_scales;
     float out_bias;
     float *out_bias_buckets;
     int16_t *psqt_weight;
@@ -99,11 +121,15 @@ static void nn_eval_free_model(NnEvalModel *model) {
         return;
     }
     free(model->acc_weight);
+    free(model->acc_weight_i8);
+    free(model->threat_weight);
     free(model->fc1_weight);
+    free(model->fc1_row_scales);
     free(model->fc1_bias);
     free(model->fc2_weight);
     free(model->fc2_bias);
     free(model->out_weight);
+    free(model->out_row_scales);
     free(model->out_bias_buckets);
     free(model->psqt_weight);
     memset(model, 0, sizeof(*model));
@@ -130,7 +156,8 @@ static bool read_prefix_header(FILE *fp, NnEvalHeader *header) {
         header->version == NN_VERSION_BOTTLENECK_HEAD_SCRELU ||
         header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC ||
         header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-        header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) {
+        NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+        NN_VERSION_IS_STOCKFISH_HEAD(header->version)) {
         if (!read_exact(fp, &header->acc_scale, sizeof(float)) ||
             !read_exact(fp, &header->fc1_scale, sizeof(float)) ||
             !read_exact(fp, &header->fc2_scale, sizeof(float)) ||
@@ -143,24 +170,31 @@ static bool read_prefix_header(FILE *fp, NnEvalHeader *header) {
              header->version == NN_VERSION_BOTTLENECK_HEAD_SCRELU ||
              header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC ||
              header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-             header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) &&
+             NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+             NN_VERSION_IS_STOCKFISH_HEAD(header->version)) &&
             (!read_exact(fp, &header->act0_scale, sizeof(float)) ||
              !read_exact(fp, &header->act1_scale, sizeof(float)) ||
              !read_exact(fp, &header->act2_scale, sizeof(float)))) {
             return false;
         }
         if ((header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-             header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) &&
+             NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+             NN_VERSION_IS_STOCKFISH_HEAD(header->version)) &&
             !read_exact(fp, &header->num_buckets, sizeof(uint32_t))) {
             return false;
         }
-        if (header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT &&
+        if ((NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+             NN_VERSION_IS_STOCKFISH_HEAD(header->version)) &&
             !read_exact(fp, &header->psqt_scale, sizeof(float))) {
             return false;
         }
         if ((header->version == NN_VERSION_BOTTLENECK_HEAD_QUANT ||
              header->version == NN_VERSION_BOTTLENECK_HEAD_FIXED_ACT ||
              header->version == NN_VERSION_BOTTLENECK_HEAD_SCRELU) &&
+            !read_exact(fp, &header->bottleneck_dim, sizeof(uint32_t))) {
+            return false;
+        }
+        if (NN_VERSION_IS_STOCKFISH_HEAD(header->version) &&
             !read_exact(fp, &header->bottleneck_dim, sizeof(uint32_t))) {
             return false;
         }
@@ -215,8 +249,10 @@ static int halfkp_index(int king_sq,
     int oriented_king = orient_square(king_sq, perspective);
     int oriented_piece = orient_square(piece_sq, perspective);
     if (feature_dim == NN_EXPECTED_HALFKP_HM_DIM ||
-        feature_dim == NN_EXPECTED_HALFKA_HM_DIM) {
-        int planes = feature_dim == NN_EXPECTED_HALFKA_HM_DIM ? 11 : 10;
+        feature_dim == NN_EXPECTED_HALFKA_HM_DIM ||
+        feature_dim == NN_EXPECTED_HALFKA_THREATS_HM_DIM) {
+        int planes = (feature_dim == NN_EXPECTED_HALFKA_HM_DIM ||
+                      feature_dim == NN_EXPECTED_HALFKA_THREATS_HM_DIM) ? 11 : 10;
         if ((oriented_king & 7) < 4) {
             oriented_king ^= 7;
             oriented_piece ^= 7;
@@ -225,6 +261,40 @@ static int halfkp_index(int king_sq,
         return (king_bucket * planes + plane) * 64 + oriented_piece;
     }
     return (oriented_king * 10 + plane) * 64 + oriented_piece;
+}
+
+static bool header_uses_halfka(const NnEvalHeader *header) {
+    return header != NULL &&
+           (header->halfkp_dim == NN_EXPECTED_HALFKA_HM_DIM ||
+            header->halfkp_dim == NN_EXPECTED_HALFKA_THREATS_HM_DIM);
+}
+
+static bool header_uses_full_threats(const NnEvalHeader *header) {
+    return header != NULL &&
+           (header->version == NN_VERSION_STOCKFISH_THREATS_SCRELU_I16_ACC_BUCKETS_PSQT ||
+            header->version == NN_VERSION_LINEAR_THREATS_SCRELU_I16_ACC_BUCKETS_PSQT ||
+            header->version == NN_VERSION_LINEAR_THREATS_I8_SCRELU_I16_ACC_BUCKETS_PSQT ||
+            header->version == NN_VERSION_LINEAR_THREATS_ALL_I8_SCRELU_I16_ACC_BUCKETS_PSQT ||
+            header->version ==
+                NN_VERSION_LINEAR_THREATS_PER_ROW_I8_SCRELU_I16_ACC_BUCKETS_PSQT);
+}
+
+static bool header_uses_i8_threat_weights(const NnEvalHeader *header) {
+    return header != NULL &&
+           (header->version == NN_VERSION_LINEAR_THREATS_I8_SCRELU_I16_ACC_BUCKETS_PSQT ||
+            header->version ==
+                NN_VERSION_LINEAR_THREATS_PER_ROW_I8_SCRELU_I16_ACC_BUCKETS_PSQT);
+}
+
+static bool header_uses_per_row_head_scales(const NnEvalHeader *header) {
+    return header != NULL &&
+           header->version ==
+               NN_VERSION_LINEAR_THREATS_PER_ROW_I8_SCRELU_I16_ACC_BUCKETS_PSQT;
+}
+
+static bool header_uses_all_i8_acc_weights(const NnEvalHeader *header) {
+    return header != NULL &&
+           header->version == NN_VERSION_LINEAR_THREATS_ALL_I8_SCRELU_I16_ACC_BUCKETS_PSQT;
 }
 
 static float quant_scale_from_max(float max_abs, int qmax) {
@@ -267,7 +337,7 @@ static bool header_uses_fc2(const NnEvalHeader *header) {
            header->version != NN_VERSION_LINEAR_HEAD_SCRELU &&
            header->version != NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC &&
            header->version != NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS &&
-           header->version != NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT;
+           !NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version);
 }
 
 static bool header_uses_fixed_activation(const NnEvalHeader *header) {
@@ -278,7 +348,8 @@ static bool header_uses_fixed_activation(const NnEvalHeader *header) {
             header->version == NN_VERSION_BOTTLENECK_HEAD_SCRELU ||
             header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC ||
             header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-            header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT);
+            NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+            NN_VERSION_IS_STOCKFISH_HEAD(header->version));
 }
 
 static bool header_uses_squared_clipped_relu(const NnEvalHeader *header) {
@@ -287,20 +358,23 @@ static bool header_uses_squared_clipped_relu(const NnEvalHeader *header) {
             header->version == NN_VERSION_BOTTLENECK_HEAD_SCRELU ||
             header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC ||
             header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-            header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT);
+            NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+            NN_VERSION_IS_STOCKFISH_HEAD(header->version));
 }
 
 static bool header_uses_i16_accumulator(const NnEvalHeader *header) {
     return header != NULL &&
            (header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC ||
             header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-            header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT);
+            NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+            NN_VERSION_IS_STOCKFISH_HEAD(header->version));
 }
 
 static uint32_t header_output_buckets(const NnEvalHeader *header) {
     if (header == NULL ||
         (header->version != NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS &&
-         header->version != NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT)) {
+         !NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) &&
+         !NN_VERSION_IS_STOCKFISH_HEAD(header->version))) {
         return 1u;
     }
     return header->num_buckets;
@@ -575,6 +649,75 @@ static void add_row_i16_fast(int16_t *acc, const int16_t *row, uint32_t acc_dim,
 #endif
 }
 
+static NN_MAYBE_UNUSED void add_row_i8_to_i16_scalar(int16_t *acc,
+                                                      const int8_t *row,
+                                                      uint32_t acc_dim,
+                                                      int sign) {
+    for (uint32_t i = 0; i < acc_dim; ++i) {
+        acc[i] = (int16_t)(acc[i] + sign * (int16_t)row[i]);
+    }
+}
+
+#if defined(NN_HAS_NEON)
+static void add_row_i8_to_i16_neon(int16_t *acc,
+                                   const int8_t *row,
+                                   uint32_t acc_dim,
+                                   int sign) {
+    uint32_t i = 0;
+    for (; i + 16u <= acc_dim; i += 16u) {
+        int8x16_t packed = vld1q_s8(row + i);
+        int16x8_t lo = vmovl_s8(vget_low_s8(packed));
+        int16x8_t hi = vmovl_s8(vget_high_s8(packed));
+        int16x8_t cur_lo = vld1q_s16(acc + i);
+        int16x8_t cur_hi = vld1q_s16(acc + i + 8u);
+        vst1q_s16(acc + i, sign > 0 ? vaddq_s16(cur_lo, lo) : vsubq_s16(cur_lo, lo));
+        vst1q_s16(acc + i + 8u,
+                  sign > 0 ? vaddq_s16(cur_hi, hi) : vsubq_s16(cur_hi, hi));
+    }
+    for (; i < acc_dim; ++i) {
+        acc[i] = (int16_t)(acc[i] + sign * (int16_t)row[i]);
+    }
+}
+#endif
+
+#if defined(NN_HAS_X86_64) && (defined(__GNUC__) || defined(__clang__))
+__attribute__((target("avx2")))
+static void add_row_i8_to_i16_avx2(int16_t *acc,
+                                   const int8_t *row,
+                                   uint32_t acc_dim,
+                                   int sign) {
+    uint32_t i = 0;
+    for (; i + 16u <= acc_dim; i += 16u) {
+        __m128i packed = _mm_loadu_si128((const __m128i *)(const void *)(row + i));
+        __m256i values = _mm256_cvtepi8_epi16(packed);
+        __m256i current = _mm256_loadu_si256((const __m256i *)(const void *)(acc + i));
+        current = sign > 0 ? _mm256_add_epi16(current, values)
+                           : _mm256_sub_epi16(current, values);
+        _mm256_storeu_si256((__m256i *)(void *)(acc + i), current);
+    }
+    for (; i < acc_dim; ++i) {
+        acc[i] = (int16_t)(acc[i] + sign * (int16_t)row[i]);
+    }
+}
+#endif
+
+static void add_row_i8_to_i16_fast(int16_t *acc,
+                                   const int8_t *row,
+                                   uint32_t acc_dim,
+                                   int sign) {
+#if defined(NN_HAS_X86_64) && (defined(__GNUC__) || defined(__clang__))
+    if (cpu_supports_avx2()) {
+        add_row_i8_to_i16_avx2(acc, row, acc_dim, sign);
+        return;
+    }
+#endif
+#if defined(NN_HAS_NEON)
+    add_row_i8_to_i16_neon(acc, row, acc_dim, sign);
+#else
+    add_row_i8_to_i16_scalar(acc, row, acc_dim, sign);
+#endif
+}
+
 static size_t header_fc1_out_dim(const NnEvalHeader *header) {
     if (header == NULL) {
         return 0u;
@@ -584,8 +727,11 @@ static size_t header_fc1_out_dim(const NnEvalHeader *header) {
         header->version == NN_VERSION_LINEAR_HEAD_SCRELU ||
         header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC ||
         header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-        header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) {
+        NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version)) {
         return (size_t)header->hidden_dim;
+    }
+    if (NN_VERSION_IS_STOCKFISH_HEAD(header->version)) {
+        return (size_t)header->bottleneck_dim;
     }
     if (header->version == NN_VERSION_BOTTLENECK_HEAD_QUANT ||
         header->version == NN_VERSION_BOTTLENECK_HEAD_FIXED_ACT ||
@@ -604,34 +750,62 @@ static bool allocate_quantized_model(NnEvalModel *model, const NnEvalHeader *hea
     size_t buckets = (size_t)header_output_buckets(header);
     size_t fc1_out = header_fc1_out_dim(header);
     size_t fc1_count = buckets * fc1_out * ((size_t)header->accumulator_dim * 2u);
-    size_t fc2_count = (size_t)header->hidden_dim * fc1_out;
+    size_t fc2_buckets = NN_VERSION_IS_STOCKFISH_HEAD(header->version)
+                             ? buckets : 1u;
+    size_t fc2_count = fc2_buckets * (size_t)header->hidden_dim * fc1_out;
 
-    model->acc_weight = (int16_t *)malloc(acc_count * sizeof(int16_t));
+    model->acc_weight = header_uses_all_i8_acc_weights(header)
+                            ? NULL
+                            : (int16_t *)malloc(acc_count * sizeof(int16_t));
+    model->acc_weight_i8 = header_uses_all_i8_acc_weights(header)
+                               ? (int8_t *)malloc(acc_count * sizeof(int8_t))
+                               : NULL;
+    model->threat_weight = header_uses_i8_threat_weights(header)
+                               ? (int8_t *)malloc((size_t)NN_FULL_THREATS_DIM *
+                                                 (size_t)header->accumulator_dim)
+                               : NULL;
     model->fc1_weight = (int8_t *)malloc(fc1_count * sizeof(int8_t));
+    model->fc1_row_scales =
+        header_uses_per_row_head_scales(header)
+            ? (float *)malloc(buckets * fc1_out * sizeof(float))
+            : NULL;
     model->fc1_bias = (float *)malloc(buckets * fc1_out * sizeof(float));
     if (!header_uses_fc2(header)) {
         model->fc2_weight = NULL;
         model->fc2_bias = NULL;
     } else {
         model->fc2_weight = (int8_t *)malloc(fc2_count * sizeof(int8_t));
-        model->fc2_bias = (float *)malloc((size_t)header->hidden_dim * sizeof(float));
+        model->fc2_bias = (float *)malloc(fc2_buckets * (size_t)header->hidden_dim * sizeof(float));
     }
     model->out_weight = (int8_t *)malloc(buckets * (size_t)header->hidden_dim * sizeof(int8_t));
+    model->out_row_scales =
+        header_uses_per_row_head_scales(header)
+            ? (float *)malloc(buckets * sizeof(float))
+            : NULL;
     if (header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-        header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) {
+        NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+        NN_VERSION_IS_STOCKFISH_HEAD(header->version)) {
         model->out_bias_buckets = (float *)malloc(buckets * sizeof(float));
     } else {
         model->out_bias_buckets = NULL;
     }
-    model->psqt_weight = header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT
+    model->psqt_weight = (NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+                          NN_VERSION_IS_STOCKFISH_HEAD(header->version))
                              ? (int16_t *)malloc(acc_rows * buckets * sizeof(int16_t))
                              : NULL;
-    if (model->acc_weight == NULL || model->fc1_weight == NULL || model->fc1_bias == NULL ||
+    if ((!header_uses_all_i8_acc_weights(header) && model->acc_weight == NULL) ||
+        (header_uses_all_i8_acc_weights(header) && model->acc_weight_i8 == NULL) ||
+        model->fc1_weight == NULL || model->fc1_bias == NULL ||
         model->out_weight == NULL ||
+        (header_uses_per_row_head_scales(header) &&
+         (model->fc1_row_scales == NULL || model->out_row_scales == NULL)) ||
+        (header_uses_i8_threat_weights(header) && model->threat_weight == NULL) ||
         ((header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-          header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) &&
+          NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+          NN_VERSION_IS_STOCKFISH_HEAD(header->version)) &&
          model->out_bias_buckets == NULL) ||
-        (header->version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT &&
+        ((NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header->version) ||
+          NN_VERSION_IS_STOCKFISH_HEAD(header->version)) &&
          model->psqt_weight == NULL) ||
         (header_uses_fc2(header) && (model->fc2_weight == NULL || model->fc2_bias == NULL))) {
         nn_eval_free_model(model);
@@ -839,6 +1013,420 @@ static void quantize_accumulator_i16_relu(const int16_t *src,
     }
 }
 
+static bool g_threat_tables_ready;
+static uint16_t g_threat_from_offset[12][64];
+static uint8_t g_threat_target_rank[12][64][64];
+static uint16_t g_threat_geometry_index[12][64][64];
+static uint16_t g_threat_geometry_size[12];
+static uint16_t g_threat_index_base[2][2][5][2][5][2];
+static uint64_t g_threat_knight_attacks[64];
+static const uint32_t k_threat_piece_offset[12] = {
+    0, 336, 3696, 8176, 15344, 29904, 29904, 30240, 33600, 38080, 45248, 59808,
+};
+static const uint8_t k_threat_valid_targets[12] = {4, 10, 8, 8, 10, 0, 4, 10, 8, 8, 10, 0};
+static const int8_t k_threat_target_map[6][6] = {
+    {-1, 0, -1, 1, -1, -1},
+    {0, 1, 2, 3, 4, -1},
+    {0, 1, 2, 3, -1, -1},
+    {0, 1, 2, 3, -1, -1},
+    {0, 1, 2, 3, 4, -1},
+    {-1, -1, -1, -1, -1, -1},
+};
+
+static int threat_piece_type(int piece) {
+    static const int8_t map[PIECE_TYPE_COUNT] = {5, 4, 2, 1, 3, 0};
+    return piece >= 0 && piece < PIECE_TYPE_COUNT ? map[piece] : -1;
+}
+
+static uint64_t threat_pseudo_attacks(int type, int color, int sq) {
+    if (type == 0) {
+        int rank = square_rank(sq);
+        return rank >= 1 && rank <= 6 ? hce_pawn_attacks(color, sq) : 0ULL;
+    }
+    if (type == 1) return hce_knight_attacks(sq);
+    if (type == 2) return hce_bishop_attacks(sq, 0ULL);
+    if (type == 3) return hce_rook_attacks(sq, 0ULL);
+    if (type == 4) return hce_bishop_attacks(sq, 0ULL) | hce_rook_attacks(sq, 0ULL);
+    return hce_king_attacks(sq);
+}
+
+static void init_threat_tables(void) {
+    if (g_threat_tables_ready) return;
+    hce_init_tables();
+    for (int sq = 0; sq < 64; ++sq) {
+        g_threat_knight_attacks[sq] = hce_knight_attacks(sq);
+    }
+    for (int attacker = 0; attacker < 12; ++attacker) {
+        int type = attacker % 6;
+        int color = attacker < 6 ? PIECE_WHITE : PIECE_BLACK;
+        uint16_t offset = 0;
+        for (int from = 0; from < 64; ++from) {
+            g_threat_from_offset[attacker][from] = offset;
+            uint64_t attacks = threat_pseudo_attacks(type, color, from);
+            uint8_t rank = 0;
+            for (int to = 0; to < 64; ++to) {
+                if ((attacks & (UINT64_C(1) << to)) != 0ULL) {
+                    g_threat_target_rank[attacker][from][to] = rank++;
+                }
+            }
+            offset = (uint16_t)(offset + rank);
+        }
+        g_threat_geometry_size[attacker] = offset;
+    }
+    for (int attacker = 0; attacker < 12; ++attacker) {
+        for (int from = 0; from < 64; ++from) {
+            for (int to = 0; to < 64; ++to) {
+                g_threat_geometry_index[attacker][from][to] =
+                    (uint16_t)(g_threat_from_offset[attacker][from] +
+                               g_threat_target_rank[attacker][from][to]);
+            }
+        }
+    }
+    for (int perspective = PIECE_WHITE; perspective <= PIECE_BLACK; ++perspective) {
+        for (int attacker_color = PIECE_WHITE;
+             attacker_color <= PIECE_BLACK;
+             ++attacker_color) {
+            for (int attacker_type = 0; attacker_type < 5; ++attacker_type) {
+                int attacker = attacker_type + (attacker_color == perspective ? 0 : 6);
+                for (int attacked_color = PIECE_WHITE;
+                     attacked_color <= PIECE_BLACK;
+                     ++attacked_color) {
+                    int color_slot = attacked_color == perspective ? 0 : 1;
+                    bool enemy = attacker_color != attacked_color;
+                    for (int attacked_type = 0; attacked_type < 5; ++attacked_type) {
+                        int target_map = k_threat_target_map[attacker_type][attacked_type];
+                        for (int from_before_to = 0; from_before_to <= 1; ++from_before_to) {
+                            bool excluded = target_map < 0 ||
+                                            (from_before_to != 0 &&
+                                             attacker_type == attacked_type &&
+                                             (enemy || attacker_type != 0));
+                            uint16_t base = UINT16_MAX;
+                            if (!excluded) {
+                                uint32_t value = k_threat_piece_offset[attacker]
+                                               + (uint32_t)(
+                                                     color_slot *
+                                                         (k_threat_valid_targets[attacker] / 2) +
+                                                     target_map
+                                                 ) *
+                                                     g_threat_geometry_size[attacker];
+                                if (value < NN_FULL_THREATS_DIM) {
+                                    base = (uint16_t)value;
+                                }
+                            }
+                            g_threat_index_base[perspective][attacker_color][attacker_type]
+                                               [attacked_color][attacked_type][from_before_to] =
+                                base;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    g_threat_tables_ready = true;
+}
+
+static int full_threat_index(int perspective,
+                             int king_sq,
+                             int attacker_color,
+                             int attacker_type,
+                             int from,
+                             int to,
+                             int attacked_color,
+                             int attacked_type) {
+    if (attacker_type < 0 || attacked_type < 0) return -1;
+    int orientation = ((king_sq & 7) < 4 ? 0 : 7) ^ (perspective == PIECE_WHITE ? 0 : 56);
+    int oriented_from = from ^ orientation;
+    int oriented_to = to ^ orientation;
+    uint16_t base = g_threat_index_base[perspective][attacker_color][attacker_type]
+                                       [attacked_color][attacked_type]
+                                       [oriented_from < oriented_to];
+    if (base == UINT16_MAX) {
+        return -1;
+    }
+    int attacker = attacker_type + (attacker_color == perspective ? 0 : 6);
+    uint32_t index = (uint32_t)base +
+                     g_threat_geometry_index[attacker][oriented_from][oriented_to];
+    return index < NN_FULL_THREATS_DIM ? (int)index : -1;
+}
+
+static inline void append_full_threat_both(
+    const GameState *state,
+    int color,
+    int type,
+    int from,
+    int to,
+    int white_orientation,
+    int black_orientation,
+    uint16_t white[NN_MAX_ACTIVE_THREATS],
+    uint16_t *white_count,
+    uint16_t black[NN_MAX_ACTIVE_THREATS],
+    uint16_t *black_count
+) {
+    int attacked_color = state->sq_color[to];
+    int attacked_type = threat_piece_type(state->sq_piece[to]);
+    int white_from = from ^ white_orientation;
+    int black_from = from ^ black_orientation;
+    int white_to = to ^ white_orientation;
+    int black_to = to ^ black_orientation;
+    uint16_t white_base =
+        g_threat_index_base[PIECE_WHITE][color][type][attacked_color][attacked_type]
+                           [white_from < white_to];
+    uint16_t black_base =
+        g_threat_index_base[PIECE_BLACK][color][type][attacked_color][attacked_type]
+                           [black_from < black_to];
+    if (white_base != UINT16_MAX && *white_count < NN_MAX_ACTIVE_THREATS) {
+        int attacker = type + (color == PIECE_WHITE ? 0 : 6);
+        white[(*white_count)++] =
+            (uint16_t)(white_base +
+                       g_threat_geometry_index[attacker][white_from][white_to]);
+    }
+    if (black_base != UINT16_MAX && *black_count < NN_MAX_ACTIVE_THREATS) {
+        int attacker = type + (color == PIECE_BLACK ? 0 : 6);
+        black[(*black_count)++] =
+            (uint16_t)(black_base +
+                       g_threat_geometry_index[attacker][black_from][black_to]);
+    }
+}
+
+static uint64_t threat_target_mask(const GameState *state, int attacker_type) {
+    uint64_t mask = 0ULL;
+    for (int color = PIECE_WHITE; color <= PIECE_BLACK; ++color) {
+        if (attacker_type == 0) {
+            mask |= state->bb[color][PIECE_KNIGHT] | state->bb[color][PIECE_ROOK];
+        } else {
+            mask |= state->bb[color][PIECE_PAWN] | state->bb[color][PIECE_KNIGHT]
+                  | state->bb[color][PIECE_BISHOP] | state->bb[color][PIECE_ROOK];
+            if (attacker_type == 1 || attacker_type == 4) {
+                mask |= state->bb[color][PIECE_QUEEN];
+            }
+        }
+    }
+    return mask;
+}
+
+static void sort_u16(uint16_t *values, uint16_t count) {
+    for (uint16_t i = 1; i < count; ++i) {
+        uint16_t value = values[i];
+        uint16_t j = i;
+        while (j > 0 && values[j - 1] > value) {
+            values[j] = values[j - 1];
+            --j;
+        }
+        values[j] = value;
+    }
+}
+
+static inline int threat_pop_lsb(uint64_t *bb) {
+    int sq = __builtin_ctzll(*bb);
+    *bb &= *bb - 1;
+    return sq;
+}
+
+static uint16_t collect_full_threats(const GameState *state,
+                                     int perspective,
+                                     uint16_t out[NN_MAX_ACTIVE_THREATS]) {
+    init_threat_tables();
+    int king_sq = chess_find_king_square(state, perspective);
+    if (king_sq < 0) return 0;
+    uint16_t count = 0;
+    for (int color = PIECE_WHITE; color <= PIECE_BLACK; ++color) {
+        for (int piece = PIECE_QUEEN; piece <= PIECE_PAWN; ++piece) {
+            int type = threat_piece_type(piece);
+            uint64_t attackers = state->bb[color][piece];
+            uint64_t targets = threat_target_mask(state, type);
+            while (attackers != 0ULL) {
+                int from = chess_pop_lsb(&attackers);
+                uint64_t attacks;
+                if (type == 0) attacks = hce_pawn_attacks(color, from);
+                else if (type == 1) attacks = hce_knight_attacks(from);
+                else if (type == 2) attacks = hce_bishop_attacks(from, state->occ_all);
+                else if (type == 3) attacks = hce_rook_attacks(from, state->occ_all);
+                else attacks = hce_bishop_attacks(from, state->occ_all)
+                             | hce_rook_attacks(from, state->occ_all);
+                attacks &= targets;
+                while (attacks != 0ULL) {
+                    int to = chess_pop_lsb(&attacks);
+                    int threat = full_threat_index(
+                        perspective, king_sq, color, type, from, to,
+                        state->sq_color[to], threat_piece_type(state->sq_piece[to])
+                    );
+                    if (threat < 0) continue;
+                    if (count < NN_MAX_ACTIVE_THREATS) out[count++] = (uint16_t)threat;
+                }
+            }
+        }
+    }
+    sort_u16(out, count);
+    return count;
+}
+
+static void collect_full_threats_both(const GameState *state,
+                                      uint16_t white[NN_MAX_ACTIVE_THREATS],
+                                      uint16_t *white_count_out,
+                                      uint16_t black[NN_MAX_ACTIVE_THREATS],
+                                      uint16_t *black_count_out) {
+    init_threat_tables();
+    int white_king = chess_find_king_square(state, PIECE_WHITE);
+    int black_king = chess_find_king_square(state, PIECE_BLACK);
+    uint16_t white_count = 0;
+    uint16_t black_count = 0;
+    uint64_t pawns = state->bb[PIECE_WHITE][PIECE_PAWN]
+                   | state->bb[PIECE_BLACK][PIECE_PAWN];
+    uint64_t knights = state->bb[PIECE_WHITE][PIECE_KNIGHT]
+                     | state->bb[PIECE_BLACK][PIECE_KNIGHT];
+    uint64_t bishops = state->bb[PIECE_WHITE][PIECE_BISHOP]
+                     | state->bb[PIECE_BLACK][PIECE_BISHOP];
+    uint64_t rooks = state->bb[PIECE_WHITE][PIECE_ROOK]
+                   | state->bb[PIECE_BLACK][PIECE_ROOK];
+    uint64_t queens = state->bb[PIECE_WHITE][PIECE_QUEEN]
+                    | state->bb[PIECE_BLACK][PIECE_QUEEN];
+    uint64_t minor_slider_targets = pawns | knights | bishops | rooks;
+    uint64_t target_masks[5] = {
+        knights | rooks,
+        minor_slider_targets | queens,
+        minor_slider_targets,
+        minor_slider_targets,
+        minor_slider_targets | queens,
+    };
+    if (white_king < 0 || black_king < 0) {
+        *white_count_out = 0;
+        *black_count_out = 0;
+        return;
+    }
+    int white_orientation = (white_king & 7) < 4 ? 0 : 7;
+    int black_orientation = ((black_king & 7) < 4 ? 0 : 7) ^ 56;
+    for (int color = PIECE_WHITE; color <= PIECE_BLACK; ++color) {
+        uint64_t color_pawns = state->bb[color][PIECE_PAWN];
+        uint64_t pawn_attacks_a;
+        uint64_t pawn_attacks_h;
+        int from_delta_a;
+        int from_delta_h;
+        if (color == PIECE_WHITE) {
+            pawn_attacks_a = (color_pawns << 9) & UINT64_C(0xFEFEFEFEFEFEFEFE);
+            pawn_attacks_h = (color_pawns << 7) & UINT64_C(0x7F7F7F7F7F7F7F7F);
+            from_delta_a = -9;
+            from_delta_h = -7;
+        } else {
+            pawn_attacks_a = (color_pawns >> 7) & UINT64_C(0xFEFEFEFEFEFEFEFE);
+            pawn_attacks_h = (color_pawns >> 9) & UINT64_C(0x7F7F7F7F7F7F7F7F);
+            from_delta_a = 7;
+            from_delta_h = 9;
+        }
+        pawn_attacks_a &= target_masks[0];
+        pawn_attacks_h &= target_masks[0];
+        while (pawn_attacks_a != 0ULL) {
+            int to = threat_pop_lsb(&pawn_attacks_a);
+            append_full_threat_both(
+                state, color, 0, to + from_delta_a, to,
+                white_orientation, black_orientation,
+                white, &white_count, black, &black_count
+            );
+        }
+        while (pawn_attacks_h != 0ULL) {
+            int to = threat_pop_lsb(&pawn_attacks_h);
+            append_full_threat_both(
+                state, color, 0, to + from_delta_h, to,
+                white_orientation, black_orientation,
+                white, &white_count, black, &black_count
+            );
+        }
+
+        for (int piece = PIECE_QUEEN; piece < PIECE_PAWN; ++piece) {
+            int type = threat_piece_type(piece);
+            uint64_t attackers = state->bb[color][piece];
+            uint64_t targets = target_masks[type];
+            while (attackers != 0ULL) {
+                int from = threat_pop_lsb(&attackers);
+                uint64_t attacks;
+                if (type == 1) attacks = g_threat_knight_attacks[from];
+                else if (type == 2) attacks = hce_bishop_attacks(from, state->occ_all);
+                else if (type == 3) attacks = hce_rook_attacks(from, state->occ_all);
+                else attacks = hce_bishop_attacks(from, state->occ_all)
+                             | hce_rook_attacks(from, state->occ_all);
+                attacks &= targets;
+                while (attacks != 0ULL) {
+                    int to = threat_pop_lsb(&attacks);
+                    append_full_threat_both(
+                        state, color, type, from, to,
+                        white_orientation, black_orientation,
+                        white, &white_count, black, &black_count
+                    );
+                }
+            }
+        }
+    }
+    sort_u16(white, white_count);
+    sort_u16(black, black_count);
+    *white_count_out = white_count;
+    *black_count_out = black_count;
+}
+
+static void add_feature_row_i16(int16_t *acc,
+                                const NnEvalModel *model,
+                                uint32_t index,
+                                int sign) {
+    if (header_uses_all_i8_acc_weights(&model->header)) {
+        const int8_t *row = model->acc_weight_i8 +
+                            (size_t)index * model->header.accumulator_dim;
+        add_row_i8_to_i16_fast(acc, row, model->header.accumulator_dim, sign);
+    } else {
+        const int16_t *row = model->acc_weight +
+                             (size_t)index * model->header.accumulator_dim;
+        add_row_i16_fast(acc, row, model->header.accumulator_dim, sign);
+    }
+}
+
+static void add_threat_row_i16(int16_t *acc,
+                               const NnEvalModel *model,
+                               uint16_t threat,
+                               int sign) {
+    if (header_uses_all_i8_acc_weights(&model->header)) {
+        size_t index = NN_EXPECTED_HALFKA_HM_DIM + (uint32_t)threat;
+        add_feature_row_i16(acc, model, (uint32_t)index, sign);
+    } else if (header_uses_i8_threat_weights(&model->header)) {
+        const int8_t *row = model->threat_weight +
+                            (size_t)threat * model->header.accumulator_dim;
+        add_row_i8_to_i16_fast(acc, row, model->header.accumulator_dim, sign);
+    } else {
+        size_t index = NN_EXPECTED_HALFKA_HM_DIM + (uint32_t)threat;
+        const int16_t *row = model->acc_weight + index * model->header.accumulator_dim;
+        add_row_i16_fast(acc, row, model->header.accumulator_dim, sign);
+    }
+}
+
+static void accumulate_full_threats_i16(const GameState *state,
+                                        const NnEvalModel *model,
+                                        int perspective,
+                                        int16_t *out_acc) {
+    if (!header_uses_full_threats(&model->header)) return;
+    uint16_t active[NN_MAX_ACTIVE_THREATS];
+    uint16_t count = collect_full_threats(state, perspective, active);
+    for (uint16_t i = 0; i < count; ++i) {
+        add_threat_row_i16(out_acc, model, active[i], 1);
+    }
+}
+
+static void apply_full_threat_diff_i16(const NnEvalModel *model,
+                                       const uint16_t *old_active,
+                                       uint16_t old_count,
+                                       int16_t *acc,
+                                       const uint16_t *new_active,
+                                       uint16_t new_count) {
+    uint16_t old_index = 0;
+    uint16_t new_index = 0;
+    while (old_index < old_count || new_index < new_count) {
+        if (new_index >= new_count ||
+            (old_index < old_count && old_active[old_index] < new_active[new_index])) {
+            add_threat_row_i16(acc, model, old_active[old_index++], -1);
+        } else if (old_index >= old_count || new_active[new_index] < old_active[old_index]) {
+            add_threat_row_i16(acc, model, new_active[new_index++], 1);
+        } else {
+            ++old_index;
+            ++new_index;
+        }
+    }
+}
+
 static void accumulate_perspective(const GameState *state,
                                    const NnEvalModel *model,
                                    int perspective,
@@ -855,7 +1443,7 @@ static void accumulate_perspective(const GameState *state,
     bool had_feature = false;
     uint16_t feature_count = 0;
     for (int color = PIECE_WHITE; color <= PIECE_BLACK; ++color) {
-        int first_piece = model->header.halfkp_dim == NN_EXPECTED_HALFKA_HM_DIM
+        int first_piece = header_uses_halfka(&model->header)
                               ? PIECE_KING : PIECE_QUEEN;
         for (int piece = first_piece; piece <= PIECE_PAWN; ++piece) {
             int plane = piece_plane(piece, color, perspective);
@@ -902,7 +1490,7 @@ static void accumulate_perspective_i16(const GameState *state,
     bool had_feature = false;
     uint16_t feature_count = 0;
     for (int color = PIECE_WHITE; color <= PIECE_BLACK; ++color) {
-        int first_piece = model->header.halfkp_dim == NN_EXPECTED_HALFKA_HM_DIM
+        int first_piece = header_uses_halfka(&model->header)
                               ? PIECE_KING : PIECE_QUEEN;
         for (int piece = first_piece; piece <= PIECE_PAWN; ++piece) {
             int plane = piece_plane(piece, color, perspective);
@@ -916,17 +1504,17 @@ static void accumulate_perspective_i16(const GameState *state,
                 if (idx < 0 || (uint32_t)idx > model->header.dummy_index) {
                     continue;
                 }
-                const int16_t *row = model->acc_weight + ((size_t)idx * acc_dim);
-                add_row_i16_fast(out_acc, row, acc_dim, 1);
+                add_feature_row_i16(out_acc, model, (uint32_t)idx, 1);
                 had_feature = true;
                 feature_count += piece != PIECE_KING;
             }
         }
     }
 
+    accumulate_full_threats_i16(state, model, perspective, out_acc);
+
     if (!had_feature) {
-        const int16_t *row = model->acc_weight + ((size_t)model->header.dummy_index * acc_dim);
-        add_row_i16_fast(out_acc, row, acc_dim, 1);
+        add_feature_row_i16(out_acc, model, model->header.dummy_index, 1);
     }
     if (feature_count_out != NULL) {
         *feature_count_out = feature_count;
@@ -943,7 +1531,7 @@ static void accumulate_psqt_perspective(const GameState *state,
     if (king_sq < 0 || king_sq >= 64) return;
     uint32_t buckets = header_output_buckets(&model->header);
     for (int color = PIECE_WHITE; color <= PIECE_BLACK; ++color) {
-        int first_piece = model->header.halfkp_dim == NN_EXPECTED_HALFKA_HM_DIM
+        int first_piece = header_uses_halfka(&model->header)
                               ? PIECE_KING : PIECE_QUEEN;
         for (int piece = first_piece; piece <= PIECE_PAWN; ++piece) {
             int plane = piece_plane(piece, color, perspective);
@@ -1030,14 +1618,12 @@ static bool update_piece_feature_i16(int16_t *acc,
     if (idx < 0 || (uint32_t)idx > model->header.dummy_index) {
         return false;
     }
-    const int16_t *row = model->acc_weight + ((size_t)idx * model->header.accumulator_dim);
-    add_row_i16_fast(acc, row, model->header.accumulator_dim, sign);
+    add_feature_row_i16(acc, model, (uint32_t)idx, sign);
     return true;
 }
 
 static void update_dummy_i16(int16_t *acc, const NnEvalModel *model, int sign) {
-    const int16_t *row = model->acc_weight + ((size_t)model->header.dummy_index * model->header.accumulator_dim);
-    add_row_i16_fast(acc, row, model->header.accumulator_dim, sign);
+    add_feature_row_i16(acc, model, model->header.dummy_index, sign);
 }
 
 static bool rebuild_frame(const GameState *state, NnAccumulatorFrame *frame) {
@@ -1055,6 +1641,16 @@ static bool rebuild_frame(const GameState *state, NnAccumulatorFrame *frame) {
     }
     accumulate_psqt_perspective(state, model, PIECE_WHITE, frame->white_psqt);
     accumulate_psqt_perspective(state, model, PIECE_BLACK, frame->black_psqt);
+    if (header_uses_full_threats(&model->header)) {
+        collect_full_threats_both(
+            state,
+            frame->white_threats, &frame->white_threat_count,
+            frame->black_threats, &frame->black_threat_count
+        );
+    } else {
+        frame->white_threat_count = 0;
+        frame->black_threat_count = 0;
+    }
     frame->valid = true;
     frame->key = state->zobrist_hash;
     frame->non_king_piece_count = white_count;
@@ -1207,6 +1803,52 @@ static int evaluate_i16_screlu_from_frame(const GameState *state,
 
     const uint32_t num_buckets = header_output_buckets(&model->header);
     uint32_t bucket = num_buckets > 1u ? nn_material_bucket(state, num_buckets) : 0u;
+    if (NN_VERSION_IS_STOCKFISH_HEAD(model->header.version)) {
+        const uint32_t narrow_dim = model->header.bottleneck_dim;
+        float narrow_f[NN_MAX_HIDDEN_DIM] = {0};
+        int16_t narrow_q[NN_MAX_HIDDEN_DIM] = {0};
+        const int8_t *fc1_weight =
+            model->fc1_weight + (size_t)bucket * (size_t)narrow_dim * (size_t)acc_dim * 2u;
+        const float *fc1_bias = model->fc1_bias + (size_t)bucket * (size_t)narrow_dim;
+        const float fc1_factor = model->header.act0_scale * model->header.act0_scale *
+                                 model->header.fc1_scale;
+        for (uint32_t out = 0; out < narrow_dim; ++out) {
+            const int8_t *w = fc1_weight + ((size_t)out * (size_t)acc_dim * 2u);
+            int64_t sum = dot_i8_i16(w, transformed, acc_dim * 2u);
+            narrow_f[out] = (float)sum * fc1_factor + fc1_bias[out];
+        }
+        quantize_activation_fixed_relu(
+            narrow_f, narrow_dim, model->header.act1_scale, narrow_q
+        );
+        square_quantized_activation(narrow_q, narrow_dim);
+
+        const int8_t *fc2_weight =
+            model->fc2_weight + (size_t)bucket * (size_t)hidden_dim * (size_t)narrow_dim;
+        const float *fc2_bias = model->fc2_bias + (size_t)bucket * (size_t)hidden_dim;
+        const float fc2_factor = model->header.act1_scale * model->header.act1_scale *
+                                 model->header.fc2_scale;
+        for (uint32_t out = 0; out < hidden_dim; ++out) {
+            const int8_t *w = fc2_weight + (size_t)out * (size_t)narrow_dim;
+            int64_t sum = dot_i8_i16(w, narrow_q, narrow_dim);
+            hidden_f[out] = (float)sum * fc2_factor + fc2_bias[out];
+        }
+        quantize_activation_fixed_relu(
+            hidden_f, hidden_dim, model->header.act2_scale, hidden_q
+        );
+        square_quantized_activation(hidden_q, hidden_dim);
+
+        const int8_t *out_weight =
+            model->out_weight + (size_t)bucket * (size_t)hidden_dim;
+        int64_t out_sum = dot_i8_i16(out_weight, hidden_q, hidden_dim);
+        const float out_factor = model->header.act2_scale * model->header.act2_scale *
+                                 model->header.out_scale;
+        float out_value = (float)out_sum * out_factor + model->out_bias_buckets[bucket];
+        const int32_t *front_psqt = state->side_to_move == PIECE_WHITE
+                                        ? frame->white_psqt
+                                        : frame->black_psqt;
+        out_value += (float)front_psqt[bucket] * model->header.psqt_scale;
+        return nn_logit_to_cp(out_value, model->header.cp_scale);
+    }
     const int8_t *fc1_weight =
         model->fc1_weight + (size_t)bucket * (size_t)hidden_dim * (size_t)acc_dim * 2u;
     const float *fc1_bias = model->fc1_bias + (size_t)bucket * (size_t)hidden_dim;
@@ -1214,21 +1856,30 @@ static int evaluate_i16_screlu_from_frame(const GameState *state,
     const float out_bias =
         model->out_bias_buckets != NULL ? model->out_bias_buckets[bucket] : model->out_bias;
 
-    const float fc1_factor = model->header.act0_scale * model->header.act0_scale *
-                             model->header.fc1_scale;
+    const float fc1_activation_factor =
+        model->header.act0_scale * model->header.act0_scale;
     for (uint32_t out = 0; out < hidden_dim; ++out) {
         const int8_t *w = fc1_weight + ((size_t)out * (size_t)acc_dim * 2u);
         int64_t sum = dot_i8_i16(w, transformed, acc_dim * 2u);
-        hidden_f[out] = (float)sum * fc1_factor + fc1_bias[out];
+        float weight_scale =
+            model->fc1_row_scales != NULL
+                ? model->fc1_row_scales[(size_t)bucket * hidden_dim + out]
+                : model->header.fc1_scale;
+        hidden_f[out] =
+            (float)sum * fc1_activation_factor * weight_scale + fc1_bias[out];
     }
     quantize_activation_fixed_relu(hidden_f, hidden_dim, model->header.act1_scale, hidden_q);
     square_quantized_activation(hidden_q, hidden_dim);
 
     int64_t out_sum = dot_i8_i16(out_weight, hidden_q, hidden_dim);
-    const float out_factor = model->header.act1_scale * model->header.act1_scale *
-                             model->header.out_scale;
+    const float out_weight_scale =
+        model->out_row_scales != NULL
+            ? model->out_row_scales[bucket]
+            : model->header.out_scale;
+    const float out_factor =
+        model->header.act1_scale * model->header.act1_scale * out_weight_scale;
     float out_value = (float)out_sum * out_factor + out_bias;
-    if (model->header.version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) {
+    if (NN_VERSION_IS_LINEAR_BUCKETED_PSQT(model->header.version)) {
         const int32_t *front_psqt = state->side_to_move == PIECE_WHITE
                                         ? frame->white_psqt
                                         : frame->black_psqt;
@@ -1309,10 +1960,12 @@ bool nn_eval_load_model(const char *path) {
          header.version != NN_VERSION_BOTTLENECK_HEAD_SCRELU &&
          header.version != NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC &&
          header.version != NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS &&
-         header.version != NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) ||
+         !NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header.version) &&
+         !NN_VERSION_IS_STOCKFISH_HEAD(header.version)) ||
         (header.halfkp_dim != NN_EXPECTED_HALFKP_DIM &&
          header.halfkp_dim != NN_EXPECTED_HALFKP_HM_DIM &&
-         header.halfkp_dim != NN_EXPECTED_HALFKA_HM_DIM) ||
+         header.halfkp_dim != NN_EXPECTED_HALFKA_HM_DIM &&
+         header.halfkp_dim != NN_EXPECTED_HALFKA_THREATS_HM_DIM) ||
         header.accumulator_dim == 0 || header.accumulator_dim > NN_MAX_ACC_DIM ||
         header.hidden_dim == 0 || header.hidden_dim > NN_MAX_HIDDEN_DIM ||
         header.dummy_index != header.halfkp_dim) {
@@ -1321,18 +1974,21 @@ bool nn_eval_load_model(const char *path) {
     }
     if ((header.version == NN_VERSION_BOTTLENECK_HEAD_QUANT ||
          header.version == NN_VERSION_BOTTLENECK_HEAD_FIXED_ACT ||
-         header.version == NN_VERSION_BOTTLENECK_HEAD_SCRELU) &&
-        (header.bottleneck_dim == 0 || header.bottleneck_dim > NN_MAX_ACC_DIM)) {
+         header.version == NN_VERSION_BOTTLENECK_HEAD_SCRELU ||
+         NN_VERSION_IS_STOCKFISH_HEAD(header.version)) &&
+        (header.bottleneck_dim == 0 || header.bottleneck_dim > NN_MAX_HIDDEN_DIM)) {
         fclose(fp);
         return false;
     }
     if ((header.version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-         header.version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) &&
+         NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header.version) ||
+         NN_VERSION_IS_STOCKFISH_HEAD(header.version)) &&
         (header.num_buckets == 0 || header.num_buckets > NN_MAX_OUTPUT_BUCKETS)) {
         fclose(fp);
         return false;
     }
-    if (header.version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT &&
+    if ((NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header.version) ||
+         NN_VERSION_IS_STOCKFISH_HEAD(header.version)) &&
         header.psqt_scale <= 1e-12f) {
         fclose(fp);
         return false;
@@ -1348,7 +2004,9 @@ bool nn_eval_load_model(const char *path) {
     size_t buckets = (size_t)header_output_buckets(&header);
     size_t fc1_out = header_fc1_out_dim(&header);
     size_t fc1_count = buckets * fc1_out * ((size_t)header.accumulator_dim * 2u);
-    size_t fc2_count = (size_t)header.hidden_dim * fc1_out;
+    size_t fc2_buckets = NN_VERSION_IS_STOCKFISH_HEAD(header.version)
+                             ? buckets : 1u;
+    size_t fc2_count = fc2_buckets * (size_t)header.hidden_dim * fc1_out;
 
     if (header.version == NN_VERSION_QUANT ||
         header.version == NN_VERSION_LINEAR_HEAD_QUANT ||
@@ -1359,7 +2017,8 @@ bool nn_eval_load_model(const char *path) {
         header.version == NN_VERSION_BOTTLENECK_HEAD_SCRELU ||
         header.version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC ||
         header.version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-        header.version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) {
+        NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header.version) ||
+        NN_VERSION_IS_STOCKFISH_HEAD(header.version)) {
         if (!allocate_quantized_model(&model, &header)) {
             fclose(fp);
             nn_eval_free_model(&model);
@@ -1367,26 +2026,53 @@ bool nn_eval_load_model(const char *path) {
         }
         model.header = header;
         model.kind = NN_MODEL_KIND_QUANT;
-        ok = read_exact(fp, model.acc_weight, acc_count * sizeof(int16_t)) &&
+        if (header_uses_all_i8_acc_weights(&header)) {
+            ok = read_exact(fp, model.acc_weight_i8, acc_count * sizeof(int8_t));
+        } else if (header_uses_i8_threat_weights(&header)) {
+            const size_t base_count = (size_t)NN_EXPECTED_HALFKA_HM_DIM *
+                                      (size_t)header.accumulator_dim;
+            const size_t dummy_offset = (size_t)header.dummy_index *
+                                        (size_t)header.accumulator_dim;
+            ok = read_exact(fp, model.acc_weight, base_count * sizeof(int16_t)) &&
+                 read_exact(fp, model.threat_weight,
+                            (size_t)NN_FULL_THREATS_DIM *
+                                (size_t)header.accumulator_dim * sizeof(int8_t)) &&
+                 read_exact(fp, model.acc_weight + dummy_offset,
+                            (size_t)header.accumulator_dim * sizeof(int16_t));
+        } else {
+            ok = read_exact(fp, model.acc_weight, acc_count * sizeof(int16_t));
+        }
+        ok = ok &&
              read_exact(fp, model.fc1_weight, fc1_count * sizeof(int8_t)) &&
              read_exact(fp, model.fc1_bias, buckets * fc1_out * sizeof(float));
         if (ok && header_uses_fc2(&header)) {
             ok = read_exact(fp, model.fc2_weight, fc2_count * sizeof(int8_t)) &&
-                 read_exact(fp, model.fc2_bias, (size_t)header.hidden_dim * sizeof(float));
+                 read_exact(fp, model.fc2_bias,
+                            fc2_buckets * (size_t)header.hidden_dim * sizeof(float));
         }
         ok = ok &&
              read_exact(fp, model.out_weight, buckets * (size_t)header.hidden_dim * sizeof(int8_t));
         if (ok) {
             if (header.version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS ||
-                header.version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) {
+                NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header.version) ||
+                NN_VERSION_IS_STOCKFISH_HEAD(header.version)) {
                 ok = read_exact(fp, model.out_bias_buckets, buckets * sizeof(float));
             } else {
                 ok = read_exact(fp, &model.out_bias, sizeof(float));
             }
         }
-        if (ok && header.version == NN_VERSION_LINEAR_HEAD_SCRELU_I16_ACC_BUCKETS_PSQT) {
+        if (ok && (NN_VERSION_IS_LINEAR_BUCKETED_PSQT(header.version) ||
+                   NN_VERSION_IS_STOCKFISH_HEAD(header.version))) {
             ok = read_exact(fp, model.psqt_weight,
                             acc_rows * buckets * sizeof(int16_t));
+        }
+        if (ok && header_uses_per_row_head_scales(&header)) {
+            ok = read_exact(fp,
+                            model.fc1_row_scales,
+                            buckets * fc1_out * sizeof(float)) &&
+                 read_exact(fp,
+                            model.out_row_scales,
+                            buckets * sizeof(float));
         }
     } else {
         float *acc_weight = (float *)malloc(acc_count * sizeof(float));
@@ -1461,6 +2147,10 @@ bool nn_eval_is_loaded(void) {
     return g_nn_model.loaded;
 }
 
+bool nn_eval_uses_full_threats(void) {
+    return g_nn_model.loaded && header_uses_full_threats(&g_nn_model.header);
+}
+
 const char *nn_eval_model_path(void) {
     return g_nn_model.loaded ? g_nn_model.path : "";
 }
@@ -1502,6 +2192,8 @@ static bool update_frame_i16(const GameState *state,
     memcpy(frame->black_acc16, parent->black_acc16, acc_bytes);
     memcpy(frame->white_psqt, parent->white_psqt, sizeof(frame->white_psqt));
     memcpy(frame->black_psqt, parent->black_psqt, sizeof(frame->black_psqt));
+    frame->white_threat_count = parent->white_threat_count;
+    frame->black_threat_count = parent->black_threat_count;
 
     int white_king_sq = chess_find_king_square(state, PIECE_WHITE);
     int black_king_sq = chess_find_king_square(state, PIECE_BLACK);
@@ -1509,13 +2201,26 @@ static bool update_frame_i16(const GameState *state,
         return rebuild_frame(state, frame);
     }
     if (piece == PIECE_KING) {
-        if (move_has_flag(undo->move, MOVE_FLAG_CASTLE)) {
+        if (move_has_flag(undo->move, MOVE_FLAG_CASTLE) ||
+            undo->captured_piece != PIECE_NONE) {
             return rebuild_frame(state, frame);
         }
         if (mover == PIECE_WHITE) {
             accumulate_perspective_i16(state, model, PIECE_WHITE, frame->white_acc16, NULL);
             accumulate_psqt_perspective(state, model, PIECE_WHITE, frame->white_psqt);
-            if (model->header.halfkp_dim == NN_EXPECTED_HALFKA_HM_DIM &&
+            if (header_uses_full_threats(&model->header)) {
+                frame->white_threat_count = collect_full_threats(
+                    state, PIECE_WHITE, frame->white_threats
+                );
+                frame->black_threat_count = collect_full_threats(
+                    state, PIECE_BLACK, frame->black_threats
+                );
+                apply_full_threat_diff_i16(
+                    model, parent->black_threats, parent->black_threat_count,
+                    frame->black_acc16, frame->black_threats, frame->black_threat_count
+                );
+            }
+            if (header_uses_halfka(&model->header) &&
                 (!update_piece_feature_i16(frame->black_acc16, model, PIECE_BLACK,
                                            black_king_sq, mover, PIECE_KING, from, -1) ||
                  !update_piece_feature_i16(frame->black_acc16, model, PIECE_BLACK,
@@ -1529,7 +2234,19 @@ static bool update_frame_i16(const GameState *state,
         } else {
             accumulate_perspective_i16(state, model, PIECE_BLACK, frame->black_acc16, NULL);
             accumulate_psqt_perspective(state, model, PIECE_BLACK, frame->black_psqt);
-            if (model->header.halfkp_dim == NN_EXPECTED_HALFKA_HM_DIM &&
+            if (header_uses_full_threats(&model->header)) {
+                frame->black_threat_count = collect_full_threats(
+                    state, PIECE_BLACK, frame->black_threats
+                );
+                frame->white_threat_count = collect_full_threats(
+                    state, PIECE_WHITE, frame->white_threats
+                );
+                apply_full_threat_diff_i16(
+                    model, parent->white_threats, parent->white_threat_count,
+                    frame->white_acc16, frame->white_threats, frame->white_threat_count
+                );
+            }
+            if (header_uses_halfka(&model->header) &&
                 (!update_piece_feature_i16(frame->white_acc16, model, PIECE_WHITE,
                                            white_king_sq, mover, PIECE_KING, from, -1) ||
                  !update_piece_feature_i16(frame->white_acc16, model, PIECE_WHITE,
@@ -1603,6 +2320,21 @@ static bool update_frame_i16(const GameState *state,
         update_dummy_i16(frame->white_acc16, model, 1);
         update_dummy_i16(frame->black_acc16, model, 1);
     }
+    if (header_uses_full_threats(&model->header)) {
+        collect_full_threats_both(
+            state,
+            frame->white_threats, &frame->white_threat_count,
+            frame->black_threats, &frame->black_threat_count
+        );
+        apply_full_threat_diff_i16(
+            model, parent->white_threats, parent->white_threat_count,
+            frame->white_acc16, frame->white_threats, frame->white_threat_count
+        );
+        apply_full_threat_diff_i16(
+            model, parent->black_threats, parent->black_threat_count,
+            frame->black_acc16, frame->black_threats, frame->black_threat_count
+        );
+    }
     frame->valid = true;
     frame->key = state->zobrist_hash;
     return true;
@@ -1644,13 +2376,14 @@ bool nn_eval_update_frame(const GameState *state,
     }
 
     if (piece == PIECE_KING) {
-        if (move_has_flag(undo->move, MOVE_FLAG_CASTLE)) {
+        if (move_has_flag(undo->move, MOVE_FLAG_CASTLE) ||
+            undo->captured_piece != PIECE_NONE) {
             return rebuild_frame(state, frame);
         }
         if (mover == PIECE_WHITE) {
             accumulate_perspective(state, model, PIECE_WHITE, frame->white_acc, NULL);
             accumulate_psqt_perspective(state, model, PIECE_WHITE, frame->white_psqt);
-            if (model->header.halfkp_dim == NN_EXPECTED_HALFKA_HM_DIM &&
+            if (header_uses_halfka(&model->header) &&
                 (!update_piece_feature(frame->black_acc, model, PIECE_BLACK, black_king_sq,
                                        mover, PIECE_KING, from, -1) ||
                  !update_piece_feature(frame->black_acc, model, PIECE_BLACK, black_king_sq,
@@ -1664,7 +2397,7 @@ bool nn_eval_update_frame(const GameState *state,
         } else {
             accumulate_perspective(state, model, PIECE_BLACK, frame->black_acc, NULL);
             accumulate_psqt_perspective(state, model, PIECE_BLACK, frame->black_psqt);
-            if (model->header.halfkp_dim == NN_EXPECTED_HALFKA_HM_DIM &&
+            if (header_uses_halfka(&model->header) &&
                 (!update_piece_feature(frame->white_acc, model, PIECE_WHITE, white_king_sq,
                                        mover, PIECE_KING, from, -1) ||
                  !update_piece_feature(frame->white_acc, model, PIECE_WHITE, white_king_sq,
@@ -1746,6 +2479,12 @@ bool nn_eval_copy_frame(const GameState *state,
     frame->non_king_piece_count = source->non_king_piece_count;
     memcpy(frame->white_psqt, source->white_psqt, sizeof(frame->white_psqt));
     memcpy(frame->black_psqt, source->black_psqt, sizeof(frame->black_psqt));
+    frame->white_threat_count = source->white_threat_count;
+    frame->black_threat_count = source->black_threat_count;
+    memcpy(frame->white_threats, source->white_threats,
+           (size_t)source->white_threat_count * sizeof(frame->white_threats[0]));
+    memcpy(frame->black_threats, source->black_threats,
+           (size_t)source->black_threat_count * sizeof(frame->black_threats[0]));
     if (header_uses_i16_accumulator(&g_nn_model.header)) {
         const size_t acc_bytes =
             (size_t)g_nn_model.header.accumulator_dim * sizeof(frame->white_acc16[0]);
