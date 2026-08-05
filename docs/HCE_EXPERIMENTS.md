@@ -24,6 +24,10 @@ texel_current_defaults.py):
   - 240g seed 20260808: +36.3 (132.5/240, CI [+2.0,+71.3], P=98.1%)
   - POOLED 600 games, 3 independent seeds, all positive: 330.5/600 =
     55.1%, ~+35 Elo, CI ~[+13,+58]. CONFIRMED.
+  - Clock-TC validation at 30+0.3 (real clocks, engine time management),
+    240g seed 20260809: +45.1 (135.5/240, CI [+11.1,+80.0], P=99.5%).
+    The gain transfers fully to clock play — deployed release
+    20260805_140033_b9f5c5a validated.
 
 Apply-path integrity: weights written by texel_apply_tune.py (named-constant
 patching), verified by regenerating defaults from the patched source and
