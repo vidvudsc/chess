@@ -423,6 +423,9 @@ def main():
     ap.add_argument("--only-stageb", action="store_true",
                     help="Tune only the stage-B feature weights (safe checks, "
                          "bishop pair, safe mobility, per-rank passers).")
+    ap.add_argument("--freeze-stageb", action="store_true",
+                    help="Tune everything except the stage-B feature weights "
+                         "(clean stage-A comparison on a stage-B dump).")
     ap.add_argument("--out-c", help="Optional path to write tuned PST/material C snippet.")
     ap.add_argument("--initial-tuned-file",
                     help="Use the last TUNED line in this file as the exact current defaults.")
@@ -478,6 +481,12 @@ def main():
         active = np.arange(N_BASE_SCALAR + 8, N_SCALAR)
     elif args.only_extra_scalars:
         active = np.arange(N_BASE_SCALAR, N_SCALAR)
+    elif args.freeze_stageb:
+        stageb_lo = N_BASE_SCALAR + N_EXTRA_SCALAR
+        active = np.concatenate([
+            np.arange(stageb_lo) if not args.freeze_material else np.arange(5, stageb_lo),
+            np.arange(N_SCALAR, N_PARAMS),
+        ])
     elif args.freeze_material:
         active = np.arange(5, N_PARAMS)
     else:
