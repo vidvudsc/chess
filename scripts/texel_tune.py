@@ -429,6 +429,10 @@ def main():
     ap.add_argument("--out-c", help="Optional path to write tuned PST/material C snippet.")
     ap.add_argument("--initial-tuned-file",
                     help="Use the last TUNED line in this file as the exact current defaults.")
+    ap.add_argument("--warm-start-file",
+                    help="Start the fit from this TUNED line instead of the "
+                         "defaults; verification still runs against the "
+                         "defaults (the dump engine's weights).")
     args = ap.parse_args()
 
     defaults = (load_tuned_defaults(args.initial_tuned_file)
@@ -462,7 +466,8 @@ def main():
     nval = int(n * args.val_frac)
     val, tr = idx[:nval], idx[nval:]
 
-    theta = defaults.copy()
+    theta = (load_tuned_defaults(args.warm_start_file)
+             if args.warm_start_file else defaults.copy())
     evals_tr = X[tr] @ theta + c[tr]
     K, L0 = fit_K(evals_tr, y[tr])
     print(f"fit K={K:.5f}  baseline train loss={L0:.6f}  "
@@ -492,7 +497,7 @@ def main():
     else:
         active = np.arange(N_PARAMS)
     Xactive = Xtr[:, active]
-    fixed_tr = Xtr @ defaults + ctr - Xactive @ defaults[active]
+    fixed_tr = Xtr @ theta + ctr - Xactive @ theta[active]
     m = np.zeros(len(active))
     v = np.zeros(len(active))
     best_theta = theta.copy()
