@@ -5,7 +5,10 @@ Only changes developed after that commit count toward the campaign target.
 
 ## Confirmed total
 
-`0 Elo`. No candidate has passed long confirmation yet.
+`~+35 Elo` (2026-08-05): volume self-play texel refit with fitted
+safe-mobility and per-rank passer terms. Pooled 600 games across three
+independent seeds, all positive (+49.6/120g, +27.6/240g, +36.3/240g),
+330.5/600 = 55.1%, CI ~[+13, +58]. See HCE_EXPERIMENTS.md 2026-08-05.
 
 ## Rejected candidates
 

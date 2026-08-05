@@ -1,5 +1,41 @@
 # HCE Experiments
 
+## 2026-08-05: Volume self-play texel refit + fitted stage-B features (CONFIRMED)
+
+Status: CONFIRMED and merged — first campaign gain since 925597a.
+
+Data: 8,004 self-play games at 120ms from 4,002 random-walk openings
+(±200cp screened), generated on mlpc (`D:\chess-lab\selfplay\
+selfplay_cc15321_r1.pgn`) -> 95,239 sampled positions -> 66,326 after the
+tunedump qsearch ±50cp quiet filter (3.4x/2.4x the July dataset). Exact
+linear reconstruction verified on all 66,326 rows before fitting.
+
+Fits (texel_tune.py, l2=3, 8000 iters, defaults generated from source via
+texel_current_defaults.py):
+- Stage A (`--freeze-stageb`): existing weights only. Minors down (n 457->
+  411, b 499->445), rooks up (617->638), king/hanging scales softened ~8%,
+  PSTs adjusted. 120g screen: +5.8 (61/120, P=59.5%) — borderline.
+- Stage B graft (`--warm-start-file` stage A, `--only-stageb`): the data
+  zeroed safe checks (all 8 weights) and bishop pair — both now properly
+  refuted, not just hand-guess-rejected. Safe mobility earned +3/+3/+2/+1
+  mg; per-rank passers small eg corrections. This candidate ("candB"):
+  - 120g seed 20260805: +49.6 (68.5/120, CI [+0.7,+100.5], P=97.7%)
+  - 240g seed 20260807: +27.6 (129.5/240, CI [-8.2,+63.9], P=93.5%)
+  - 240g seed 20260808: +36.3 (132.5/240, CI [+2.0,+71.3], P=98.1%)
+  - POOLED 600 games, 3 independent seeds, all positive: 330.5/600 =
+    55.1%, ~+35 Elo, CI ~[+13,+58]. CONFIRMED.
+
+Apply-path integrity: weights written by texel_apply_tune.py (named-constant
+patching), verified by regenerating defaults from the patched source and
+demanding exact reconstruction on a fresh dump — this same loop previously
+exposed that the old apply regexes silently no-opped on current code.
+
+Lessons: (1) volume + joint fitting recovered what six hand-guessed
+attempts could not — the fit, not the guess, decides both weight and
+existence of a feature; (2) the 60g screen would have killed stage A at
++5.8 and nearly killed everything — 120g minimum + multi-seed pooling is
+the standing rule; (3) reports in D:\chess-lab\selfplay\ on mlpc.
+
 ## 2026-08-03: Safe-check king danger (below gate, parked for texel fitting)
 
 Status: two weight guesses below gate; code parked on branch

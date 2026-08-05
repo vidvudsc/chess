@@ -4,10 +4,10 @@
 
 const int hce_piece_value[PIECE_TYPE_COUNT] = {
     0,
-    1329,
-    499,
-    457,
-    617,
+    1299,
+    445,
+    414,
+    638,
     100,
 };
 
@@ -30,20 +30,20 @@ static uint64_t g_passed_masks[PIECE_COLOR_COUNT][64];
 
 static const int k_pawn_pst[64] = {
        0,    0,    0,    0,    0,    0,    0,    0,
-      37,   39,   17,   50,   41,   45,   41,   39,
-      11,   10,   19,   28,   35,   19,   12,   11,
-       5,    6,   11,   28,   25,   12,    5,    5,
-       0,    0,    1,   21,   21,    1,    0,    0,
+      31,   38,   17,   42,   38,   41,   36,   34,
+      12,   10,   19,   27,   33,   19,   13,   11,
+       5,    6,   11,   30,   26,   13,    5,    5,
+       0,    0,    1,   22,   22,    1,    1,    0,
        5,   -5,  -10,    0,    0,  -10,   -5,    5,
        5,   10,   10,  -20,  -20,   10,   10,    5,
        0,    0,    0,    0,    0,    0,    0,    0,
 };
 static const int k_pawn_pst_eg[64] = {
        0,    0,    0,    0,    0,    0,    0,    0,
-      22,   23,   23,   25,   25,   24,   22,   24,
+      21,   22,   23,   24,   25,   23,   21,   23,
        5,    5,    9,   15,   16,    9,    6,    5,
-       2,    3,    6,   12,   13,    6,    2,    2,
-       0,    1,    1,   10,   10,    1,    0,    0,
+       2,    3,    6,   12,   13,    7,    2,    2,
+       0,    1,    1,   10,   11,    1,    1,    0,
        2,   -2,   -5,    0,    0,   -5,   -2,    2,
        2,    5,    5,  -10,  -10,    5,    5,    2,
        0,    0,    0,    0,    0,    0,    0,    0,
@@ -113,7 +113,7 @@ static const int k_rook_pst_eg[64] = {
 };
 
 static const int k_queen_pst[64] = {
-     -20,  -10,  -10,   -5,   -5,  -10,  -10,  -20,
+     -20,  -10,  -10,   -4,   -5,  -10,  -10,  -20,
      -10,    0,    0,    0,    0,    0,    0,  -10,
      -10,    0,    5,    5,    4,    5,    0,  -10,
       -5,    0,    5,    5,    5,    5,    0,   -5,
@@ -145,7 +145,7 @@ static const int k_king_mid_pst[64] = {
 };
 
 static const int k_king_end_pst[64] = {
-       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,   -1,   -1,
        0,    0,    0,    0,    0,    0,    0,    0,
        0,    0,    0,    0,    0,    0,    0,    0,
        0,    0,    0,    0,    0,    0,    0,    0,
@@ -885,16 +885,16 @@ typedef struct EvalSideTerms {
 } EvalSideTerms;
 
 static const int k_passed_mg_scale = 100;
-static const int k_passed_eg_scale = 100;
-static const int k_king_mg_scale = -100;
-static const int k_king_eg_scale = -100;
-static const int k_hanging_mg_scale = -100;
-static const int k_hanging_eg_scale = -100;
-static const int k_queen_mg_scale = -100;
-static const int k_queen_eg_scale = -100;
-static const int k_pawn_push_mg = 0;
-static const int k_pawn_push_eg = 0;
-static const int k_pawn_threat_minor_mg = 0;
+static const int k_passed_eg_scale = 122;
+static const int k_king_mg_scale = -93;
+static const int k_king_eg_scale = -98;
+static const int k_hanging_mg_scale = -92;
+static const int k_hanging_eg_scale = -99;
+static const int k_queen_mg_scale = -86;
+static const int k_queen_eg_scale = -99;
+static const int k_pawn_push_mg = 2;
+static const int k_pawn_push_eg = 2;
+static const int k_pawn_threat_minor_mg = 1;
 static const int k_pawn_threat_minor_eg = 0;
 static const int k_pawn_threat_major_mg = 0;
 static const int k_pawn_threat_major_eg = 0;
@@ -902,15 +902,15 @@ static const int k_pawn_threat_major_eg = 0;
 // the feature-dump path, so texel_apply_tune.py can patch one definition.
 static const int k_iso_mg = -16;
 static const int k_iso_eg = -16;
-static const int k_dbl_mg = -20;
-static const int k_dbl_eg = -15;
-static const int k_mob_n_mg = 6;
+static const int k_dbl_mg = -17;
+static const int k_dbl_eg = -13;
+static const int k_mob_n_mg = 5;
 static const int k_mob_n_eg = 6;
-static const int k_mob_b_mg = 8;
+static const int k_mob_b_mg = 11;
 static const int k_mob_b_eg = 3;
-static const int k_mob_r_mg = 8;
+static const int k_mob_r_mg = 11;
 static const int k_mob_r_eg = 4;
-static const int k_mob_q_mg = 8;
+static const int k_mob_q_mg = 5;
 static const int k_mob_q_eg = 0;
 static const int k_rook_open_mg = 19;
 static const int k_rook_open_eg = 12;
@@ -928,16 +928,16 @@ static const int k_safe_check_q_mg = 0;
 static const int k_safe_check_q_eg = 0;
 static const int k_bishop_pair_mg = 0;
 static const int k_bishop_pair_eg = 0;
-static const int k_mob_safe_n_mg = 0;
+static const int k_mob_safe_n_mg = 3;
 static const int k_mob_safe_n_eg = 0;
-static const int k_mob_safe_b_mg = 0;
-static const int k_mob_safe_b_eg = 0;
-static const int k_mob_safe_r_mg = 0;
+static const int k_mob_safe_b_mg = 3;
+static const int k_mob_safe_b_eg = -1;
+static const int k_mob_safe_r_mg = 2;
 static const int k_mob_safe_r_eg = 0;
-static const int k_mob_safe_q_mg = 0;
+static const int k_mob_safe_q_mg = 1;
 static const int k_mob_safe_q_eg = 0;
 static const int k_passer_rank_mg[6] = {0, 0, 0, 0, 0, 0};
-static const int k_passer_rank_eg[6] = {0, 0, 0, 0, 0, 0};
+static const int k_passer_rank_eg[6] = {-1, 0, 0, 1, 1, 1};
 
 #define HCE_PAWN_CACHE_BITS 16u
 #define HCE_PAWN_CACHE_SIZE (1u << HCE_PAWN_CACHE_BITS)
