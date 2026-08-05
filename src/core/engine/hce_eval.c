@@ -4,10 +4,10 @@
 
 const int hce_piece_value[PIECE_TYPE_COUNT] = {
     0,
-    1329,
-    499,
-    457,
-    617,
+    1299,
+    445,
+    414,
+    638,
     100,
 };
 
@@ -30,20 +30,20 @@ static uint64_t g_passed_masks[PIECE_COLOR_COUNT][64];
 
 static const int k_pawn_pst[64] = {
        0,    0,    0,    0,    0,    0,    0,    0,
-      37,   39,   17,   50,   41,   45,   41,   39,
-      11,   10,   19,   28,   35,   19,   12,   11,
-       5,    6,   11,   28,   25,   12,    5,    5,
-       0,    0,    1,   21,   21,    1,    0,    0,
+      31,   38,   17,   42,   38,   41,   36,   34,
+      12,   10,   19,   27,   33,   19,   13,   11,
+       5,    6,   11,   30,   26,   13,    5,    5,
+       0,    0,    1,   22,   22,    1,    1,    0,
        5,   -5,  -10,    0,    0,  -10,   -5,    5,
        5,   10,   10,  -20,  -20,   10,   10,    5,
        0,    0,    0,    0,    0,    0,    0,    0,
 };
 static const int k_pawn_pst_eg[64] = {
        0,    0,    0,    0,    0,    0,    0,    0,
-      22,   23,   23,   25,   25,   24,   22,   24,
+      21,   22,   23,   24,   25,   23,   21,   23,
        5,    5,    9,   15,   16,    9,    6,    5,
-       2,    3,    6,   12,   13,    6,    2,    2,
-       0,    1,    1,   10,   10,    1,    0,    0,
+       2,    3,    6,   12,   13,    7,    2,    2,
+       0,    1,    1,   10,   11,    1,    1,    0,
        2,   -2,   -5,    0,    0,   -5,   -2,    2,
        2,    5,    5,  -10,  -10,    5,    5,    2,
        0,    0,    0,    0,    0,    0,    0,    0,
@@ -113,7 +113,7 @@ static const int k_rook_pst_eg[64] = {
 };
 
 static const int k_queen_pst[64] = {
-     -20,  -10,  -10,   -5,   -5,  -10,  -10,  -20,
+     -20,  -10,  -10,   -4,   -5,  -10,  -10,  -20,
      -10,    0,    0,    0,    0,    0,    0,  -10,
      -10,    0,    5,    5,    4,    5,    0,  -10,
       -5,    0,    5,    5,    5,    5,    0,   -5,
@@ -145,7 +145,7 @@ static const int k_king_mid_pst[64] = {
 };
 
 static const int k_king_end_pst[64] = {
-       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,   -1,   -1,
        0,    0,    0,    0,    0,    0,    0,    0,
        0,    0,    0,    0,    0,    0,    0,    0,
        0,    0,    0,    0,    0,    0,    0,    0,
@@ -512,22 +512,33 @@ typedef struct AttackUnions {
     uint64_t all[PIECE_COLOR_COUNT];
     uint64_t non_king[PIECE_COLOR_COUNT];
     uint64_t pawn[PIECE_COLOR_COUNT];
+    // Per-piece-type attack unions (knight/bishop/rook/queen only; the rest
+    // stay zero). Used for safe-check counting in king safety.
+    uint64_t piece_atk[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int mobility[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
+    // Mobility restricted to squares the enemy's pawns do not attack.
+    int mobility_safe[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
     int king_attack_units[PIECE_COLOR_COUNT];
 } AttackUnions;
 
 static void compute_attack_unions(const GameState *s, AttackUnions *out) {
     memset(out, 0, sizeof(*out));
+    // Pawn attack maps for both sides first: each side's safe mobility needs
+    // the other side's pawn attacks.
+    for (int side = PIECE_WHITE; side <= PIECE_BLACK; ++side) {
+        uint64_t pawns = s->bb[side][PIECE_PAWN];
+        out->pawn[side] = (side == PIECE_WHITE)
+                              ? (((pawns & ~g_file_masks[0]) << 7) | ((pawns & ~g_file_masks[7]) << 9))
+                              : (((pawns & ~g_file_masks[0]) >> 9) | ((pawns & ~g_file_masks[7]) >> 7));
+    }
     for (int side = PIECE_WHITE; side <= PIECE_BLACK; ++side) {
         int enemy_king_sq = chess_find_king_square(s, side ^ 1);
         uint64_t enemy_king_zone = enemy_king_sq >= 0
                                        ? (g_king_attacks[enemy_king_sq] | (1ULL << enemy_king_sq))
                                        : 0;
+        uint64_t safe_from_pawns = ~out->pawn[side ^ 1];
         uint64_t pawns = s->bb[side][PIECE_PAWN];
-        uint64_t a = (side == PIECE_WHITE)
-                         ? (((pawns & ~g_file_masks[0]) << 7) | ((pawns & ~g_file_masks[7]) << 9))
-                         : (((pawns & ~g_file_masks[0]) >> 9) | ((pawns & ~g_file_masks[7]) >> 7));
-        out->pawn[side] = a;
+        uint64_t a = out->pawn[side];
         uint64_t pawn_scan = pawns;
         while (pawn_scan != 0) {
             int sq = chess_pop_lsb(&pawn_scan);
@@ -540,7 +551,10 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             int sq = chess_pop_lsb(&knights);
             uint64_t attacks = g_knight_attacks[sq];
             a |= attacks;
-            out->mobility[side][PIECE_KNIGHT] += chess_count_bits(attacks & ~s->occ[side]);
+            out->piece_atk[side][PIECE_KNIGHT] |= attacks;
+            uint64_t open = attacks & ~s->occ[side];
+            out->mobility[side][PIECE_KNIGHT] += chess_count_bits(open);
+            out->mobility_safe[side][PIECE_KNIGHT] += chess_count_bits(open & safe_from_pawns);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 2;
             }
@@ -550,7 +564,10 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             int sq = chess_pop_lsb(&bishops);
             uint64_t attacks = hce_bishop_attacks(sq, s->occ_all);
             a |= attacks;
-            out->mobility[side][PIECE_BISHOP] += chess_count_bits(attacks & ~s->occ[side]);
+            out->piece_atk[side][PIECE_BISHOP] |= attacks;
+            uint64_t open = attacks & ~s->occ[side];
+            out->mobility[side][PIECE_BISHOP] += chess_count_bits(open);
+            out->mobility_safe[side][PIECE_BISHOP] += chess_count_bits(open & safe_from_pawns);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 2;
             }
@@ -560,7 +577,10 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             int sq = chess_pop_lsb(&rooks);
             uint64_t attacks = hce_rook_attacks(sq, s->occ_all);
             a |= attacks;
-            out->mobility[side][PIECE_ROOK] += chess_count_bits(attacks & ~s->occ[side]);
+            out->piece_atk[side][PIECE_ROOK] |= attacks;
+            uint64_t open = attacks & ~s->occ[side];
+            out->mobility[side][PIECE_ROOK] += chess_count_bits(open);
+            out->mobility_safe[side][PIECE_ROOK] += chess_count_bits(open & safe_from_pawns);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 3;
             }
@@ -571,7 +591,10 @@ static void compute_attack_unions(const GameState *s, AttackUnions *out) {
             uint64_t attacks = hce_bishop_attacks(sq, s->occ_all) |
                                hce_rook_attacks(sq, s->occ_all);
             a |= attacks;
-            out->mobility[side][PIECE_QUEEN] += chess_count_bits(attacks & ~s->occ[side]);
+            out->piece_atk[side][PIECE_QUEEN] |= attacks;
+            uint64_t open = attacks & ~s->occ[side];
+            out->mobility[side][PIECE_QUEEN] += chess_count_bits(open);
+            out->mobility_safe[side][PIECE_QUEEN] += chess_count_bits(open & safe_from_pawns);
             if ((attacks & enemy_king_zone) != 0) {
                 out->king_attack_units[side] += 5;
             }
@@ -662,6 +685,28 @@ static int least_attacker_value(const GameState *s, uint64_t attackers, int side
         return 2000;
     }
     return HCE_INF;
+}
+
+// Count enemy pieces able to give check from squares this side does not
+// defend and the enemy does not occupy. out = {knight, bishop, rook, queen}.
+static void safe_check_counts(const GameState *s,
+                              int side,
+                              const AttackUnions *atk,
+                              int out[4]) {
+    out[0] = out[1] = out[2] = out[3] = 0;
+    int king_sq = chess_find_king_square(s, side);
+    if (king_sq < 0) {
+        return;
+    }
+    int enemy = side ^ 1;
+    uint64_t safe = ~atk->all[side] & ~s->occ[enemy];
+    uint64_t n_check = g_knight_attacks[king_sq];
+    uint64_t b_check = hce_bishop_attacks(king_sq, s->occ_all);
+    uint64_t r_check = hce_rook_attacks(king_sq, s->occ_all);
+    out[0] = chess_count_bits(n_check & atk->piece_atk[enemy][PIECE_KNIGHT] & safe);
+    out[1] = chess_count_bits(b_check & atk->piece_atk[enemy][PIECE_BISHOP] & safe);
+    out[2] = chess_count_bits(r_check & atk->piece_atk[enemy][PIECE_ROOK] & safe);
+    out[3] = chess_count_bits((b_check | r_check) & atk->piece_atk[enemy][PIECE_QUEEN] & safe);
 }
 
 static int king_safety_penalty(const GameState *s, int side, const AttackUnions *atk) {
@@ -840,19 +885,59 @@ typedef struct EvalSideTerms {
 } EvalSideTerms;
 
 static const int k_passed_mg_scale = 100;
-static const int k_passed_eg_scale = 100;
-static const int k_king_mg_scale = -100;
-static const int k_king_eg_scale = -100;
-static const int k_hanging_mg_scale = -100;
-static const int k_hanging_eg_scale = -100;
-static const int k_queen_mg_scale = -100;
-static const int k_queen_eg_scale = -100;
-static const int k_pawn_push_mg = 0;
-static const int k_pawn_push_eg = 0;
-static const int k_pawn_threat_minor_mg = 0;
+static const int k_passed_eg_scale = 122;
+static const int k_king_mg_scale = -93;
+static const int k_king_eg_scale = -98;
+static const int k_hanging_mg_scale = -92;
+static const int k_hanging_eg_scale = -99;
+static const int k_queen_mg_scale = -86;
+static const int k_queen_eg_scale = -99;
+static const int k_pawn_push_mg = 2;
+static const int k_pawn_push_eg = 2;
+static const int k_pawn_threat_minor_mg = 1;
 static const int k_pawn_threat_minor_eg = 0;
 static const int k_pawn_threat_major_mg = 0;
 static const int k_pawn_threat_major_eg = 0;
+// Named copies of eval literals that appear in both the cached pawn path and
+// the feature-dump path, so texel_apply_tune.py can patch one definition.
+static const int k_iso_mg = -16;
+static const int k_iso_eg = -16;
+static const int k_dbl_mg = -17;
+static const int k_dbl_eg = -13;
+static const int k_mob_n_mg = 5;
+static const int k_mob_n_eg = 6;
+static const int k_mob_b_mg = 11;
+static const int k_mob_b_eg = 3;
+static const int k_mob_r_mg = 11;
+static const int k_mob_r_eg = 4;
+static const int k_mob_q_mg = 5;
+static const int k_mob_q_eg = 0;
+static const int k_rook_open_mg = 19;
+static const int k_rook_open_eg = 12;
+static const int k_rook_semi_mg = 11;
+static const int k_rook_semi_eg = 6;
+// Stage-B feature weights: zero until texel-fitted, so the engine plays
+// identically to the pre-stage-B build while the tunedump exposes the counts.
+static const int k_safe_check_n_mg = 0;
+static const int k_safe_check_n_eg = 0;
+static const int k_safe_check_b_mg = 0;
+static const int k_safe_check_b_eg = 0;
+static const int k_safe_check_r_mg = 0;
+static const int k_safe_check_r_eg = 0;
+static const int k_safe_check_q_mg = 0;
+static const int k_safe_check_q_eg = 0;
+static const int k_bishop_pair_mg = 0;
+static const int k_bishop_pair_eg = 0;
+static const int k_mob_safe_n_mg = 3;
+static const int k_mob_safe_n_eg = 0;
+static const int k_mob_safe_b_mg = 3;
+static const int k_mob_safe_b_eg = -1;
+static const int k_mob_safe_r_mg = 2;
+static const int k_mob_safe_r_eg = 0;
+static const int k_mob_safe_q_mg = 1;
+static const int k_mob_safe_q_eg = 0;
+static const int k_passer_rank_mg[6] = {0, 0, 0, 0, 0, 0};
+static const int k_passer_rank_eg[6] = {-1, 0, 0, 1, 1, 1};
 
 #define HCE_PAWN_CACHE_BITS 16u
 #define HCE_PAWN_CACHE_SIZE (1u << HCE_PAWN_CACHE_BITS)
@@ -918,10 +1003,10 @@ static void compute_pawn_eval_terms(const GameState *s, int side, PawnEvalTerms 
             eval_term_add(&out->pawn_activity, k_pawn_push_mg, k_pawn_push_eg);
         }
         if (is_isolated_pawn(s, side, sq)) {
-            eval_term_add(&out->pawn_structure, -16, -16);
+            eval_term_add(&out->pawn_structure, k_iso_mg, k_iso_eg);
         }
         if (is_doubled_pawn(s, side, sq)) {
-            eval_term_add(&out->pawn_structure, -20, -15);
+            eval_term_add(&out->pawn_structure, k_dbl_mg, k_dbl_eg);
         }
         if (!is_passed_pawn(s, side, sq)) {
             continue;
@@ -950,6 +1035,12 @@ static void compute_pawn_eval_terms(const GameState *s, int side, PawnEvalTerms 
             passer_eg = eg_cap;
         }
         eval_term_add(&out->passed_pawns, passer_mg, passer_eg);
+        int adv_idx = advance - 1;
+        if (adv_idx >= 0 && adv_idx < 6) {
+            eval_term_add(&out->passed_pawns,
+                          k_passer_rank_mg[adv_idx],
+                          k_passer_rank_eg[adv_idx]);
+        }
     }
 }
 
@@ -1032,13 +1123,13 @@ static int eval_side(const GameState *s,
                         }
                     }
                     if (is_isolated_pawn(s, side, sq)) {
-                        eval_term_add(&terms.pawn_structure, -16, -16);
+                        eval_term_add(&terms.pawn_structure, k_iso_mg, k_iso_eg);
                     if (feat != NULL) {
                         feat->isolated += 1;
                         }
                     }
                     if (is_doubled_pawn(s, side, sq)) {
-                        eval_term_add(&terms.pawn_structure, -20, -15);
+                        eval_term_add(&terms.pawn_structure, k_dbl_mg, k_dbl_eg);
                     if (feat != NULL) {
                         feat->doubled += 1;
                         }
@@ -1073,6 +1164,15 @@ static int eval_side(const GameState *s,
                             feat->passed_mg += passer_mg;
                             feat->passed_eg += passer_eg;
                         }
+                        int adv_idx = advance - 1;
+                        if (adv_idx >= 0 && adv_idx < 6) {
+                            eval_term_add(&terms.passed_pawns,
+                                          k_passer_rank_mg[adv_idx],
+                                          k_passer_rank_eg[adv_idx]);
+                            if (feat != NULL) {
+                                feat->passer_rank[adv_idx] += 1;
+                            }
+                        }
                     }
                     break;
                 case PIECE_KNIGHT: {
@@ -1089,12 +1189,12 @@ static int eval_side(const GameState *s,
                     bool own_pawn = (g_file_masks[file] & s->bb[side][PIECE_PAWN]) != 0;
                     bool enemy_pawn = (g_file_masks[file] & s->bb[enemy][PIECE_PAWN]) != 0;
                     if (!own_pawn && !enemy_pawn) {
-                        eval_term_add(&terms.rook_files, 19, 12);
+                        eval_term_add(&terms.rook_files, k_rook_open_mg, k_rook_open_eg);
                         if (feat != NULL) {
                             feat->rook_open += 1;
                         }
                     } else if (!own_pawn) {
-                        eval_term_add(&terms.rook_files, 11, 6);
+                        eval_term_add(&terms.rook_files, k_rook_semi_mg, k_rook_semi_eg);
                         if (feat != NULL) {
                             feat->rook_semi += 1;
                         }
@@ -1118,13 +1218,48 @@ static int eval_side(const GameState *s,
     int rook_mob = attack_unions->mobility[side][PIECE_ROOK];
     int queen_mob = attack_unions->mobility[side][PIECE_QUEEN];
     eval_term_add(&terms.mobility,
-                  knight_mob * 6 + bishop_mob * 8 + rook_mob * 8 + queen_mob * 8,
-                  knight_mob * 6 + bishop_mob * 3 + rook_mob * 4);
+                  knight_mob * k_mob_n_mg + bishop_mob * k_mob_b_mg +
+                      rook_mob * k_mob_r_mg + queen_mob * k_mob_q_mg,
+                  knight_mob * k_mob_n_eg + bishop_mob * k_mob_b_eg +
+                      rook_mob * k_mob_r_eg + queen_mob * k_mob_q_eg);
     if (feat != NULL) {
         feat->mob_n += knight_mob;
         feat->mob_b += bishop_mob;
         feat->mob_r += rook_mob;
         feat->mob_q += queen_mob;
+    }
+
+    // Stage-B features (weights zero until fitted; see k_safe_check_* etc.).
+    int mob_safe_n = attack_unions->mobility_safe[side][PIECE_KNIGHT];
+    int mob_safe_b = attack_unions->mobility_safe[side][PIECE_BISHOP];
+    int mob_safe_r = attack_unions->mobility_safe[side][PIECE_ROOK];
+    int mob_safe_q = attack_unions->mobility_safe[side][PIECE_QUEEN];
+    eval_term_add(&terms.mobility,
+                  mob_safe_n * k_mob_safe_n_mg + mob_safe_b * k_mob_safe_b_mg +
+                      mob_safe_r * k_mob_safe_r_mg + mob_safe_q * k_mob_safe_q_mg,
+                  mob_safe_n * k_mob_safe_n_eg + mob_safe_b * k_mob_safe_b_eg +
+                      mob_safe_r * k_mob_safe_r_eg + mob_safe_q * k_mob_safe_q_eg);
+    int safe_checks[4];
+    safe_check_counts(s, side, attack_unions, safe_checks);
+    eval_term_add(&terms.king_safety_penalty,
+                  safe_checks[0] * k_safe_check_n_mg + safe_checks[1] * k_safe_check_b_mg +
+                      safe_checks[2] * k_safe_check_r_mg + safe_checks[3] * k_safe_check_q_mg,
+                  safe_checks[0] * k_safe_check_n_eg + safe_checks[1] * k_safe_check_b_eg +
+                      safe_checks[2] * k_safe_check_r_eg + safe_checks[3] * k_safe_check_q_eg);
+    int bishop_pair = (chess_count_bits(s->bb[side][PIECE_BISHOP]) >= 2) ? 1 : 0;
+    eval_term_add(&terms.material,
+                  bishop_pair * k_bishop_pair_mg,
+                  bishop_pair * k_bishop_pair_eg);
+    if (feat != NULL) {
+        feat->mob_safe_n += mob_safe_n;
+        feat->mob_safe_b += mob_safe_b;
+        feat->mob_safe_r += mob_safe_r;
+        feat->mob_safe_q += mob_safe_q;
+        feat->safe_check_n += safe_checks[0];
+        feat->safe_check_b += safe_checks[1];
+        feat->safe_check_r += safe_checks[2];
+        feat->safe_check_q += safe_checks[3];
+        feat->bishop_pair += bishop_pair;
     }
 
     uint64_t enemy_minors = s->bb[enemy][PIECE_BISHOP] | s->bb[enemy][PIECE_KNIGHT];

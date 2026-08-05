@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 
-N_SCALAR = 35
+N_SCALAR = 65
 N_PST = 6 * 64
 PST_PIECES = 6
 
@@ -28,12 +28,15 @@ def parse_tuned_line(line):
     vals = [int(x) for x in parts]
     expected = N_SCALAR + 2 * N_PST
     legacy_expected = 21 + 2 * N_PST
+    prev_expected = 35 + 2 * N_PST
     if len(vals) == legacy_expected:
         extra_defaults = [
             100, 100, -100, -100, -100, -100, -100, -100,
             0, 0, 0, 0, 0, 0,
         ]
         vals = vals[:21] + extra_defaults + vals[21:]
+    if len(vals) == prev_expected:
+        vals = vals[:35] + [0] * 30 + vals[35:]
     if len(vals) != expected:
         raise SystemExit(f"expected {expected} tuned integers, got {len(vals)}")
     return vals
@@ -66,6 +69,7 @@ def patch_eval_c(path, vals):
     (pawn_push_mg, pawn_push_eg,
      pawn_threat_minor_mg, pawn_threat_minor_eg,
      pawn_threat_major_mg, pawn_threat_major_eg) = scalar[29:35]
+    stageb = scalar[35:65]
 
     # Piece enum order in engine: KING=0, QUEEN=1, BISHOP=2, KNIGHT=3, ROOK=4, PAWN=5.
     # Scalar order from tuner: mat_q, mat_n, mat_b, mat_r, mat_p.
@@ -84,63 +88,52 @@ def patch_eval_c(path, vals):
         count=1,
     )
 
-    # Patch scalar constants.  Use regexes that match the surrounding code.
-    text = re.sub(
-        r"eval_term_add\(&terms\.pawn_structure, -?\d+, -?\d+\);\s*\n\s*if \(feat != NULL\) \{\s*\n\s*feat->isolated",
-        lambda m: f"eval_term_add(&terms.pawn_structure, {iso_mg}, {iso_eg});\n"
-                  f"                    if (feat != NULL) {{\n"
-                  f"                        feat->isolated",
-        text,
-        count=1,
-    )
-    text = re.sub(
-        r"eval_term_add\(&terms\.pawn_structure, -?\d+, -?\d+\);\s*\n\s*if \(feat != NULL\) \{\s*\n\s*feat->doubled",
-        lambda m: f"eval_term_add(&terms.pawn_structure, {dbl_mg}, {dbl_eg});\n"
-                  f"                    if (feat != NULL) {{\n"
-                  f"                        feat->doubled",
-        text,
-        count=1,
-    )
-    text = re.sub(
-        r"eval_term_add\(&terms\.mobility, knight_mob \* -?\d+, knight_mob \* -?\d+\);",
-        f"eval_term_add(&terms.mobility, knight_mob * {mob_n_mg}, knight_mob * {mob_n_eg});",
-        text,
-        count=1,
-    )
-    text = re.sub(
-        r"eval_term_add\(&terms\.mobility, bishop_mob \* -?\d+, bishop_mob \* -?\d+\);",
-        f"eval_term_add(&terms.mobility, bishop_mob * {mob_b_mg}, bishop_mob * {mob_b_eg});",
-        text,
-        count=1,
-    )
-    text = re.sub(
-        r"eval_term_add\(&terms\.mobility, rook_mob \* -?\d+, rook_mob \* -?\d+\);",
-        f"eval_term_add(&terms.mobility, rook_mob * {mob_r_mg}, rook_mob * {mob_r_eg});",
-        text,
-        count=1,
-    )
-    text = re.sub(
-        r"eval_term_add\(&terms\.mobility, queen_mob \* -?\d+, queen_mob \* -?\d+\);",
-        f"eval_term_add(&terms.mobility, queen_mob * {mob_q_mg}, queen_mob * {mob_q_eg});",
-        text,
-        count=1,
-    )
-    text = re.sub(
-        r"eval_term_add\(&terms\.rook_files, \d+, \d+\);\s*\n\s*if \(feat != NULL\) \{\s*\n\s*feat->rook_open",
-        lambda m: f"eval_term_add(&terms.rook_files, {rook_open_mg}, {rook_open_eg});\n"
-                  f"                        if (feat != NULL) {{\n"
-                  f"                            feat->rook_open",
-        text,
-        count=1,
-    )
-    text = re.sub(
-        r"eval_term_add\(&terms\.rook_files, \d+, \d+\);\s*\n\s*if \(feat != NULL\) \{\s*\n\s*feat->rook_semi",
-        lambda m: f"eval_term_add(&terms.rook_files, {rook_semi_mg}, {rook_semi_eg});\n"
-                  f"                        if (feat != NULL) {{\n"
-                  f"                            feat->rook_semi",
-        text,
-        count=1,
-    )
+    # All per-term scalars are named constants now; patch them uniformly.
+    const_values = {
+        "k_iso_mg": iso_mg, "k_iso_eg": iso_eg,
+        "k_dbl_mg": dbl_mg, "k_dbl_eg": dbl_eg,
+        "k_mob_n_mg": mob_n_mg, "k_mob_n_eg": mob_n_eg,
+        "k_mob_b_mg": mob_b_mg, "k_mob_b_eg": mob_b_eg,
+        "k_mob_r_mg": mob_r_mg, "k_mob_r_eg": mob_r_eg,
+        "k_mob_q_mg": mob_q_mg, "k_mob_q_eg": mob_q_eg,
+        "k_rook_open_mg": rook_open_mg, "k_rook_open_eg": rook_open_eg,
+        "k_rook_semi_mg": rook_semi_mg, "k_rook_semi_eg": rook_semi_eg,
+    }
+    stageb_names = [
+        "k_safe_check_n_mg", "k_safe_check_n_eg",
+        "k_safe_check_b_mg", "k_safe_check_b_eg",
+        "k_safe_check_r_mg", "k_safe_check_r_eg",
+        "k_safe_check_q_mg", "k_safe_check_q_eg",
+        "k_bishop_pair_mg", "k_bishop_pair_eg",
+        "k_mob_safe_n_mg", "k_mob_safe_n_eg",
+        "k_mob_safe_b_mg", "k_mob_safe_b_eg",
+        "k_mob_safe_r_mg", "k_mob_safe_r_eg",
+        "k_mob_safe_q_mg", "k_mob_safe_q_eg",
+    ]
+    for name, value in zip(stageb_names, stageb[:18]):
+        const_values[name] = value
+    for name, value in const_values.items():
+        text, replaced = re.subn(
+            rf"static const int {name} = -?\d+;",
+            f"static const int {name} = {value};",
+            text,
+            count=1,
+        )
+        if replaced != 1:
+            raise SystemExit(f"failed to patch {name} in {path}")
+    # Per-rank passer arrays: stage-B params 18..29 are (mg, eg) pairs.
+    pr_mg = [stageb[18 + 2 * r] for r in range(6)]
+    pr_eg = [stageb[19 + 2 * r] for r in range(6)]
+    for name, arr in (("k_passer_rank_mg", pr_mg), ("k_passer_rank_eg", pr_eg)):
+        body = ", ".join(str(v) for v in arr)
+        text, replaced = re.subn(
+            rf"static const int {name}\[6\] = \{{[^}}]*\}};",
+            f"static const int {name}[6] = {{{body}}};",
+            text,
+            count=1,
+        )
+        if replaced != 1:
+            raise SystemExit(f"failed to patch {name} in {path}")
 
     scale_values = {
         "k_passed_mg_scale": passed_mg_scale,
