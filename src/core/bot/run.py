@@ -170,6 +170,9 @@ class ActiveGame:
     thread: threading.Thread
     slot_kind: str
     target: str = ""
+    stop: threading.Event = field(default_factory=threading.Event)
+    engine: Optional[chess.engine.SimpleEngine] = None
+    started_at: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -372,9 +375,11 @@ class LichessApi:
             path.startswith("/api/bot/game/stream/")
         )
 
-    def stream_events(self, path: str, reconnect: bool = True) -> Generator[dict, None, None]:
+    def stream_events(self, path: str, reconnect: bool = True,
+                      stop: Optional[threading.Event] = None) -> Generator[dict, None, None]:
+        stop = stop if stop is not None else threading.Event()
         attempt = 0
-        while True:
+        while not stop.is_set():
             try:
                 if attempt == 0:
                     log_event("stream", f"open {path}")
@@ -390,7 +395,11 @@ class LichessApi:
                     if attempt > 0:
                         log_event("stream", f"stream restored on {path} after {attempt} retries")
                     attempt = 0
-                    for raw in resp.iter_lines(decode_unicode=True):
+                    # Do not buffer sparse keepalives into requests' default
+                    # 512-byte chunks: cancellation must see every heartbeat.
+                    for raw in resp.iter_lines(chunk_size=1, decode_unicode=True):
+                        if stop.is_set():
+                            return
                         if raw is None:
                             continue
                         if isinstance(raw, bytes):
@@ -423,8 +432,16 @@ class LichessApi:
                     "stream",
                     f"reconnect after error on {path}: {exc} (retry {attempt} in {backoff_s:.1f}s)",
                 )
-                time.sleep(backoff_s)
+                if not reconnect:
+                    return
+                if stop.wait(backoff_s):
+                    return
+                continue
             if not reconnect:
+                return
+            # Clean EOF also needs backoff; otherwise a closed game stream
+            # can spin at full speed opening HTTP connections forever.
+            if stop.wait(2.0):
                 return
 
     def get_stream_snapshot(self, path: str, read_timeout_s: float = 4.0) -> Optional[dict]:
@@ -458,6 +475,7 @@ class BotRunner:
             raise RuntimeError("Could not read Lichess username from /api/account")
         self.username_lc = self.username.lower()
         self.active_games: Dict[str, ActiveGame] = {}
+        self.finished_games: Dict[str, float] = {}
         self.pending_slots: Dict[str, PendingSlot] = {}
         self.bot_cooldowns: Dict[str, float] = {}
         self.bot_cursor = 0
@@ -785,15 +803,53 @@ class BotRunner:
         self._create_outgoing_bot_challenge(reserved_id, username, spec)
 
     def run(self) -> None:
+        maintenance_stop = threading.Event()
+        maintenance = threading.Thread(target=self._maintain_games,
+                                       args=(maintenance_stop,), daemon=True)
+        maintenance.start()
         if self.cfg.seek_specs:
             threading.Thread(target=self._maintain_bot_pairings, daemon=True).start()
         log_event("main", "listening for Lichess events")
-        for event in self.api.stream_events("/api/stream/event", reconnect=True):
+        try:
+            for event in self.api.stream_events("/api/stream/event", reconnect=True):
+                try:
+                    self._dispatch_event(event)
+                except Exception as exc:
+                    etype = event.get("type") if isinstance(event, dict) else type(event).__name__
+                    log_event("event", f"handler failed type={etype or 'unknown'}: {exc}")
+        finally:
+            maintenance_stop.set()
+
+    def _maintain_games(self, stop: threading.Event) -> None:
+        while not stop.is_set():
             try:
-                self._dispatch_event(event)
+                self._reconcile_games()
             except Exception as exc:
-                etype = event.get("type") if isinstance(event, dict) else type(event).__name__
-                log_event("event", f"handler failed type={etype or 'unknown'}: {exc}")
+                log_event("game", f"reconciliation failed: {exc}")
+            stop.wait(30.0)
+
+    def _reconcile_games(self) -> None:
+        # Snapshot before HTTP: a gameStart arriving during the request must
+        # never be removed by an older account snapshot.
+        with self.lock:
+            before = dict(self.active_games)
+        payload = self.api.get_json("/api/account/playing")
+        playing = payload.get("nowPlaying")
+        if not isinstance(playing, list) or any(
+            not isinstance(g, dict) or not isinstance(g.get("gameId"), str)
+            for g in playing
+        ):
+            raise ValueError("invalid account playing snapshot")
+        live = {g["gameId"] for g in playing}
+        for game_id, game in before.items():
+            if game_id not in live and time.monotonic() - game.started_at >= 60.0:
+                self._mark_game_done(game_id, source="reconcile", expected=game)
+        for game in playing:
+            if game.get("variant", {}).get("key", "standard") != "standard":
+                continue
+            if game.get("speed") == "correspondence":
+                continue
+            self._start_game_thread(game["gameId"], opponent=game.get("opponent"))
 
     def _dispatch_event(self, event: dict) -> None:
         if not isinstance(event, dict):
@@ -805,7 +861,7 @@ class BotRunner:
         elif etype == "gameStart":
             game_id = event.get("game", {}).get("id")
             if game_id:
-                self._start_game_thread(game_id)
+                self._start_game_thread(game_id, opponent=event.get("game", {}).get("opponent"))
         elif etype == "gameFinish":
             game_id = event.get("game", {}).get("id")
             if game_id:
@@ -904,22 +960,36 @@ class BotRunner:
             return True
         return speed.strip().lower() in accept_speeds
 
-    def _start_game_thread(self, game_id: str) -> None:
+    def _start_game_thread(self, game_id: str, opponent: Optional[dict] = None) -> None:
         with self.lock:
+            now = time.monotonic()
+            self.finished_games = {gid: until for gid, until in self.finished_games.items()
+                                   if until > now}
+            if game_id in self.finished_games:
+                return
             if game_id in self.active_games:
                 return
             pending = self.pending_slots.pop(game_id, None)
-            slot_kind = pending.slot_kind if pending is not None else "bot"
-            target = pending.target if pending is not None else ""
+            recovered_kind = ("human" if opponent and opponent.get("title") != "BOT" else "bot")
+            slot_kind = pending.slot_kind if pending is not None else recovered_kind
+            target = (pending.target if pending is not None else
+                      str((opponent or {}).get("username") or (opponent or {}).get("id") or ""))
             t = threading.Thread(target=self._play_game, args=(game_id,), daemon=True)
             self.active_games[game_id] = ActiveGame(thread=t, slot_kind=slot_kind, target=target)
             t.start()
             counts_text = self._counts_text_locked()
         log_event("game", f"started slot={slot_kind} ({counts_text})", game_id)
 
-    def _mark_game_done(self, game_id: str, source: str = "thread") -> None:
+    def _mark_game_done(self, game_id: str, source: str = "thread",
+                        expected: Optional[ActiveGame] = None) -> None:
         with self.lock:
+            if expected is not None and self.active_games.get(game_id) is not expected:
+                return
             removed = self.active_games.pop(game_id, None)
+            if removed is not None:
+                removed.stop.set()
+            if source in {"event", "reconcile"}:
+                self.finished_games[game_id] = time.monotonic() + 120.0
             pending = self.pending_slots.pop(game_id, None)
             if removed is not None and removed.target:
                 self.bot_cooldowns[removed.target.lower()] = time.time() + 300.0
@@ -927,6 +997,10 @@ class BotRunner:
                 self.bot_cooldowns[pending.target.lower()] = time.time() + 300.0
             counts_text = self._counts_text_locked()
         if removed is not None:
+            if removed.engine is not None:
+                # close() is thread-safe and interrupts even a stuck search.
+                # Never wait for quit() on the main event-stream thread.
+                removed.engine.close()
             log_event("game", f"finished source={source} slot={removed.slot_kind} ({counts_text})", game_id)
 
     def _is_game_active(self, game_id: str) -> bool:
@@ -1128,6 +1202,48 @@ class BotRunner:
         if budget < 0.01:
             budget = 0.01
         return budget, remaining, increment
+
+    def _compute_hce_move_budget(self, board: chess.Board, state: dict,
+                                 my_color: bool, initial_s: float,
+                                 increment_s: float, base_default: float,
+                                 active_bot_games: int) -> tuple[float, float, float]:
+        """HCE-only policy; retain the NN backend's existing time allocation."""
+        old_budget, remaining, increment = self._compute_move_budget(
+            board, state, my_color, initial_s, increment_s, base_default,
+            active_bot_games)
+        if remaining <= 10.0:
+            return old_budget, remaining, increment
+
+        # Preserve the fast-control caps already deployed on Umbrel. For
+        # longer controls let the remaining clock, not a fixed 8-18s ceiling,
+        # determine the budget. Keep at least a 20-move planning horizon.
+        if initial_s <= 60.0:
+            cap = min(4.0, 1.0 + increment) if increment else 0.60
+        elif initial_s <= 120.0:
+            cap = min(4.0, 1.0 + increment) if increment else 1.10
+        elif initial_s <= 300.0:
+            cap = min(8.0, 2.0 + increment * 1.25) if increment else 4.50
+        else:
+            cap = min(60.0, remaining * 0.04 + increment * 0.8)
+        cap *= self._concurrency_scale(active_bot_games)
+
+        reserve = (max(1.0, remaining * 0.08) if increment <= 0.0 else
+                   max(1.0, min(remaining * 0.05, increment * 2.0)))
+        scale = 2.50 if initial_s <= 120.0 else (2.10 if initial_s <= 300.0 else 1.80)
+        horizon = max(20.0, self._estimate_moves_to_go(board) * scale)
+        budget = max(0.05, remaining - reserve) / horizon + increment * 0.80
+        legal_count = board.legal_moves.count()
+        if legal_count == 1:
+            return min(0.10, old_budget), remaining, increment
+        if board.is_check():
+            budget *= 1.25
+        if legal_count <= 4:
+            budget *= 1.15
+        if legal_count <= 2:
+            budget *= 1.10
+        if self._estimate_moves_to_go(board) == 14:
+            budget *= 1.20
+        return max(0.05, min(budget, cap, remaining - reserve)), remaining, increment
 
     @staticmethod
     def _auto_thread_allocations(game_ids: List[str]) -> Dict[str, int]:
@@ -1500,12 +1616,25 @@ class BotRunner:
         return best.move, final_info
 
     def _play_game(self, game_id: str) -> None:
+        with self.lock:
+            game = self.active_games.get(game_id)
+        if game is None:
+            return
         api = LichessApi(self.cfg.token, self.cfg.base_url)
         try:
             engine = chess.engine.SimpleEngine.popen_uci(self.cfg.engine_path)
         except Exception as exc:
             log_event("engine", f"failed to start: {exc}", game_id)
-            self._mark_game_done(game_id, source="engine-start-failed")
+            api.session.close()
+            self._mark_game_done(game_id, source="engine-start-failed", expected=game)
+            return
+
+        with self.lock:
+            game.engine = engine
+            cancelled = game.stop.is_set()
+        if cancelled:
+            engine.close()
+            api.session.close()
             return
 
         try:
@@ -1537,13 +1666,14 @@ class BotRunner:
                 ponder_handle.stop()
                 ponder_handle.wait()
             except Exception as exc:
-                log_event("ponder", f"stop failed: {exc}", game_id)
+                if not game.stop.is_set():
+                    log_event("ponder", f"stop failed: {exc}", game_id)
             ponder_handle = None
 
         def ponder_start(pos: chess.Board):
             nonlocal ponder_handle, configured_threads
             ponder_stop()
-            if not self.cfg.ponder or pos.is_game_over():
+            if game.stop.is_set() or not self.cfg.ponder or pos.is_game_over():
                 return
             if self._active_game_count() != 1:
                 return
@@ -1557,7 +1687,10 @@ class BotRunner:
                 ponder_handle = None
 
         try:
-            for event in api.stream_events(f"/api/bot/game/stream/{game_id}", reconnect=True):
+            for event in api.stream_events(f"/api/bot/game/stream/{game_id}",
+                                           reconnect=True, stop=game.stop):
+                if game.stop.is_set():
+                    break
                 etype = event.get("type")
                 if etype == "gameFull":
                     initial_fen = event.get("initialFen", "startpos")
@@ -1646,7 +1779,9 @@ class BotRunner:
                     continue
 
                 active_bot_games = self._active_bot_games()
-                move_budget_s, remaining_s, inc_s = self._compute_move_budget(
+                budget_policy = (self._compute_hce_move_budget if self.cfg.backend == "classic"
+                                 else self._compute_move_budget)
+                move_budget_s, remaining_s, inc_s = budget_policy(
                     board,
                     state,
                     my_color,
@@ -1685,11 +1820,15 @@ class BotRunner:
                         ply,
                     )
                 except Exception as exc:
-                    log_event("engine", f"analyse failed: {exc}", game_id)
+                    if not game.stop.is_set():
+                        log_event("engine", f"analyse failed: {exc}", game_id)
                     break
 
                 if result_move is None:
                     log_event("engine", "returned no move", game_id)
+                    break
+
+                if game.stop.is_set():
                     break
 
                 uci = result_move.uci()
@@ -1771,8 +1910,11 @@ class BotRunner:
                 engine.quit()
             except Exception:
                 pass
+            finally:
+                engine.close()
+                api.session.close()
             log_event("game", f"thread exit status={game_status}", game_id)
-            self._mark_game_done(game_id, source="thread")
+            self._mark_game_done(game_id, source="thread", expected=game)
 
 
 def parse_args() -> BotConfig:
