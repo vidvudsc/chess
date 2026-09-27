@@ -1277,44 +1277,6 @@ static int full_threat_index(int perspective,
     return index < NN_FULL_THREATS_DIM ? (int)index : -1;
 }
 
-static inline void append_full_threat_both(
-    const GameState *state,
-    int color,
-    int type,
-    int from,
-    int to,
-    int white_orientation,
-    int black_orientation,
-    uint16_t white[NN_MAX_ACTIVE_THREATS],
-    uint16_t *white_count,
-    uint16_t black[NN_MAX_ACTIVE_THREATS],
-    uint16_t *black_count
-) {
-    int attacked_color = state->sq_color[to];
-    int attacked_type = threat_piece_type(state->sq_piece[to]);
-    int white_from = from ^ white_orientation;
-    int black_from = from ^ black_orientation;
-    int white_to = to ^ white_orientation;
-    int black_to = to ^ black_orientation;
-    uint16_t white_base =
-        g_threat_index_base[PIECE_WHITE][color][type][attacked_color][attacked_type]
-                           [white_from < white_to];
-    uint16_t black_base =
-        g_threat_index_base[PIECE_BLACK][color][type][attacked_color][attacked_type]
-                           [black_from < black_to];
-    if (white_base != UINT16_MAX && *white_count < NN_MAX_ACTIVE_THREATS) {
-        int attacker = type + (color == PIECE_WHITE ? 0 : 6);
-        white[(*white_count)++] =
-            (uint16_t)(white_base +
-                       g_threat_geometry_index[attacker][white_from][white_to]);
-    }
-    if (black_base != UINT16_MAX && *black_count < NN_MAX_ACTIVE_THREATS) {
-        int attacker = type + (color == PIECE_BLACK ? 0 : 6);
-        black[(*black_count)++] =
-            (uint16_t)(black_base +
-                       g_threat_geometry_index[attacker][black_from][black_to]);
-    }
-}
 
 static uint64_t threat_target_mask(const GameState *state, int attacker_type) {
     uint64_t mask = 0ULL;
@@ -1375,104 +1337,6 @@ static uint16_t collect_full_threats(const GameState *state,
     return count;
 }
 
-static void collect_full_threats_both(const GameState *state,
-                                      uint16_t white[NN_MAX_ACTIVE_THREATS],
-                                      uint16_t *white_count_out,
-                                      uint16_t black[NN_MAX_ACTIVE_THREATS],
-                                      uint16_t *black_count_out) {
-    init_threat_tables();
-    int white_king = chess_find_king_square(state, PIECE_WHITE);
-    int black_king = chess_find_king_square(state, PIECE_BLACK);
-    uint16_t white_count = 0;
-    uint16_t black_count = 0;
-    uint64_t pawns = state->bb[PIECE_WHITE][PIECE_PAWN]
-                   | state->bb[PIECE_BLACK][PIECE_PAWN];
-    uint64_t knights = state->bb[PIECE_WHITE][PIECE_KNIGHT]
-                     | state->bb[PIECE_BLACK][PIECE_KNIGHT];
-    uint64_t bishops = state->bb[PIECE_WHITE][PIECE_BISHOP]
-                     | state->bb[PIECE_BLACK][PIECE_BISHOP];
-    uint64_t rooks = state->bb[PIECE_WHITE][PIECE_ROOK]
-                   | state->bb[PIECE_BLACK][PIECE_ROOK];
-    uint64_t queens = state->bb[PIECE_WHITE][PIECE_QUEEN]
-                    | state->bb[PIECE_BLACK][PIECE_QUEEN];
-    uint64_t minor_slider_targets = pawns | knights | bishops | rooks;
-    uint64_t target_masks[5] = {
-        knights | rooks,
-        minor_slider_targets | queens,
-        minor_slider_targets,
-        minor_slider_targets,
-        minor_slider_targets | queens,
-    };
-    if (white_king < 0 || black_king < 0) {
-        *white_count_out = 0;
-        *black_count_out = 0;
-        return;
-    }
-    int white_orientation = (white_king & 7) < 4 ? 0 : 7;
-    int black_orientation = ((black_king & 7) < 4 ? 0 : 7) ^ 56;
-    for (int color = PIECE_WHITE; color <= PIECE_BLACK; ++color) {
-        uint64_t color_pawns = state->bb[color][PIECE_PAWN];
-        uint64_t pawn_attacks_a;
-        uint64_t pawn_attacks_h;
-        int from_delta_a;
-        int from_delta_h;
-        if (color == PIECE_WHITE) {
-            pawn_attacks_a = (color_pawns << 9) & UINT64_C(0xFEFEFEFEFEFEFEFE);
-            pawn_attacks_h = (color_pawns << 7) & UINT64_C(0x7F7F7F7F7F7F7F7F);
-            from_delta_a = -9;
-            from_delta_h = -7;
-        } else {
-            pawn_attacks_a = (color_pawns >> 7) & UINT64_C(0xFEFEFEFEFEFEFEFE);
-            pawn_attacks_h = (color_pawns >> 9) & UINT64_C(0x7F7F7F7F7F7F7F7F);
-            from_delta_a = 7;
-            from_delta_h = 9;
-        }
-        pawn_attacks_a &= target_masks[0];
-        pawn_attacks_h &= target_masks[0];
-        while (pawn_attacks_a != 0ULL) {
-            int to = threat_pop_lsb(&pawn_attacks_a);
-            append_full_threat_both(
-                state, color, 0, to + from_delta_a, to,
-                white_orientation, black_orientation,
-                white, &white_count, black, &black_count
-            );
-        }
-        while (pawn_attacks_h != 0ULL) {
-            int to = threat_pop_lsb(&pawn_attacks_h);
-            append_full_threat_both(
-                state, color, 0, to + from_delta_h, to,
-                white_orientation, black_orientation,
-                white, &white_count, black, &black_count
-            );
-        }
-
-        for (int piece = PIECE_QUEEN; piece < PIECE_PAWN; ++piece) {
-            int type = threat_piece_type(piece);
-            uint64_t attackers = state->bb[color][piece];
-            uint64_t targets = target_masks[type];
-            while (attackers != 0ULL) {
-                int from = threat_pop_lsb(&attackers);
-                uint64_t attacks;
-                if (type == 1) attacks = g_threat_knight_attacks[from];
-                else if (type == 2) attacks = hce_bishop_attacks(from, state->occ_all);
-                else if (type == 3) attacks = hce_rook_attacks(from, state->occ_all);
-                else attacks = hce_bishop_attacks(from, state->occ_all)
-                             | hce_rook_attacks(from, state->occ_all);
-                attacks &= targets;
-                while (attacks != 0ULL) {
-                    int to = threat_pop_lsb(&attacks);
-                    append_full_threat_both(
-                        state, color, type, from, to,
-                        white_orientation, black_orientation,
-                        white, &white_count, black, &black_count
-                    );
-                }
-            }
-        }
-    }
-    *white_count_out = white_count;
-    *black_count_out = black_count;
-}
 
 static void add_feature_row_i16(int16_t *acc,
                                 const NnEvalModel *model,
@@ -1519,43 +1383,9 @@ static void accumulate_full_threats_i16(const GameState *state,
     }
 }
 
-// Diff two threat lists without sorting: mark the old set in a per-thread
-// bitmap, add threats missing from it, then remove old ones never matched.
-// Each threat index occurs at most once per list, and accumulator adds are
-// exact modular int16 arithmetic, so the result does not depend on order.
-// (Sorting both lists for a merge was the largest cost of an NN update.)
+// Per-thread bitmap for threat-set diffs (see row_batch_push_threat_diff).
 static _Thread_local uint64_t g_threat_marks[(NN_FULL_THREATS_DIM + 63u) / 64u];
 
-static void apply_full_threat_diff_i16(const NnEvalModel *model,
-                                       const uint16_t *old_active,
-                                       uint16_t old_count,
-                                       int16_t *acc,
-                                       const uint16_t *new_active,
-                                       uint16_t new_count) {
-    // One TLS lookup per call (Mach-O resolves each access via _tlv_get_addr).
-    uint64_t *marks = g_threat_marks;
-    for (uint16_t i = 0; i < old_count; ++i) {
-        uint16_t t = old_active[i];
-        marks[t >> 6] |= UINT64_C(1) << (t & 63u);
-    }
-    for (uint16_t i = 0; i < new_count; ++i) {
-        uint16_t t = new_active[i];
-        uint64_t bit = UINT64_C(1) << (t & 63u);
-        if (marks[t >> 6] & bit) {
-            marks[t >> 6] &= ~bit;
-        } else {
-            add_threat_row_i16(acc, model, t, 1);
-        }
-    }
-    for (uint16_t i = 0; i < old_count; ++i) {
-        uint16_t t = old_active[i];
-        uint64_t bit = UINT64_C(1) << (t & 63u);
-        if (marks[t >> 6] & bit) {
-            marks[t >> 6] &= ~bit;
-            add_threat_row_i16(acc, model, t, -1);
-        }
-    }
-}
 
 static void accumulate_perspective(const GameState *state,
                                    const NnEvalModel *model,
@@ -1768,16 +1598,10 @@ static bool rebuild_frame(const GameState *state, NnAccumulatorFrame *frame) {
     }
     accumulate_psqt_perspective(state, model, PIECE_WHITE, frame->white_psqt);
     accumulate_psqt_perspective(state, model, PIECE_BLACK, frame->black_psqt);
-    if (header_uses_full_threats(&model->header)) {
-        collect_full_threats_both(
-            state,
-            frame->white_threats, &frame->white_threat_count,
-            frame->black_threats, &frame->black_threat_count
-        );
-    } else {
-        frame->white_threat_count = 0;
-        frame->black_threat_count = 0;
-    }
+    // Threat features are updated incrementally from the move (see
+    // threat_incremental_delta), so frames no longer keep threat lists.
+    frame->white_threat_count = 0;
+    frame->black_threat_count = 0;
     frame->valid = true;
     frame->key = state->zobrist_hash;
     frame->non_king_piece_count = white_count;
@@ -2505,6 +2329,188 @@ static int piece_feature_index(const NnEvalModel *model, int perspective, int ki
     return idx;
 }
 
+// ---- Incremental Full Threats ------------------------------------------
+// After a move only threats whose attacker is the moved piece, the captured
+// piece, or a piece attacking the from/to/captured square (before or after
+// the move, which covers every slider whose ray opens or closes) can change.
+// Recompute just those attackers' threats in the old and new positions and
+// diff them. This replaces collecting and diffing every threat on the board.
+typedef struct ThreatPosition {
+    uint64_t bb[PIECE_COLOR_COUNT][PIECE_TYPE_COUNT];
+    uint64_t occ;
+    const int8_t *sq_piece;
+    const int8_t *sq_color;
+    int override_sq[3];
+    int8_t override_piece[3];
+    int8_t override_color[3];
+    int override_count;
+} ThreatPosition;
+
+static inline void threat_position_piece(const ThreatPosition *pos, int sq, int *piece, int *color) {
+    for (int i = 0; i < pos->override_count; ++i) {
+        if (pos->override_sq[i] == sq) {
+            *piece = pos->override_piece[i];
+            *color = pos->override_color[i];
+            return;
+        }
+    }
+    *piece = pos->sq_piece[sq];
+    *color = pos->sq_color[sq];
+}
+
+static uint64_t threat_attackers_to(const ThreatPosition *pos, int sq) {
+    uint64_t a = 0;
+    a |= pos->bb[PIECE_WHITE][PIECE_PAWN] & hce_pawn_attacks(PIECE_BLACK, sq);
+    a |= pos->bb[PIECE_BLACK][PIECE_PAWN] & hce_pawn_attacks(PIECE_WHITE, sq);
+    a |= (pos->bb[PIECE_WHITE][PIECE_KNIGHT] | pos->bb[PIECE_BLACK][PIECE_KNIGHT]) &
+         g_threat_knight_attacks[sq];
+    uint64_t diag = pos->bb[PIECE_WHITE][PIECE_BISHOP] | pos->bb[PIECE_BLACK][PIECE_BISHOP] |
+                    pos->bb[PIECE_WHITE][PIECE_QUEEN] | pos->bb[PIECE_BLACK][PIECE_QUEEN];
+    uint64_t line = pos->bb[PIECE_WHITE][PIECE_ROOK] | pos->bb[PIECE_BLACK][PIECE_ROOK] |
+                    pos->bb[PIECE_WHITE][PIECE_QUEEN] | pos->bb[PIECE_BLACK][PIECE_QUEEN];
+    a |= diag & hce_bishop_attacks(sq, pos->occ);
+    a |= line & hce_rook_attacks(sq, pos->occ);
+    return a;
+}
+
+// Emit threat indices of the attackers on `attackers` in `pos` for the
+// perspectives in `persp_mask` (bit 0 white, bit 1 black).
+static void threat_emit(const ThreatPosition *pos, uint64_t attackers, int persp_mask,
+                        int white_orientation, int black_orientation,
+                        uint16_t *white, uint16_t *white_count,
+                        uint16_t *black, uint16_t *black_count) {
+    uint64_t pawns = pos->bb[PIECE_WHITE][PIECE_PAWN] | pos->bb[PIECE_BLACK][PIECE_PAWN];
+    uint64_t knights = pos->bb[PIECE_WHITE][PIECE_KNIGHT] | pos->bb[PIECE_BLACK][PIECE_KNIGHT];
+    uint64_t bishops = pos->bb[PIECE_WHITE][PIECE_BISHOP] | pos->bb[PIECE_BLACK][PIECE_BISHOP];
+    uint64_t rooks = pos->bb[PIECE_WHITE][PIECE_ROOK] | pos->bb[PIECE_BLACK][PIECE_ROOK];
+    uint64_t queens = pos->bb[PIECE_WHITE][PIECE_QUEEN] | pos->bb[PIECE_BLACK][PIECE_QUEEN];
+    uint64_t minor_slider_targets = pawns | knights | bishops | rooks;
+    const uint64_t target_masks[5] = {
+        knights | rooks,
+        minor_slider_targets | queens,
+        minor_slider_targets,
+        minor_slider_targets,
+        minor_slider_targets | queens,
+    };
+    while (attackers != 0ULL) {
+        int from = threat_pop_lsb(&attackers);
+        int piece, color;
+        threat_position_piece(pos, from, &piece, &color);
+        int type = threat_piece_type(piece);
+        if (type < 0 || type > 4) {
+            continue;
+        }
+        uint64_t attacks;
+        if (type == 0) attacks = hce_pawn_attacks(color, from);
+        else if (type == 1) attacks = g_threat_knight_attacks[from];
+        else if (type == 2) attacks = hce_bishop_attacks(from, pos->occ);
+        else if (type == 3) attacks = hce_rook_attacks(from, pos->occ);
+        else attacks = hce_bishop_attacks(from, pos->occ) | hce_rook_attacks(from, pos->occ);
+        attacks &= target_masks[type];
+        while (attacks != 0ULL) {
+            int to = threat_pop_lsb(&attacks);
+            int tpiece, tcolor;
+            threat_position_piece(pos, to, &tpiece, &tcolor);
+            int attacked_type = threat_piece_type(tpiece);
+            if (attacked_type < 0) {
+                continue;
+            }
+            if (persp_mask & 1) {
+                int wf = from ^ white_orientation, wt = to ^ white_orientation;
+                uint16_t base = g_threat_index_base[PIECE_WHITE][color][type][tcolor][attacked_type][wf < wt];
+                if (base != UINT16_MAX && *white_count < NN_MAX_ACTIVE_THREATS) {
+                    int attacker = type + (color == PIECE_WHITE ? 0 : 6);
+                    white[(*white_count)++] = (uint16_t)(base + g_threat_geometry_index[attacker][wf][wt]);
+                }
+            }
+            if (persp_mask & 2) {
+                int bf = from ^ black_orientation, bt = to ^ black_orientation;
+                uint16_t base = g_threat_index_base[PIECE_BLACK][color][type][tcolor][attacked_type][bf < bt];
+                if (base != UINT16_MAX && *black_count < NN_MAX_ACTIVE_THREATS) {
+                    int attacker = type + (color == PIECE_BLACK ? 0 : 6);
+                    black[(*black_count)++] = (uint16_t)(base + g_threat_geometry_index[attacker][bf][bt]);
+                }
+            }
+        }
+    }
+}
+
+// Push the threat-feature delta caused by the move in `undo` (state is the
+// position after it) into the row batches of the perspectives in persp_mask.
+static void threat_incremental_delta(const GameState *state, const UndoRecord *undo,
+                                     int persp_mask, int white_king_sq, int black_king_sq,
+                                     NnRowBatch *wb, int16_t *wdst, const int16_t **wsrc,
+                                     NnRowBatch *bb, int16_t *bdst, const int16_t **bsrc) {
+    init_threat_tables();
+    const NnEvalModel *model = &g_nn_model;
+    int mover = state->side_to_move ^ 1;
+    int from = move_from(undo->move);
+    int to = move_to(undo->move);
+    int piece = move_piece(undo->move);
+    int placed = move_has_flag(undo->move, MOVE_FLAG_PROMOTION) ? move_promo(undo->move) : piece;
+    bool captured = undo->captured_piece != PIECE_NONE;
+    int csq = captured ? undo->captured_square : -1;
+    int victim = state->side_to_move;
+
+    ThreatPosition now;
+    memcpy(now.bb, state->bb, sizeof(now.bb));
+    now.occ = state->occ_all;
+    now.sq_piece = state->sq_piece;
+    now.sq_color = state->sq_color;
+    now.override_count = 0;
+
+    ThreatPosition before = now;
+    before.bb[mover][placed] &= ~(1ULL << to);
+    before.bb[mover][piece] |= 1ULL << from;
+    before.override_count = 0;
+    before.override_sq[before.override_count] = from;
+    before.override_piece[before.override_count] = (int8_t)piece;
+    before.override_color[before.override_count++] = (int8_t)mover;
+    if (captured) {
+        before.bb[victim][undo->captured_piece] |= 1ULL << csq;
+        before.override_sq[before.override_count] = csq;
+        before.override_piece[before.override_count] = (int8_t)undo->captured_piece;
+        before.override_color[before.override_count++] = (int8_t)victim;
+    }
+    if (!captured || csq != to) {
+        before.override_sq[before.override_count] = to;
+        before.override_piece[before.override_count] = (int8_t)PIECE_NONE;
+        before.override_color[before.override_count++] = (int8_t)PIECE_COLOR_COUNT;
+    }
+    before.occ = (now.occ & ~(1ULL << to)) | (1ULL << from);
+    if (captured) {
+        before.occ |= 1ULL << csq;
+    }
+
+    uint64_t key = (1ULL << from) | (1ULL << to) | (captured ? (1ULL << csq) : 0ULL);
+    uint64_t a_old = 0, a_new = 0;
+    uint64_t k = key;
+    while (k != 0ULL) {
+        int sq = threat_pop_lsb(&k);
+        a_old |= threat_attackers_to(&before, sq);
+        a_new |= threat_attackers_to(&now, sq);
+    }
+    uint64_t unaffected = (a_old | a_new) & ~key;
+    uint64_t old_set = unaffected | (1ULL << from) | (captured ? (1ULL << csq) : 0ULL);
+    uint64_t new_set = unaffected | (1ULL << to);
+
+    int white_orientation = (white_king_sq & 7) < 4 ? 0 : 7;
+    int black_orientation = ((black_king_sq & 7) < 4 ? 0 : 7) ^ 56;
+    uint16_t wold[NN_MAX_ACTIVE_THREATS], wnew[NN_MAX_ACTIVE_THREATS];
+    uint16_t bold[NN_MAX_ACTIVE_THREATS], bnew[NN_MAX_ACTIVE_THREATS];
+    uint16_t nwo = 0, nwn = 0, nbo = 0, nbn = 0;
+    threat_emit(&before, old_set, persp_mask, white_orientation, black_orientation,
+                wold, &nwo, bold, &nbo);
+    threat_emit(&now, new_set, persp_mask, white_orientation, black_orientation,
+                wnew, &nwn, bnew, &nbn);
+    if (persp_mask & 1) {
+        row_batch_push_threat_diff(wb, model, wold, nwo, wnew, nwn, wdst, wsrc);
+    }
+    if (persp_mask & 2) {
+        row_batch_push_threat_diff(bb, model, bold, nbo, bnew, nbn, bdst, bsrc);
+    }
+}
+
 static bool update_frame_i16(const GameState *state,
                              const UndoRecord *undo,
                              const NnAccumulatorFrame *parent,
@@ -2541,16 +2547,12 @@ static bool update_frame_i16(const GameState *state,
             accumulate_perspective_i16(state, model, PIECE_WHITE, frame->white_acc16, NULL);
             accumulate_psqt_perspective(state, model, PIECE_WHITE, frame->white_psqt);
             if (header_uses_full_threats(&model->header)) {
-                frame->white_threat_count = collect_full_threats(
-                    state, PIECE_WHITE, frame->white_threats
-                );
-                frame->black_threat_count = collect_full_threats(
-                    state, PIECE_BLACK, frame->black_threats
-                );
-                apply_full_threat_diff_i16(
-                    model, parent->black_threats, parent->black_threat_count,
-                    frame->black_acc16, frame->black_threats, frame->black_threat_count
-                );
+                static _Thread_local NnRowBatch kb;
+                kb.n16 = kb.n8 = 0;
+                const int16_t *ksrc = frame->black_acc16;
+                threat_incremental_delta(state, undo, 2, white_king_sq, black_king_sq,
+                                         NULL, NULL, NULL, &kb, frame->black_acc16, &ksrc);
+                row_batch_apply(frame->black_acc16, ksrc, model->header.accumulator_dim, &kb);
             }
             if (header_uses_halfka(&model->header) &&
                 (!update_piece_feature_i16(frame->black_acc16, model, PIECE_BLACK,
@@ -2567,16 +2569,12 @@ static bool update_frame_i16(const GameState *state,
             accumulate_perspective_i16(state, model, PIECE_BLACK, frame->black_acc16, NULL);
             accumulate_psqt_perspective(state, model, PIECE_BLACK, frame->black_psqt);
             if (header_uses_full_threats(&model->header)) {
-                frame->black_threat_count = collect_full_threats(
-                    state, PIECE_BLACK, frame->black_threats
-                );
-                frame->white_threat_count = collect_full_threats(
-                    state, PIECE_WHITE, frame->white_threats
-                );
-                apply_full_threat_diff_i16(
-                    model, parent->white_threats, parent->white_threat_count,
-                    frame->white_acc16, frame->white_threats, frame->white_threat_count
-                );
+                static _Thread_local NnRowBatch kb;
+                kb.n16 = kb.n8 = 0;
+                const int16_t *ksrc = frame->white_acc16;
+                threat_incremental_delta(state, undo, 1, white_king_sq, black_king_sq,
+                                         &kb, frame->white_acc16, &ksrc, NULL, NULL, NULL);
+                row_batch_apply(frame->white_acc16, ksrc, model->header.accumulator_dim, &kb);
             }
             if (header_uses_halfka(&model->header) &&
                 (!update_piece_feature_i16(frame->white_acc16, model, PIECE_WHITE,
@@ -2656,15 +2654,8 @@ static bool update_frame_i16(const GameState *state,
     if (w_cap >= 0) row_batch_push_feature(&wb, model, (uint32_t)w_cap, -1, wdst, &wsrc);
     if (b_cap >= 0) row_batch_push_feature(&bb, model, (uint32_t)b_cap, -1, bdst, &bsrc);
     if (header_uses_full_threats(&model->header)) {
-        collect_full_threats_both(
-            state,
-            frame->white_threats, &frame->white_threat_count,
-            frame->black_threats, &frame->black_threat_count
-        );
-        row_batch_push_threat_diff(&wb, model, parent->white_threats, parent->white_threat_count,
-                                   frame->white_threats, frame->white_threat_count, wdst, &wsrc);
-        row_batch_push_threat_diff(&bb, model, parent->black_threats, parent->black_threat_count,
-                                   frame->black_threats, frame->black_threat_count, bdst, &bsrc);
+        threat_incremental_delta(state, undo, 3, white_king_sq, black_king_sq,
+                                 &wb, wdst, &wsrc, &bb, bdst, &bsrc);
     }
     row_batch_apply(wdst, wsrc, dim, &wb);
     row_batch_apply(bdst, bsrc, dim, &bb);
