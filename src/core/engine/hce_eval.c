@@ -160,12 +160,14 @@ static inline int mirror_sq(int sq) {
 }
 
 // Endgame-knowledge switches (UCI HcePawnPstFix/HceKingPst/HceKsFade/
-// HcePasser/HceScale). All zero reproduces the pre-switch engine exactly.
-static int g_opt_pawn_pst_fix = 0;
-static int g_opt_king_pst = 0;
-static int g_opt_ks_fade = 0;
-static int g_opt_passer = 0;
-static int g_opt_scale = 0;
+// HcePasser/HceScale), on by default: together +115 Elo on the endgame suite
+// and +108 on equal openings vs the all-off engine (10+0.1, 2026-09-27).
+// All zero reproduces the pre-switch evaluation.
+static int g_opt_pawn_pst_fix = 1;
+static int g_opt_king_pst = 1;
+static int g_opt_ks_fade = 1;
+static int g_opt_passer = 1;
+static int g_opt_scale = 1;
 
 bool hce_eval_set_option(const char *name, int value) {
     int *slot = NULL;

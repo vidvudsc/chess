@@ -19,7 +19,7 @@ TEST_DIR := tests
 BUILD_DIR := build
 BIN_DIR := bin
 
-INCLUDES := -I$(SRC_ENGINE_DIR) -I$(SRC_APP_DIR)
+INCLUDES := -I$(SRC_ENGINE_DIR) -I$(SRC_ENGINE_DIR)/fathom -I$(SRC_APP_DIR)
 
 CORE_SRCS := \
 	$(SRC_ENGINE_DIR)/chess_state.c \
@@ -32,7 +32,9 @@ CORE_SRCS := \
 	$(SRC_ENGINE_DIR)/nn_search.c \
 	$(SRC_ENGINE_DIR)/nn_search_support.c \
 	$(SRC_ENGINE_DIR)/hce_eval.c \
-	$(SRC_ENGINE_DIR)/hce_search.c
+	$(SRC_ENGINE_DIR)/hce_search.c \
+	$(SRC_ENGINE_DIR)/hce_tb.c \
+	$(SRC_ENGINE_DIR)/fathom/tbprobe.c
 
 APP_SRCS := \
 	$(SRC_APP_DIR)/main.c \
@@ -91,6 +93,11 @@ $(BUILD_DIR)/tests:
 
 $(BUILD_DIR)/engine/%.o: $(SRC_ENGINE_DIR)/%.c | $(BUILD_DIR)/engine
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+# Vendored Fathom (MIT): upstream code, built without our pedantic warnings.
+$(BUILD_DIR)/engine/fathom/tbprobe.o: $(SRC_ENGINE_DIR)/fathom/tbprobe.c | $(BUILD_DIR)/engine
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -Wall -Wextra -Wpedantic -std=c11,$(CFLAGS)) -std=gnu11 -w $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/engine/hce_search.o: $(SRC_ENGINE_DIR)/hce_search.c | $(BUILD_DIR)/engine
 	$(CC) $(filter-out -O%,$(CFLAGS)) $(HCE_SEARCH_OPT) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
