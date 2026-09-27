@@ -427,17 +427,34 @@ static int64_t dot_i8_i32_neon(const int8_t *weights, const int32_t *values, uin
     return sum;
 }
 
+// Eight int32 lanes each take count/8 products of |w| <= 128, |v| <= 32768,
+// so they cannot overflow for count <= 4096 (NN_MAX_TRANSFORM_DIM is 1024);
+// widening once at the end gives the same sum as per-step 64-bit adds.
 static int64_t dot_i8_i16_neon(const int8_t *weights, const int16_t *values, uint32_t count) {
-    int64x2_t acc64 = vdupq_n_s64(0);
+    int32x4_t acc0 = vdupq_n_s32(0);
+    int32x4_t acc1 = vdupq_n_s32(0);
+    int32x4_t acc2 = vdupq_n_s32(0);
+    int32x4_t acc3 = vdupq_n_s32(0);
     uint32_t i = 0;
-    for (; i + 8u <= count; i += 8u) {
-        int8x8_t w8 = vld1_s8(weights + i);
-        int16x8_t w16 = vmovl_s8(w8);
-        int16x8_t v16 = vld1q_s16(values + i);
-        acc64 = vpadalq_s32(acc64, vmull_s16(vget_low_s16(w16), vget_low_s16(v16)));
-        acc64 = vpadalq_s32(acc64, vmull_s16(vget_high_s16(w16), vget_high_s16(v16)));
+    // Four independent chains hide the multiply-accumulate latency.
+    for (; i + 16u <= count; i += 16u) {
+        int8x16_t w8 = vld1q_s8(weights + i);
+        int16x8_t wa = vmovl_s8(vget_low_s8(w8));
+        int16x8_t wb = vmovl_s8(vget_high_s8(w8));
+        int16x8_t va = vld1q_s16(values + i);
+        int16x8_t vb = vld1q_s16(values + i + 8u);
+        acc0 = vmlal_s16(acc0, vget_low_s16(wa), vget_low_s16(va));
+        acc1 = vmlal_s16(acc1, vget_high_s16(wa), vget_high_s16(va));
+        acc2 = vmlal_s16(acc2, vget_low_s16(wb), vget_low_s16(vb));
+        acc3 = vmlal_s16(acc3, vget_high_s16(wb), vget_high_s16(vb));
     }
-    int64_t sum = horizontal_add_s64x2(acc64);
+    for (; i + 8u <= count; i += 8u) {
+        int16x8_t w16 = vmovl_s8(vld1_s8(weights + i));
+        int16x8_t v16 = vld1q_s16(values + i);
+        acc0 = vmlal_s16(acc0, vget_low_s16(w16), vget_low_s16(v16));
+        acc1 = vmlal_s16(acc1, vget_high_s16(w16), vget_high_s16(v16));
+    }
+    int64_t sum = (int64_t)vaddlvq_s32(acc0) + vaddlvq_s32(acc1) + vaddlvq_s32(acc2) + vaddlvq_s32(acc3);
     for (; i < count; ++i) {
         sum += (int64_t)weights[i] * (int64_t)values[i];
     }
@@ -499,18 +516,18 @@ static int64_t dot_i8_i32_avx2(const int8_t *weights, const int32_t *values, uin
 
 __attribute__((target("avx2")))
 static int64_t dot_i8_i16_avx2(const int8_t *weights, const int16_t *values, uint32_t count) {
-    __m256i acc64 = _mm256_setzero_si256();
+    // Each int32 lane gets count/16 madd pairs (each |pair| <= 2^23), which
+    // cannot overflow for count <= 4096; widen once at the end.
+    __m256i acc32 = _mm256_setzero_si256();
     uint32_t i = 0;
     for (; i + 16u <= count; i += 16u) {
         __m128i w8 = _mm_loadu_si128((const __m128i *)(const void *)(weights + i));
         __m256i w16 = _mm256_cvtepi8_epi16(w8);
         __m256i v16 = _mm256_loadu_si256((const __m256i *)(const void *)(values + i));
-        __m256i pair32 = _mm256_madd_epi16(w16, v16);
-        __m128i lo = _mm256_castsi256_si128(pair32);
-        __m128i hi = _mm256_extracti128_si256(pair32, 1);
-        acc64 = _mm256_add_epi64(acc64, _mm256_cvtepi32_epi64(lo));
-        acc64 = _mm256_add_epi64(acc64, _mm256_cvtepi32_epi64(hi));
+        acc32 = _mm256_add_epi32(acc32, _mm256_madd_epi16(w16, v16));
     }
+    __m256i acc64 = _mm256_add_epi64(_mm256_cvtepi32_epi64(_mm256_castsi256_si128(acc32)),
+                                     _mm256_cvtepi32_epi64(_mm256_extracti128_si256(acc32, 1)));
     int64_t sum = horizontal_add_s64x4_avx2(acc64);
     for (; i < count; ++i) {
         sum += (int64_t)weights[i] * (int64_t)values[i];
@@ -974,6 +991,29 @@ static void quantize_accumulator_fixed_relu(const int32_t *src,
     }
 }
 
+#if defined(NN_HAS_X86_64) && (defined(__GNUC__) || defined(__clang__))
+// (v * m + 2^15) >> 16 for 0 <= v <= 32767, 0 < m <= 65535, from the unsigned
+// 16x16 product halves: the high half plus the rounding bit of the low half.
+__attribute__((target("avx2")))
+static uint32_t quantize_accumulator_i16_relu_avx2(const int16_t *src,
+                                                   uint32_t count,
+                                                   uint16_t multiplier16,
+                                                   int16_t *dst) {
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i max_value = _mm256_set1_epi16(NN_FIXED_ACT_QMAX);
+    const __m256i mult = _mm256_set1_epi16((short)multiplier16);
+    uint32_t i = 0;
+    for (; i + 16u <= count; i += 16u) {
+        __m256i v = _mm256_max_epi16(_mm256_loadu_si256((const __m256i *)(const void *)(src + i)), zero);
+        __m256i hi = _mm256_mulhi_epu16(v, mult);
+        __m256i lo = _mm256_mullo_epi16(v, mult);
+        __m256i q = _mm256_add_epi16(hi, _mm256_srli_epi16(lo, 15));
+        _mm256_storeu_si256((__m256i *)(void *)(dst + i), _mm256_min_epu16(q, max_value));
+    }
+    return i;
+}
+#endif
+
 static void quantize_accumulator_i16_relu(const int16_t *src,
                                            uint32_t count,
                                            int32_t multiplier,
@@ -981,20 +1021,29 @@ static void quantize_accumulator_i16_relu(const int16_t *src,
                                            int16_t *dst) {
     const int64_t rounding = shift > 0 ? (INT64_C(1) << (shift - 1u)) : 0;
     uint32_t i = 0;
+    // Models load with shift 16 and multipliers around 36-37k, above the old
+    // signed-16 fast-path limit, so every eval used the int64 scalar loop.
+    // Unsigned products keep the exact same rounding for m <= 65535.
+    const bool simd_ok = shift == 16u && multiplier > 0 && multiplier <= 65535;
+#if defined(NN_HAS_X86_64) && (defined(__GNUC__) || defined(__clang__))
+    if (simd_ok && cpu_supports_avx2()) {
+        i = quantize_accumulator_i16_relu_avx2(src, count, (uint16_t)multiplier, dst);
+    }
+#endif
 #if defined(NN_HAS_NEON)
-    if (shift == 16u && multiplier <= INT16_MAX) {
+    if (simd_ok) {
         const int16x8_t zero = vdupq_n_s16(0);
-        const int16x8_t max_value = vdupq_n_s16(NN_FIXED_ACT_QMAX);
-        const int32x4_t round_value = vdupq_n_s32(1 << 15);
-        const int16_t multiplier16 = (int16_t)multiplier;
+        const uint16x8_t max_value = vdupq_n_u16(NN_FIXED_ACT_QMAX);
+        const uint32x4_t round_value = vdupq_n_u32(1u << 15);
+        const uint16_t multiplier16 = (uint16_t)multiplier;
         for (; i + 8u <= count; i += 8u) {
-            int16x8_t value = vmaxq_s16(vld1q_s16(src + i), zero);
-            int32x4_t lo = vmull_n_s16(vget_low_s16(value), multiplier16);
-            int32x4_t hi = vmull_n_s16(vget_high_s16(value), multiplier16);
-            lo = vshrq_n_s32(vaddq_s32(lo, round_value), 16);
-            hi = vshrq_n_s32(vaddq_s32(hi, round_value), 16);
-            int16x8_t packed = vcombine_s16(vqmovn_s32(lo), vqmovn_s32(hi));
-            vst1q_s16(dst + i, vminq_s16(packed, max_value));
+            uint16x8_t value = vreinterpretq_u16_s16(vmaxq_s16(vld1q_s16(src + i), zero));
+            uint32x4_t lo = vmull_n_u16(vget_low_u16(value), multiplier16);
+            uint32x4_t hi = vmull_n_u16(vget_high_u16(value), multiplier16);
+            lo = vshrq_n_u32(vaddq_u32(lo, round_value), 16);
+            hi = vshrq_n_u32(vaddq_u32(hi, round_value), 16);
+            uint16x8_t packed = vcombine_u16(vqmovn_u32(lo), vqmovn_u32(hi));
+            vst1q_s16(dst + i, vreinterpretq_s16_u16(vminq_u16(packed, max_value)));
         }
     }
 #endif
@@ -1204,18 +1253,6 @@ static uint64_t threat_target_mask(const GameState *state, int attacker_type) {
     return mask;
 }
 
-static void sort_u16(uint16_t *values, uint16_t count) {
-    for (uint16_t i = 1; i < count; ++i) {
-        uint16_t value = values[i];
-        uint16_t j = i;
-        while (j > 0 && values[j - 1] > value) {
-            values[j] = values[j - 1];
-            --j;
-        }
-        values[j] = value;
-    }
-}
-
 static inline int threat_pop_lsb(uint64_t *bb) {
     int sq = __builtin_ctzll(*bb);
     *bb &= *bb - 1;
@@ -1256,7 +1293,6 @@ static uint16_t collect_full_threats(const GameState *state,
             }
         }
     }
-    sort_u16(out, count);
     return count;
 }
 
@@ -1355,8 +1391,6 @@ static void collect_full_threats_both(const GameState *state,
             }
         }
     }
-    sort_u16(white, white_count);
-    sort_u16(black, black_count);
     *white_count_out = white_count;
     *black_count_out = black_count;
 }
@@ -1406,23 +1440,38 @@ static void accumulate_full_threats_i16(const GameState *state,
     }
 }
 
+// Diff two threat lists without sorting: mark the old set in a per-thread
+// bitmap, add threats missing from it, then remove old ones never matched.
+// Each threat index occurs at most once per list, and accumulator adds are
+// exact modular int16 arithmetic, so the result does not depend on order.
+// (Sorting both lists for a merge was the largest cost of an NN update.)
+static _Thread_local uint64_t g_threat_marks[(NN_FULL_THREATS_DIM + 63u) / 64u];
+
 static void apply_full_threat_diff_i16(const NnEvalModel *model,
                                        const uint16_t *old_active,
                                        uint16_t old_count,
                                        int16_t *acc,
                                        const uint16_t *new_active,
                                        uint16_t new_count) {
-    uint16_t old_index = 0;
-    uint16_t new_index = 0;
-    while (old_index < old_count || new_index < new_count) {
-        if (new_index >= new_count ||
-            (old_index < old_count && old_active[old_index] < new_active[new_index])) {
-            add_threat_row_i16(acc, model, old_active[old_index++], -1);
-        } else if (old_index >= old_count || new_active[new_index] < old_active[old_index]) {
-            add_threat_row_i16(acc, model, new_active[new_index++], 1);
+    for (uint16_t i = 0; i < old_count; ++i) {
+        uint16_t t = old_active[i];
+        g_threat_marks[t >> 6] |= UINT64_C(1) << (t & 63u);
+    }
+    for (uint16_t i = 0; i < new_count; ++i) {
+        uint16_t t = new_active[i];
+        uint64_t bit = UINT64_C(1) << (t & 63u);
+        if (g_threat_marks[t >> 6] & bit) {
+            g_threat_marks[t >> 6] &= ~bit;
         } else {
-            ++old_index;
-            ++new_index;
+            add_threat_row_i16(acc, model, t, 1);
+        }
+    }
+    for (uint16_t i = 0; i < old_count; ++i) {
+        uint16_t t = old_active[i];
+        uint64_t bit = UINT64_C(1) << (t & 63u);
+        if (g_threat_marks[t >> 6] & bit) {
+            g_threat_marks[t >> 6] &= ~bit;
+            add_threat_row_i16(acc, model, t, -1);
         }
     }
 }
@@ -1785,9 +1834,11 @@ static int evaluate_i16_screlu_from_frame(const GameState *state,
         state->side_to_move == PIECE_WHITE ? frame->white_acc16 : frame->black_acc16;
     const int16_t *back_acc =
         state->side_to_move == PIECE_WHITE ? frame->black_acc16 : frame->white_acc16;
-    int16_t transformed[NN_MAX_TRANSFORM_DIM] = {0};
-    float hidden_f[NN_MAX_HIDDEN_DIM] = {0};
-    int16_t hidden_q[NN_MAX_HIDDEN_DIM] = {0};
+    // Fully written below before any read; zero-filling 2.8 KB per eval
+    // showed up in profiles.
+    int16_t transformed[NN_MAX_TRANSFORM_DIM];
+    float hidden_f[NN_MAX_HIDDEN_DIM];
+    int16_t hidden_q[NN_MAX_HIDDEN_DIM];
 
     quantize_accumulator_i16_relu(front_acc,
                                   acc_dim,
