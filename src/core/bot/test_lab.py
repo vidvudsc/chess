@@ -865,7 +865,7 @@ def parse_args() -> argparse.Namespace:
                         help="Competitor name to anchor at Elo 0 in head-to-head reporting. Defaults to the first competitor when there are exactly two.")
     parser.add_argument("--think-ms", type=int, default=120, help="Per-move think time for each engine.")
     parser.add_argument("--max-depth", type=int, default=0, help="Optional depth cap (0 = engine default).")
-    parser.add_argument("--max-plies", type=int, default=160, help="Draw the game if this ply limit is reached.")
+    parser.add_argument("--max-plies", type=int, default=600, help="Draw the game if this ply limit is reached (fifty-move and repetition rules end normal games first).")
     parser.add_argument("--positions-file", default=str(DEFAULT_POSITIONS), help="FEN list to sample from.")
     parser.add_argument("--book-file", default="", help="Book file to pass to engines. Empty disables it.")
     parser.add_argument("--seed", type=int, default=20260305, help="PRNG seed for position order.")
