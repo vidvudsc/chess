@@ -122,6 +122,8 @@ class BotConfig:
     max_outgoing_challenges_per_hour: int = 6
     online_bot_fetch_limit: int = 100
     initial_pair_delay_seconds: float = 0.0
+    syzygy_path: str = ""
+    hash_mb: int = 0
 
 
 @dataclass(frozen=True)
@@ -476,6 +478,8 @@ class BotRunner:
         self.username_lc = self.username.lower()
         self.active_games: Dict[str, ActiveGame] = {}
         self.finished_games: Dict[str, float] = {}
+        # game_id -> (account-snapshot state key, first time seen unchanged)
+        self.stall_watch: Dict[str, tuple] = {}
         self.pending_slots: Dict[str, PendingSlot] = {}
         self.bot_cooldowns: Dict[str, float] = {}
         self.bot_cursor = 0
@@ -841,6 +845,7 @@ class BotRunner:
         ):
             raise ValueError("invalid account playing snapshot")
         live = {g["gameId"] for g in playing}
+        self._release_stalled_games(playing)
         for game_id, game in before.items():
             if game_id not in live and time.monotonic() - game.started_at >= 60.0:
                 self._mark_game_done(game_id, source="reconcile", expected=game)
@@ -850,6 +855,56 @@ class BotRunner:
             if game.get("speed") == "correspondence":
                 continue
             self._start_game_thread(game["gameId"], opponent=game.get("opponent"))
+
+    # A game Lichess still lists as running while the opponent has not moved
+    # for this long holds a slot and an engine forever (seen 2026-09-26: a bot
+    # opponent never answered 1.e4 and the game stayed "started" for 34h).
+    STALL_ABORT_SECONDS = 180.0
+    STALL_CLAIM_SECONDS = 1200.0
+
+    def _release_stalled_games(self, playing: List[dict]) -> None:
+        now = time.monotonic()
+        seen = set()
+        if not hasattr(self, "stall_watch"):
+            self.stall_watch = {}
+        for g in playing:
+            game_id = g["gameId"]
+            seen.add(game_id)
+            key = f"{g.get('lastMove', '')}|{g.get('isMyTurn')}|{g.get('fen', '')}"
+            prev = self.stall_watch.get(game_id)
+            if prev is None or prev[0] != key:
+                self.stall_watch[game_id] = (key, now)
+                continue
+            if g.get("isMyTurn", True):
+                continue
+            idle = now - prev[1]
+            plies = self._plies_from_fen(g.get("fen", ""))
+            if plies is not None and plies < 2 and idle >= self.STALL_ABORT_SECONDS:
+                self._try_end_stalled(game_id, ("abort",), idle)
+            elif idle >= self.STALL_CLAIM_SECONDS:
+                self._try_end_stalled(game_id, ("claim-victory", "abort"), idle)
+        for game_id in list(self.stall_watch):
+            if game_id not in seen:
+                del self.stall_watch[game_id]
+
+    @staticmethod
+    def _plies_from_fen(fen: str) -> Optional[int]:
+        parts = fen.split()
+        if len(parts) >= 6 and parts[1] in ("w", "b") and parts[5].isdigit():
+            return 2 * (int(parts[5]) - 1) + (1 if parts[1] == "b" else 0)
+        if len(parts) >= 2 and parts[1] in ("w", "b") and parts[0].startswith("rnbqkbnr/pppppppp"):
+            return 0 if parts[1] == "w" else 1
+        return None
+
+    def _try_end_stalled(self, game_id: str, actions: tuple, idle: float) -> None:
+        for action in actions:
+            try:
+                self.api.post(f"/api/bot/game/{game_id}/{action}")
+                log_event("game", f"stalled {idle:.0f}s with opponent to move: {action} ok", game_id)
+                self.stall_watch.pop(game_id, None)
+                return
+            except requests.RequestException as exc:
+                log_event("game", f"stalled {idle:.0f}s: {action} failed: {exc}", game_id)
 
     def _dispatch_event(self, event: dict) -> None:
         if not isinstance(event, dict):
@@ -1295,6 +1350,10 @@ class BotRunner:
             options["MaxDepth"] = self.cfg.max_depth
         if self.cfg.book_path and "BookFile" in engine.options:
             options["BookFile"] = self.cfg.book_path
+        if self.cfg.syzygy_path and "SyzygyPath" in engine.options:
+            options["SyzygyPath"] = self.cfg.syzygy_path
+        if self.cfg.hash_mb > 0 and "Hash" in engine.options:
+            options["Hash"] = self.cfg.hash_mb
         if options:
             engine.configure(options)
         log_event("engine", f"configured options: {options if options else '(none)'}")
@@ -1998,6 +2057,10 @@ def parse_args() -> BotConfig:
     parser.add_argument("--log-keep-files", type=int, default=log_keep_files_default,
                         help="How many rotated log files to keep")
     parser.add_argument("--book-path", default=default_book_path, help="Optional opening book file path")
+    parser.add_argument("--syzygy-path", default=os.environ.get("LICHESS_BOT_SYZYGY_PATH", ""),
+                        help="Syzygy tablebase directory passed to the engine (empty disables)")
+    parser.add_argument("--hash-mb", type=int, default=env_int("LICHESS_BOT_HASH_MB") or 0,
+                        help="Engine transposition table size in MB (0 keeps the engine default)")
 
     args = parser.parse_args()
     if not args.token:
@@ -2074,6 +2137,8 @@ def parse_args() -> BotConfig:
         max_outgoing_challenges_per_hour=max_outgoing_challenges_per_hour,
         online_bot_fetch_limit=online_bot_fetch_limit,
         initial_pair_delay_seconds=initial_pair_delay_seconds,
+        syzygy_path=args.syzygy_path,
+        hash_mb=max(0, args.hash_mb),
     )
 
 

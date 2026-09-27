@@ -258,3 +258,44 @@ def test_hce_reserves_clock_with_network_overhead():
                 chess.BLACK, initial, increment, 0.35, 1)
             remaining += increment - budget - 0.25
         assert remaining > 2.0, (initial, increment, remaining)
+
+
+def _stall_bot(monkeypatch, clock):
+    bot = runner()
+    bot.api = Mock()
+    monkeypatch.setattr("src.core.bot.run.time.monotonic", lambda: clock[0])
+    return bot
+
+
+def test_unanswered_first_move_is_aborted(monkeypatch):
+    clock = [1000.0]
+    bot = _stall_bot(monkeypatch, clock)
+    snap = [{"gameId": "stuck", "isMyTurn": False, "lastMove": "e2e4",
+             "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"}]
+    bot._release_stalled_games(snap)
+    clock[0] += 120.0
+    bot._release_stalled_games(snap)
+    bot.api.post.assert_not_called()
+    clock[0] += 61.0
+    bot._release_stalled_games(snap)
+    bot.api.post.assert_called_once_with("/api/bot/game/stuck/abort")
+
+
+def test_stall_watch_ignores_our_turn_and_resets_on_moves(monkeypatch):
+    clock = [0.0]
+    bot = _stall_bot(monkeypatch, clock)
+    mine = [{"gameId": "g", "isMyTurn": True, "lastMove": "e7e5", "fen": "x w - - 0 2"}]
+    bot._release_stalled_games(mine)
+    clock[0] += 5000.0
+    bot._release_stalled_games(mine)
+    bot.api.post.assert_not_called()
+    theirs = [{"gameId": "g", "isMyTurn": False, "lastMove": "g1f3", "fen": "x b - - 0 2"}]
+    bot._release_stalled_games(theirs)
+    clock[0] += 1199.0
+    bot._release_stalled_games(theirs)
+    bot.api.post.assert_not_called()
+    clock[0] += 2.0
+    bot._release_stalled_games(theirs)
+    bot.api.post.assert_called_once_with("/api/bot/game/g/claim-victory")
+    bot._release_stalled_games([])
+    assert bot.stall_watch == {}
