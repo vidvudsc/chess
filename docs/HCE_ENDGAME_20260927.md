@@ -53,6 +53,21 @@ exact reconstruction, l2=3) raised rooks 638->656 and the queen 1299->1320,
 cut middlegame mobility, and lowered the passed-pawn eg scale 122->114 now
 that the new passer terms carry part of that value.
 
+## Acceptance vs the live engine (30+0.3, real clocks)
+
+| Match | Suite | Games | Score | Elo |
+|---|---|---:|---:|---:|
+| Final (all switches, refit, 3-4-5 tables) vs 2026-09-25 live binary | endgame | 200 | 65.5% (+71 =120 -9) | +111 [+83, +142] |
+| Hash 4 MB vs 1 MB (proxy for 64 vs 16 MB at live node counts) | openings | 200 | 55.2% | +37 (P=97%) |
+
+## Live rollout
+
+- 2026-09-27 16:29 UTC: `20260927_160217_3d29f18` (switches on, tables, watchdog).
+- 2026-09-27 16:51 UTC: `20260927_165054_432b4c2` (Texel refit, drain file,
+  `LICHESS_BOT_HASH_MB=64`). Both switches waited for an idle account; no game
+  was interrupted. Ratings at rollout: bullet 2153, blitz 2115, rapid 2237,
+  classical 2191.
+
 Tablebases vs none (endgame suite, 50 games): 48%, within noise. Audit of
 every game with python-chess's Syzygy reader: the tablebase side never made a
 move that worsened its WDL; every loss was already lost on entering the
