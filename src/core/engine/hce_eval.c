@@ -1116,7 +1116,9 @@ static void compute_pawn_eval_terms(const GameState *s, int side, PawnEvalTerms 
         eval_term_add(&out->passed_pawns, passer_mg, passer_eg);
         int adv_idx = advance - 1;
         if (adv_idx >= 0 && adv_idx < 6) {
-            eval_term_add(&out->passed_pawns,
+            // Outside passed_pawns so the passed-pawn scale does not touch
+            // it: texel_tune.py models these as plain linear terms.
+            eval_term_add(&out->pawn_activity,
                           k_passer_rank_mg[adv_idx],
                           k_passer_rank_eg[adv_idx]);
         }
@@ -1422,7 +1424,7 @@ static int eval_side(const GameState *s,
                         }
                         int adv_idx = advance - 1;
                         if (adv_idx >= 0 && adv_idx < 6) {
-                            eval_term_add(&terms.passed_pawns,
+                            eval_term_add(&terms.pawn_activity,
                                           k_passer_rank_mg[adv_idx],
                                           k_passer_rank_eg[adv_idx]);
                             if (feat != NULL) {
@@ -1539,16 +1541,8 @@ static int eval_side(const GameState *s,
         feat->pawn_threat_major = pawn_threat_major;
     }
 
-    int king_danger = king_safety_penalty(s, side, attack_unions);
-    int fade = king_danger_fade_pct(s, side);
-    if (fade != 100) {
-        // Feature dumps keep the unfaded count; the difference lands in the
-        // residual so reconstruction stays exact.
-        int faded = king_danger * fade / 100;
-        eval_term_add(&terms.endgame_extra,
-                      (king_danger - faded) * -k_king_mg_scale / 100,
-                      ((king_danger / 4) - (faded / 4)) * -k_king_eg_scale / 100);
-    }
+    int king_danger = king_safety_penalty(s, side, attack_unions) *
+                      king_danger_fade_pct(s, side) / 100;
     if (g_opt_passer && passers != 0) {
         passer_extra_terms(s, side, passers, attack_unions, &terms.endgame_extra);
     }
