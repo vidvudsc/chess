@@ -8,6 +8,7 @@
 #include "chess_io.h"
 #include "chess_rules.h"
 #include "hce_internal.h"
+#include "hce_tb.h"
 
 typedef struct UciOptions {
     int think_time_ms;
@@ -222,6 +223,22 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         set_spin_option(name_buf, value_buf, "HceLmrBase", 0, 4, &opt->hce_lmr_base_reduction) ||
         set_spin_option(name_buf, value_buf, "HceLmrDepthBonusAt", 0, 16, &opt->hce_lmr_depth_bonus_at) ||
         set_spin_option(name_buf, value_buf, "HceLmrMoveBonusAt", 0, 32, &opt->hce_lmr_move_bonus_at)) {
+        return;
+    }
+
+    if (str_ieq(name_buf, "Hash")) {
+        int mb = 0;
+        if (parse_int_token(value_buf, &mb) && mb > 0) {
+            printf("info string nn hash set to %d MB\n", nn_search_set_hash_mb(mb));
+            fflush(stdout);
+        }
+        return;
+    }
+
+    if (str_ieq(name_buf, "SyzygyPath")) {
+        int largest = hce_tb_init(value_buf);
+        printf("info string syzygy %s: %d-man tables\n", value_buf, largest);
+        fflush(stdout);
         return;
     }
 
@@ -740,6 +757,8 @@ static void print_uci_intro(const UciOptions *opt) {
            chess_ai_get_nn_search_option("NNPawnCorrectionWeight"));
     printf("option name NNStructureCorrectionWeight type spin default %d min 0 max 2000\n",
            chess_ai_get_nn_search_option("NNStructureCorrectionWeight"));
+    printf("option name Hash type spin default 16 min 1 max 1024\n");
+    printf("option name SyzygyPath type string default <empty>\n");
     printf("option name BookFile type string default auto\n");
     printf("option name PolicyRootHints type string default \n");
     printf("option name PolicyRootBonus type spin default %d min 0 max 1000000\n", opt->policy_root_bonus);

@@ -21,8 +21,10 @@
 #include "hce_internal.h"
 #include "chess_hash.h"
 #include "nn_eval.h"
+#include "hce_tb.h"
 
 #include <limits.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,14 +49,19 @@ typedef enum HceTtBound {
     HCE_TT_UPPER = 3,
 } HceTtBound;
 
+// Lock-free TT entry shared by lazy-SMP threads: a key word plus one packed
+// payload word, written under a key lock so readers never see a torn entry.
 typedef struct HceTtEntry {
-    uint64_t key;
-    Move move;
-    int16_t score;
-    int8_t depth;
-    uint8_t bound;
-    uint8_t age;
+    atomic_uint_fast64_t key;
+    atomic_uint_fast64_t payload;
 } HceTtEntry;
+
+#define HCE_TT_WRITE_LOCK UINT64_MAX
+#define HCE_TT_MOVE_MASK ((1ULL << 26) - 1ULL)
+#define HCE_TT_SCORE_SHIFT 26u
+#define HCE_TT_DEPTH_SHIFT 42u
+#define HCE_TT_BOUND_SHIFT 50u
+#define HCE_TT_AGE_SHIFT 52u
 
 typedef struct HceEvalCacheEntry {
     uint64_t key;
@@ -101,6 +108,8 @@ typedef struct HceSearchContext {
     int64_t deadline_ms;
     int64_t hard_deadline_ms;
     bool timed_out;
+    // The first iteration always completes so stop can never yield depth 0.
+    bool in_first_iteration;
     uint64_t nodes;
     int max_depth;
     Move policy_root_moves[CHESS_MAX_MOVES];
@@ -216,7 +225,9 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .structure_correction_weight_permille = 0,
 };
 
-static HceTtEntry g_hce_tt[HCE_TT_SIZE];
+static HceTtEntry g_hce_tt_default[HCE_TT_SIZE];
+static HceTtEntry *g_hce_tt = g_hce_tt_default;
+static uint64_t g_hce_tt_mask = HCE_TT_MASK;
 static uint8_t g_hce_tt_generation = 0;
 static int16_t g_nn_pawn_correction[PIECE_COLOR_COUNT][HCE_NN_PAWN_CORRECTION_SIZE];
 static int16_t g_nn_minor_correction[PIECE_COLOR_COUNT][HCE_NN_PAWN_CORRECTION_SIZE];
@@ -466,7 +477,12 @@ void hce_nn_search_reset_options(void) {
 
 static int64_t now_ms(void) {
     struct timespec ts;
+#if defined(_WIN32)
+    // msvcrt-based mingw has no timespec_get; winpthreads supplies clock_gettime.
+    clock_gettime(CLOCK_REALTIME, &ts);
+#else
     timespec_get(&ts, TIME_UTC);
+#endif
     return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
 }
 
@@ -594,31 +610,66 @@ static int tt_score_from_store(int score, int ply) {
 }
 
 static HceTtEntry *tt_entry(uint64_t key) {
-    return &g_hce_tt[key & HCE_TT_MASK];
+    return &g_hce_tt[key & g_hce_tt_mask];
+}
+
+static uint64_t tt_pack_payload(Move move, int score, int depth, HceTtBound bound, uint8_t age) {
+    return ((uint64_t)move & HCE_TT_MOVE_MASK) |
+           ((uint64_t)(uint16_t)(int16_t)score << HCE_TT_SCORE_SHIFT) |
+           ((uint64_t)(uint8_t)(int8_t)depth << HCE_TT_DEPTH_SHIFT) |
+           ((uint64_t)bound << HCE_TT_BOUND_SHIFT) |
+           ((uint64_t)age << HCE_TT_AGE_SHIFT);
+}
+
+static Move tt_payload_move(uint64_t payload) {
+    return (Move)(payload & HCE_TT_MOVE_MASK);
+}
+
+static int tt_payload_score(uint64_t payload) {
+    return (int)(int16_t)((payload >> HCE_TT_SCORE_SHIFT) & 0xFFFFULL);
+}
+
+static int tt_payload_depth(uint64_t payload) {
+    return (int)(int8_t)((payload >> HCE_TT_DEPTH_SHIFT) & 0xFFULL);
+}
+
+static HceTtBound tt_payload_bound(uint64_t payload) {
+    return (HceTtBound)((payload >> HCE_TT_BOUND_SHIFT) & 0x3ULL);
+}
+
+static uint8_t tt_payload_age(uint64_t payload) {
+    return (uint8_t)((payload >> HCE_TT_AGE_SHIFT) & 0xFFULL);
 }
 
 static bool tt_probe(uint64_t key, int depth, int ply, int alpha, int beta, Move *move_out, int *score_out) {
     HceTtEntry *entry = tt_entry(key);
-    if (entry->bound == HCE_TT_NONE || entry->key != key) {
+    uint64_t key_before = atomic_load_explicit(&entry->key, memory_order_acquire);
+    if (key_before != key || key_before == HCE_TT_WRITE_LOCK) {
+        return false;
+    }
+    uint64_t payload = atomic_load_explicit(&entry->payload, memory_order_relaxed);
+    uint64_t key_after = atomic_load_explicit(&entry->key, memory_order_acquire);
+    HceTtBound bound = tt_payload_bound(payload);
+    if (key_after != key_before || bound == HCE_TT_NONE) {
         return false;
     }
     if (move_out != NULL) {
-        *move_out = entry->move;
+        *move_out = tt_payload_move(payload);
     }
-    if (entry->depth < depth || score_out == NULL) {
+    if (tt_payload_depth(payload) < depth || score_out == NULL) {
         return false;
     }
 
-    int score = tt_score_from_store(entry->score, ply);
-    if (entry->bound == HCE_TT_EXACT) {
+    int score = tt_score_from_store(tt_payload_score(payload), ply);
+    if (bound == HCE_TT_EXACT) {
         *score_out = score;
         return true;
     }
-    if (entry->bound == HCE_TT_LOWER && score >= beta) {
+    if (bound == HCE_TT_LOWER && score >= beta) {
         *score_out = score;
         return true;
     }
-    if (entry->bound == HCE_TT_UPPER && score <= alpha) {
+    if (bound == HCE_TT_UPPER && score <= alpha) {
         *score_out = score;
         return true;
     }
@@ -627,28 +678,78 @@ static bool tt_probe(uint64_t key, int depth, int ply, int alpha, int beta, Move
 
 static void tt_store(uint64_t key, int depth, int ply, int score, HceTtBound bound, Move move) {
     HceTtEntry *entry = tt_entry(key);
+    uint64_t current_key = atomic_load_explicit(&entry->key, memory_order_acquire);
+    if (current_key == HCE_TT_WRITE_LOCK) {
+        return;
+    }
+    uint64_t current_payload = atomic_load_explicit(&entry->payload, memory_order_relaxed);
     // Keep deeper data for the same position within the current search
     // generation; entries from older searches are always replaceable.
-    if (entry->bound != HCE_TT_NONE &&
-        entry->key == key &&
-        entry->age == g_hce_tt_generation &&
-        entry->depth > depth &&
+    if (tt_payload_bound(current_payload) != HCE_TT_NONE &&
+        current_key == key &&
+        tt_payload_age(current_payload) == g_hce_tt_generation &&
+        tt_payload_depth(current_payload) > depth &&
         bound != HCE_TT_EXACT) {
         return;
     }
-    entry->key = key;
-    entry->move = move;
-    entry->depth = (int8_t)depth;
-    entry->bound = (uint8_t)bound;
-    entry->age = g_hce_tt_generation;
-    entry->score = (int16_t)tt_score_to_store(score, ply);
+    if (!atomic_compare_exchange_strong_explicit(&entry->key,
+                                                  &current_key,
+                                                  HCE_TT_WRITE_LOCK,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire)) {
+        return;
+    }
+    atomic_store_explicit(&entry->payload,
+                          tt_pack_payload(move, tt_score_to_store(score, ply), depth, bound,
+                                          g_hce_tt_generation),
+                          memory_order_relaxed);
+    atomic_store_explicit(&entry->key, key, memory_order_release);
+}
+
+// UCI Hash for the NN search TT: largest power of two that fits. Takes the
+// search lock so it never races a search; 16 MB keeps the built-in table.
+int nn_search_set_hash_mb(int mb) {
+    if (mb < 1) {
+        mb = 1;
+    }
+    uint64_t entries = 1;
+    while (entries * 2 * sizeof(HceTtEntry) <= (uint64_t)mb * 1024u * 1024u) {
+        entries *= 2;
+    }
+    hce_lock();
+    HceTtEntry *next = g_hce_tt_default;
+    if (entries != HCE_TT_SIZE) {
+        next = calloc((size_t)entries, sizeof(HceTtEntry));
+        if (next == NULL) {
+            hce_unlock();
+            return (int)((g_hce_tt_mask + 1) * sizeof(HceTtEntry) / (1024u * 1024u));
+        }
+    } else {
+        memset(g_hce_tt_default, 0, sizeof(g_hce_tt_default));
+    }
+    if (g_hce_tt != g_hce_tt_default) {
+        free(g_hce_tt);
+    }
+    g_hce_tt = next;
+    g_hce_tt_mask = entries - 1;
+    hce_unlock();
+    return (int)(entries * sizeof(HceTtEntry) / (1024u * 1024u));
 }
 
 static bool should_stop(HceSearchContext *ctx) {
-    if (ctx == NULL || ctx->deadline_ms <= 0) {
+    if (ctx == NULL || ctx->in_first_iteration) {
         return false;
     }
     if ((ctx->nodes & 2047ULL) != 0ULL) {
+        return false;
+    }
+    // UCI "stop" (and the end of the main thread for SMP helpers). Without
+    // this a pondering bot could not interrupt a long NN search.
+    if (hce_search_stop_requested()) {
+        ctx->timed_out = true;
+        return true;
+    }
+    if (ctx->deadline_ms <= 0) {
         return false;
     }
     if (now_ms() >= ctx->deadline_ms) {
@@ -1600,6 +1701,22 @@ static int negamax(GameState *s,
         return tt_score;
     }
 
+    // Syzygy WDL right after a capture or pawn move; cursed wins and blessed
+    // losses are draws under the fifty-move rule.
+    if (ply > 0 && hce_tb_largest() > 0) {
+        int wdl = 0;
+        if (hce_tb_probe_wdl(s, &wdl)) {
+            int tb_score = wdl;
+            if (wdl == 2) {
+                tb_score = HCE_TB_WIN - ply;
+            } else if (wdl == -2) {
+                tb_score = -HCE_TB_WIN + ply;
+            }
+            tt_store(s->zobrist_hash, depth + 6, ply, tb_score, HCE_TT_EXACT, 0);
+            return tb_score;
+        }
+    }
+
     bool in_check = chess_in_check(s, s->side_to_move);
     const HceSearchProfile *profile = search_profile(ctx);
     if (profile->internal_reduction != 0 &&
@@ -2155,7 +2272,8 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     bool have_iter_score = false;
 
     for (int depth = 1; depth <= ctx.max_depth; ++depth) {
-        if (should_stop(&ctx)) {
+        ctx.in_first_iteration = (depth == 1);
+        if (depth > 1 && should_stop(&ctx)) {
             break;
         }
         if (depth >= 2 && depth_reached >= 1) {
@@ -2239,12 +2357,79 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     return true;
 }
 
+// Lazy SMP: helpers search the same root with their own contexts and share
+// only the TT; the main thread's result is the one played.
+#define NN_MAX_THREADS 8
+
+typedef struct NnSmpHelperArgs {
+    GameState root;
+    AiSearchConfig cfg;
+} NnSmpHelperArgs;
+
+static void *nn_smp_helper_main(void *arg) {
+    NnSmpHelperArgs *a = (NnSmpHelperArgs *)arg;
+    AiSearchResult scratch;
+    run_search(&a->root, &a->cfg, &scratch, 0, 0);
+    return NULL;
+}
+
 bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchResult *out) {
     bool ok;
     hce_lock();
     hce_init_tables();
     g_hce_tt_generation += 1;
+
+    Move tb_move = 0;
+    int tb_score = 0;
+    if (state != NULL && out != NULL && hce_tb_largest() > 0 &&
+        hce_tb_probe_root(state, &tb_move, &tb_score)) {
+        memset(out, 0, sizeof(*out));
+        out->best_move = tb_move;
+        out->found_move = true;
+        out->score_cp = tb_score;
+        out->depth_reached = 1;
+        hce_unlock();
+        return true;
+    }
+
+    int threads = (cfg != NULL) ? cfg->threads : 1;
+    if (threads > NN_MAX_THREADS) {
+        threads = NN_MAX_THREADS;
+    }
+    pthread_t helper_threads[NN_MAX_THREADS];
+    static NnSmpHelperArgs helper_args[NN_MAX_THREADS];
+    int helpers_started = 0;
+    if (threads > 1 && state != NULL && cfg != NULL) {
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 64u * 1024u * 1024u);
+        for (int i = 0; i < threads - 1; ++i) {
+            NnSmpHelperArgs *a = &helper_args[i];
+            a->root = *state;
+            a->cfg = *cfg;
+            a->cfg.threads = 1;
+            a->cfg.info_callback = NULL;
+            a->cfg.info_user_data = NULL;
+            if (a->cfg.hard_time_ms > a->cfg.think_time_ms) {
+                a->cfg.think_time_ms = a->cfg.hard_time_ms;
+            }
+            if (pthread_create(&helper_threads[helpers_started], &attr,
+                               nn_smp_helper_main, a) != 0) {
+                break;
+            }
+            helpers_started += 1;
+        }
+        pthread_attr_destroy(&attr);
+    }
+
     ok = run_search(state, cfg, out, 0, 0);
+
+    if (helpers_started > 0) {
+        hce_search_request_stop();
+        for (int i = 0; i < helpers_started; ++i) {
+            pthread_join(helper_threads[i], NULL);
+        }
+    }
     hce_unlock();
     return ok;
 }

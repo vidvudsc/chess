@@ -68,13 +68,18 @@ void hce_search_clear_stop(void) {
     atomic_store_explicit(&g_hce_stop_flag, false, memory_order_relaxed);
 }
 
-static bool hce_search_stop_requested(void) {
+bool hce_search_stop_requested(void) {
     return atomic_load_explicit(&g_hce_stop_flag, memory_order_relaxed);
 }
 
 static int64_t now_ms(void) {
     struct timespec ts;
+#if defined(_WIN32)
+    // msvcrt-based mingw has no timespec_get; winpthreads supplies clock_gettime.
+    clock_gettime(CLOCK_REALTIME, &ts);
+#else
     timespec_get(&ts, TIME_UTC);
+#endif
     return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
 }
 
