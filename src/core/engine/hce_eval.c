@@ -4,10 +4,10 @@
 
 const int hce_piece_value[PIECE_TYPE_COUNT] = {
     0,
-    1299,
-    445,
-    414,
-    638,
+    1320,
+    451,
+    417,
+    656,
     100,
 };
 
@@ -34,8 +34,8 @@ static const int k_pawn_pst[64] = {
       12,   10,   19,   27,   33,   19,   13,   11,
        5,    6,   11,   30,   26,   13,    5,    5,
        0,    0,    1,   22,   22,    1,    1,    0,
-       5,   -5,  -10,    0,    0,  -10,   -5,    5,
-       5,   10,   10,  -20,  -20,   10,   10,    5,
+       5,   -5,   -9,    0,    0,  -10,   -4,    5,
+       4,   10,    9,  -20,  -19,   10,    9,    5,
        0,    0,    0,    0,    0,    0,    0,    0,
 };
 static const int k_pawn_pst_eg[64] = {
@@ -45,14 +45,14 @@ static const int k_pawn_pst_eg[64] = {
        2,    3,    6,   12,   13,    7,    2,    2,
        0,    1,    1,   10,   11,    1,    1,    0,
        2,   -2,   -5,    0,    0,   -5,   -2,    2,
-       2,    5,    5,  -10,  -10,    5,    5,    2,
+       2,    5,    5,  -10,  -10,    5,    4,    2,
        0,    0,    0,    0,    0,    0,    0,    0,
 };
 
 static const int k_knight_pst[64] = {
      -50,  -31,  -30,  -30,  -30,  -30,  -44,  -50,
      -40,  -20,    0,    6,    5,    0,  -20,  -40,
-     -31,    5,    9,   15,   15,   11,    5,  -32,
+     -31,    5,    9,   15,   15,   11,    5,  -31,
      -30,    0,   15,   20,   20,   15,    0,  -29,
      -30,    4,   15,   21,   20,   15,    5,  -30,
      -30,    0,   10,   15,   15,   10,    0,  -30,
@@ -134,7 +134,7 @@ static const int k_queen_pst_eg[64] = {
 };
 
 static const int k_king_mid_pst[64] = {
-       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    1,    0,    0,    0,
        0,    0,    0,    0,    0,    0,    0,    0,
        0,    0,    0,    0,    0,    0,    0,    0,
        0,    0,    0,    0,    0,    0,    0,    0,
@@ -961,16 +961,16 @@ typedef struct EvalSideTerms {
     EvalTermPair endgame_extra;
 } EvalSideTerms;
 
-static const int k_passed_mg_scale = 100;
-static const int k_passed_eg_scale = 122;
-static const int k_king_mg_scale = -93;
-static const int k_king_eg_scale = -98;
-static const int k_hanging_mg_scale = -92;
-static const int k_hanging_eg_scale = -99;
-static const int k_queen_mg_scale = -86;
-static const int k_queen_eg_scale = -99;
-static const int k_pawn_push_mg = 2;
-static const int k_pawn_push_eg = 2;
+static const int k_passed_mg_scale = 97;
+static const int k_passed_eg_scale = 114;
+static const int k_king_mg_scale = -94;
+static const int k_king_eg_scale = -99;
+static const int k_hanging_mg_scale = -84;
+static const int k_hanging_eg_scale = -97;
+static const int k_queen_mg_scale = -75;
+static const int k_queen_eg_scale = -98;
+static const int k_pawn_push_mg = 4;
+static const int k_pawn_push_eg = 3;
 static const int k_pawn_threat_minor_mg = 1;
 static const int k_pawn_threat_minor_eg = 0;
 static const int k_pawn_threat_major_mg = 0;
@@ -978,16 +978,16 @@ static const int k_pawn_threat_major_eg = 0;
 // Named copies of eval literals that appear in both the cached pawn path and
 // the feature-dump path, so texel_apply_tune.py can patch one definition.
 static const int k_iso_mg = -16;
-static const int k_iso_eg = -16;
-static const int k_dbl_mg = -17;
-static const int k_dbl_eg = -13;
-static const int k_mob_n_mg = 5;
+static const int k_iso_eg = -17;
+static const int k_dbl_mg = -15;
+static const int k_dbl_eg = -11;
+static const int k_mob_n_mg = 2;
 static const int k_mob_n_eg = 6;
-static const int k_mob_b_mg = 11;
+static const int k_mob_b_mg = 8;
 static const int k_mob_b_eg = 3;
-static const int k_mob_r_mg = 11;
+static const int k_mob_r_mg = 8;
 static const int k_mob_r_eg = 4;
-static const int k_mob_q_mg = 5;
+static const int k_mob_q_mg = 2;
 static const int k_mob_q_eg = 0;
 static const int k_rook_open_mg = 19;
 static const int k_rook_open_eg = 12;
@@ -1000,18 +1000,18 @@ static const int k_safe_check_n_eg = 0;
 static const int k_safe_check_b_mg = 0;
 static const int k_safe_check_b_eg = 0;
 static const int k_safe_check_r_mg = 0;
-static const int k_safe_check_r_eg = 0;
-static const int k_safe_check_q_mg = 0;
+static const int k_safe_check_r_eg = -1;
+static const int k_safe_check_q_mg = -1;
 static const int k_safe_check_q_eg = 0;
 static const int k_bishop_pair_mg = 0;
 static const int k_bishop_pair_eg = 0;
-static const int k_mob_safe_n_mg = 3;
-static const int k_mob_safe_n_eg = 0;
-static const int k_mob_safe_b_mg = 3;
+static const int k_mob_safe_n_mg = 4;
+static const int k_mob_safe_n_eg = 1;
+static const int k_mob_safe_b_mg = 4;
 static const int k_mob_safe_b_eg = -1;
-static const int k_mob_safe_r_mg = 2;
-static const int k_mob_safe_r_eg = 0;
-static const int k_mob_safe_q_mg = 1;
+static const int k_mob_safe_r_mg = 1;
+static const int k_mob_safe_r_eg = 1;
+static const int k_mob_safe_q_mg = 2;
 static const int k_mob_safe_q_eg = 0;
 static const int k_passer_rank_mg[6] = {0, 0, 0, 0, 0, 0};
 static const int k_passer_rank_eg[6] = {-1, 0, 0, 1, 1, 1};
