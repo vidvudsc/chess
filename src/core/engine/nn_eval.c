@@ -1353,23 +1353,6 @@ static void add_feature_row_i16(int16_t *acc,
     }
 }
 
-static void add_threat_row_i16(int16_t *acc,
-                               const NnEvalModel *model,
-                               uint16_t threat,
-                               int sign) {
-    if (header_uses_all_i8_acc_weights(&model->header)) {
-        size_t index = NN_EXPECTED_HALFKA_HM_DIM + (uint32_t)threat;
-        add_feature_row_i16(acc, model, (uint32_t)index, sign);
-    } else if (header_uses_i8_threat_weights(&model->header)) {
-        const int8_t *row = model->threat_weight +
-                            (size_t)threat * model->header.accumulator_dim;
-        add_row_i8_to_i16_fast(acc, row, model->header.accumulator_dim, sign);
-    } else {
-        size_t index = NN_EXPECTED_HALFKA_HM_DIM + (uint32_t)threat;
-        const int16_t *row = model->acc_weight + index * model->header.accumulator_dim;
-        add_row_i16_fast(acc, row, model->header.accumulator_dim, sign);
-    }
-}
 
 
 // Per-thread bitmap for threat-set diffs (see row_batch_push_threat_diff).
