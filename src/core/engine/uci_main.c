@@ -325,6 +325,7 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         str_ieq(name_buf, "NNNullMoveBaseReduction") ||
         str_ieq(name_buf, "NNNullMoveEvalGate") ||
         str_ieq(name_buf, "NNLmrBackendAdjust") ||
+        str_ieq(name_buf, "NNLmrLog") ||
         str_ieq(name_buf, "NNHistoryGravity") ||
         str_ieq(name_buf, "NNInternalReduction") ||
         str_ieq(name_buf, "NNProbCutMinDepth") ||
@@ -727,6 +728,8 @@ static void print_uci_intro(const UciOptions *opt) {
            chess_ai_get_nn_search_option("NNNullMoveEvalGate"));
     printf("option name NNLmrBackendAdjust type spin default %d min -4 max 4\n",
            chess_ai_get_nn_search_option("NNLmrBackendAdjust"));
+    printf("option name NNLmrLog type spin default %d min 0 max 1\n",
+           chess_ai_get_nn_search_option("NNLmrLog"));
     printf("option name NNHistoryGravity type spin default %d min 0 max 1\n",
            chess_ai_get_nn_search_option("NNHistoryGravity"));
     printf("option name NNInternalReduction type spin default %d min 0 max 1\n",

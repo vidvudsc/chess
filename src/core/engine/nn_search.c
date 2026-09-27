@@ -24,6 +24,7 @@
 #include "hce_tb.h"
 
 #include <limits.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -86,6 +87,7 @@ typedef struct HceSearchProfile {
     int lmr_good_history_threshold;
     int lmr_bad_history_threshold;
     int lmr_backend_adjust;
+    int lmr_log;
     int history_gravity;
     int internal_reduction;
     int probcut_min_depth;
@@ -140,6 +142,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .lmr_good_history_threshold = 12000,
     .lmr_bad_history_threshold = -8000,
     .lmr_backend_adjust = 0,
+    .lmr_log = 0,
     .history_gravity = 0,
     .internal_reduction = 0,
     .probcut_min_depth = 0,
@@ -174,6 +177,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .lmr_good_history_threshold = 12000,
     .lmr_bad_history_threshold = -8000,
     .lmr_backend_adjust = 0,
+    .lmr_log = 0,
     .history_gravity = 0,
     .internal_reduction = 1,
     .probcut_min_depth = 0,
@@ -208,6 +212,7 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .lmr_good_history_threshold = 12000,
     .lmr_bad_history_threshold = -8000,
     .lmr_backend_adjust = 0,
+    .lmr_log = 0,
     .history_gravity = 0,
     .internal_reduction = 1,
     .probcut_min_depth = 0,
@@ -344,6 +349,10 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.null_move_eval_gate;
         return true;
     }
+    if (hce_option_ieq(name, "NNLmrLog")) {
+        *out = &g_hce_search_profile_nn.lmr_log;
+        return true;
+    }
     if (hce_option_ieq(name, "NNLmrBackendAdjust") || hce_option_ieq(name, "LmrBackendAdjust")) {
         *out = &g_hce_search_profile_nn.lmr_backend_adjust;
         return true;
@@ -430,7 +439,8 @@ bool hce_nn_search_set_option(const char *name, int value) {
         if (value < -4 || value > 4) {
             return false;
         }
-    } else if (field == &g_hce_search_profile_nn.twofold_draw ||
+    } else if (field == &g_hce_search_profile_nn.lmr_log ||
+               field == &g_hce_search_profile_nn.twofold_draw ||
                field == &g_hce_search_profile_nn.check_extensions ||
                field == &g_hce_search_profile_nn.countermove_ordering ||
                field == &g_hce_search_profile_nn.null_move_eval_gate ||
@@ -1660,6 +1670,24 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
     return alpha;
 }
 
+static int nn_lmr_log_reduction(int depth, int move_number) {
+    static int table[64][64];
+    static atomic_int ready;
+    if (!atomic_load_explicit(&ready, memory_order_acquire)) {
+        for (int d = 0; d < 64; ++d) {
+            for (int m = 0; m < 64; ++m) {
+                table[d][m] = (d == 0 || m == 0)
+                                  ? 0
+                                  : (int)(0.75 + log((double)d) * log((double)m) / 2.25);
+            }
+        }
+        atomic_store_explicit(&ready, 1, memory_order_release);
+    }
+    int d = depth < 0 ? 0 : (depth > 63 ? 63 : depth);
+    int m = move_number < 0 ? 0 : (move_number > 63 ? 63 : move_number);
+    return table[d][m];
+}
+
 static int negamax(GameState *s,
                    int depth,
                    int alpha,
@@ -1896,12 +1924,17 @@ static int negamax(GameState *s,
                 quiet &&
                 depth >= 3 &&
                 searched >= 2) {
-                reduction = profile->lmr_base_reduction;
-                if (depth >= profile->lmr_depth_bonus_threshold) {
-                    reduction += 1;
-                }
-                if (searched >= profile->lmr_late_move_threshold) {
-                    reduction += 1;
+                if (profile->lmr_log) {
+                    // Classic-search table: 0.75 + ln(depth) * ln(move) / 2.25.
+                    reduction = nn_lmr_log_reduction(depth, searched);
+                } else {
+                    reduction = profile->lmr_base_reduction;
+                    if (depth >= profile->lmr_depth_bonus_threshold) {
+                        reduction += 1;
+                    }
+                    if (searched >= profile->lmr_late_move_threshold) {
+                        reduction += 1;
+                    }
                 }
                 int hist = ctx->history[side][move_from(m)][move_to(m)];
                 if (hist > profile->lmr_good_history_threshold) {
