@@ -185,6 +185,11 @@ class PendingSlot:
     created_at: float = 0.0
 
 
+def draining() -> bool:
+    """True while the drain file exists: finish current games, start none."""
+    return Path(os.environ.get("LICHESS_BOT_DRAIN_FILE", "DRAIN")).exists()
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -759,6 +764,10 @@ class BotRunner:
             return False
 
     def _issue_outgoing_bot_challenges(self) -> None:
+        if draining():
+            with self.lock:
+                self._log_pair_wait("drain", "draining for a release switch; not pairing")
+            return
         with self.lock:
             now = time.time()
             if self.pair_backoff_until > now:
@@ -963,6 +972,10 @@ class BotRunner:
         # They should not be "accepted" by us again; we just wait for gameStart or decline/cancel.
         if direction == "out" or challenger_id == self.username_lc:
             log_event("challenge", f"tracked outgoing id={cid} direction={direction or 'out'}", "")
+            return
+
+        if draining():
+            self._decline(cid, "later", "draining for a release switch")
             return
 
         variant = challenge.get("variant", {}).get("key", "")

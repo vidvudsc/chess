@@ -299,3 +299,20 @@ def test_stall_watch_ignores_our_turn_and_resets_on_moves(monkeypatch):
     bot.api.post.assert_called_once_with("/api/bot/game/g/claim-victory")
     bot._release_stalled_games([])
     assert bot.stall_watch == {}
+
+
+def test_drain_file_declines_challenges_and_stops_pairing(tmp_path, monkeypatch):
+    monkeypatch.setenv("LICHESS_BOT_DRAIN_FILE", str(tmp_path / "DRAIN"))
+    bot = runner()
+    bot.username_lc = "vidbot"
+    bot._decline = Mock()
+    bot._log_pair_wait = Mock()
+    bot._fetch_online_bots = Mock(return_value=[])
+    challenge = {"id": "c1", "challenger": {"id": "x", "name": "X", "title": "BOT"},
+                 "variant": {"key": "standard"}, "speed": "blitz",
+                 "timeControl": {"type": "clock", "limit": 180, "increment": 2}}
+    (tmp_path / "DRAIN").touch()
+    bot._handle_challenge(challenge)
+    bot._decline.assert_called_once_with("c1", "later", "draining for a release switch")
+    bot._issue_outgoing_bot_challenges()
+    bot._fetch_online_bots.assert_not_called()

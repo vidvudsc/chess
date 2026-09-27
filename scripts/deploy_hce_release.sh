@@ -129,6 +129,9 @@ def playing():
         time.sleep(min(30, 3 * (attempt + 1)))
     raise RuntimeError('No valid playing snapshot; refusing restart')
 
+# A drain-aware wrapper stops taking new games while this file exists.
+drain = root / 'DRAIN'
+drain.touch()
 deadline = time.monotonic() + 3600
 while True:
     games = playing()
@@ -137,6 +140,7 @@ while True:
         if not playing():
             break
     if time.monotonic() >= deadline:
+        drain.unlink(missing_ok=True)
         raise RuntimeError('Games still active after an hour; staged release left inactive')
     print(f'Waiting for games to finish: {len(games)}', flush=True)
     time.sleep(10)
@@ -153,6 +157,7 @@ def point_to(target):
     tmp.symlink_to(target)
     os.replace(tmp, root / 'current')
 
+drain.unlink(missing_ok=True)
 try:
     env_path.write_text('\n'.join(new_env) + '\n')
     point_to('releases/' + release.name)
