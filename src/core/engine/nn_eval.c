@@ -1371,17 +1371,6 @@ static void add_threat_row_i16(int16_t *acc,
     }
 }
 
-static void accumulate_full_threats_i16(const GameState *state,
-                                        const NnEvalModel *model,
-                                        int perspective,
-                                        int16_t *out_acc) {
-    if (!header_uses_full_threats(&model->header)) return;
-    uint16_t active[NN_MAX_ACTIVE_THREATS];
-    uint16_t count = collect_full_threats(state, perspective, active);
-    for (uint16_t i = 0; i < count; ++i) {
-        add_threat_row_i16(out_acc, model, active[i], 1);
-    }
-}
 
 // Per-thread bitmap for threat-set diffs (see row_batch_push_threat_diff).
 static _Thread_local uint64_t g_threat_marks[(NN_FULL_THREATS_DIM + 63u) / 64u];
@@ -1438,48 +1427,7 @@ static void accumulate_perspective_i16(const GameState *state,
                                        const NnEvalModel *model,
                                        int perspective,
                                        int16_t *out_acc,
-                                       uint16_t *feature_count_out) {
-    const uint32_t acc_dim = model->header.accumulator_dim;
-    memset(out_acc, 0, (size_t)acc_dim * sizeof(out_acc[0]));
-
-    int king_sq = chess_find_king_square(state, perspective);
-    if (king_sq < 0 || king_sq >= 64) {
-        return;
-    }
-
-    bool had_feature = false;
-    uint16_t feature_count = 0;
-    for (int color = PIECE_WHITE; color <= PIECE_BLACK; ++color) {
-        int first_piece = header_uses_halfka(&model->header)
-                              ? PIECE_KING : PIECE_QUEEN;
-        for (int piece = first_piece; piece <= PIECE_PAWN; ++piece) {
-            int plane = piece_plane(piece, color, perspective);
-            if (plane < 0) {
-                continue;
-            }
-            uint64_t bb = state->bb[color][piece];
-            while (bb != 0ULL) {
-                int sq = chess_pop_lsb(&bb);
-                int idx = halfkp_index(king_sq, plane, sq, perspective, model->header.halfkp_dim);
-                if (idx < 0 || (uint32_t)idx > model->header.dummy_index) {
-                    continue;
-                }
-                add_feature_row_i16(out_acc, model, (uint32_t)idx, 1);
-                had_feature = true;
-                feature_count += piece != PIECE_KING;
-            }
-        }
-    }
-
-    accumulate_full_threats_i16(state, model, perspective, out_acc);
-
-    if (!had_feature) {
-        add_feature_row_i16(out_acc, model, model->header.dummy_index, 1);
-    }
-    if (feature_count_out != NULL) {
-        *feature_count_out = feature_count;
-    }
-}
+                                       uint16_t *feature_count_out);
 
 static void accumulate_psqt_perspective(const GameState *state,
                                         const NnEvalModel *model,
@@ -2327,6 +2275,66 @@ static int piece_feature_index(const NnEvalModel *model, int perspective, int ki
         return -2;
     }
     return idx;
+}
+
+static void accumulate_perspective_i16(const GameState *state,
+                                       const NnEvalModel *model,
+                                       int perspective,
+                                       int16_t *out_acc,
+                                       uint16_t *feature_count_out) {
+    // Full refresh through a row batch: every row is read once and the
+    // accumulator written once, instead of one read-modify-write per row.
+    const uint32_t acc_dim = model->header.accumulator_dim;
+    static const int16_t k_zero_acc[NN_MAX_ACC_DIM];
+    static _Thread_local NnRowBatch batch;
+    batch.n16 = batch.n8 = 0;
+    const int16_t *src = k_zero_acc;
+
+    int king_sq = chess_find_king_square(state, perspective);
+    if (king_sq < 0 || king_sq >= 64) {
+        memset(out_acc, 0, (size_t)acc_dim * sizeof(out_acc[0]));
+        return;
+    }
+
+    bool had_feature = false;
+    uint16_t feature_count = 0;
+    for (int color = PIECE_WHITE; color <= PIECE_BLACK; ++color) {
+        int first_piece = header_uses_halfka(&model->header)
+                              ? PIECE_KING : PIECE_QUEEN;
+        for (int piece = first_piece; piece <= PIECE_PAWN; ++piece) {
+            int plane = piece_plane(piece, color, perspective);
+            if (plane < 0) {
+                continue;
+            }
+            uint64_t bb = state->bb[color][piece];
+            while (bb != 0ULL) {
+                int sq = chess_pop_lsb(&bb);
+                int idx = halfkp_index(king_sq, plane, sq, perspective, model->header.halfkp_dim);
+                if (idx < 0 || (uint32_t)idx > model->header.dummy_index) {
+                    continue;
+                }
+                row_batch_push_feature(&batch, model, (uint32_t)idx, 1, out_acc, &src);
+                had_feature = true;
+                feature_count += piece != PIECE_KING;
+            }
+        }
+    }
+
+    if (header_uses_full_threats(&model->header)) {
+        uint16_t active[NN_MAX_ACTIVE_THREATS];
+        uint16_t count = collect_full_threats(state, perspective, active);
+        for (uint16_t i = 0; i < count; ++i) {
+            row_batch_push_threat(&batch, model, active[i], 1, out_acc, &src);
+        }
+    }
+
+    if (!had_feature) {
+        row_batch_push_feature(&batch, model, model->header.dummy_index, 1, out_acc, &src);
+    }
+    row_batch_apply(out_acc, src, acc_dim, &batch);
+    if (feature_count_out != NULL) {
+        *feature_count_out = feature_count;
+    }
 }
 
 // ---- Incremental Full Threats ------------------------------------------
