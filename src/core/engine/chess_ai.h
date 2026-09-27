@@ -113,6 +113,8 @@ void chess_ai_warmup(void);
 int chess_ai_eval_cp(const GameState *state);
 int chess_ai_eval_fast_cp(const GameState *state);
 bool chess_ai_eval_breakdown(const GameState *state, ChessEvalBreakdown *out);
+// Drop cached static evals (call after changing eval switches).
+void chess_ai_clear_eval_caches(void);
 bool chess_ai_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchResult *out);
 bool chess_engine_query(const GameState *state, const ChessEngineRequest *req, ChessEngineResponse *out);
 

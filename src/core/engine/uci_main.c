@@ -8,6 +8,7 @@
 #include "chess_io.h"
 #include "chess_rules.h"
 #include "hce_internal.h"
+#include "hce_tb.h"
 
 typedef struct UciOptions {
     int think_time_ms;
@@ -223,6 +224,40 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         set_spin_option(name_buf, value_buf, "HceLmrDepthBonusAt", 0, 16, &opt->hce_lmr_depth_bonus_at) ||
         set_spin_option(name_buf, value_buf, "HceLmrMoveBonusAt", 0, 32, &opt->hce_lmr_move_bonus_at)) {
         return;
+    }
+
+    if (str_ieq(name_buf, "Hash")) {
+        int mb = 0;
+        if (parse_int_token(value_buf, &mb) && mb > 0) {
+            printf("info string hash set to %d MB\n", hce_set_hash_mb(mb));
+            fflush(stdout);
+        }
+        return;
+    }
+
+    if (str_ieq(name_buf, "SyzygyPath")) {
+        int largest = hce_tb_init(value_buf);
+        printf("info string syzygy %s: %d-man tables\n", value_buf, largest);
+        fflush(stdout);
+        return;
+    }
+
+    {
+        static const char *const k_eval_switches[] = {
+            "HcePawnPstFix", "HceKingPst", "HceKsFade", "HcePasser", "HceScale",
+        };
+        for (size_t i = 0; i < sizeof(k_eval_switches) / sizeof(k_eval_switches[0]); ++i) {
+            if (str_ieq(name_buf, k_eval_switches[i])) {
+                int v = 0;
+                if (parse_int_token(value_buf, &v)) {
+                    hce_eval_set_option(k_eval_switches[i], v ? 1 : 0);
+                    chess_ai_clear_eval_caches();
+                    printf("info string %s set to %d\n", k_eval_switches[i], v ? 1 : 0);
+                    fflush(stdout);
+                }
+                return;
+            }
+        }
     }
 
     if (str_ieq(name_buf, "BookFile") || str_ieq(name_buf, "OpeningBook")) {
@@ -675,6 +710,13 @@ static void print_uci_intro(const UciOptions *opt) {
     printf("option name HceLmrBase type spin default 0 min 0 max 4\n");
     printf("option name HceLmrDepthBonusAt type spin default 0 min 0 max 16\n");
     printf("option name HceLmrMoveBonusAt type spin default 0 min 0 max 32\n");
+    printf("option name HcePawnPstFix type spin default %d min 0 max 1\n", hce_eval_get_option("HcePawnPstFix"));
+    printf("option name HceKingPst type spin default %d min 0 max 1\n", hce_eval_get_option("HceKingPst"));
+    printf("option name HceKsFade type spin default %d min 0 max 1\n", hce_eval_get_option("HceKsFade"));
+    printf("option name HcePasser type spin default %d min 0 max 1\n", hce_eval_get_option("HcePasser"));
+    printf("option name HceScale type spin default %d min 0 max 1\n", hce_eval_get_option("HceScale"));
+    printf("option name SyzygyPath type string default <empty>\n");
+    printf("option name Hash type spin default 16 min 1 max 1024\n");
     printf("option name NNModel type string default auto\n");
     printf("option name NNLeafLog type string default off\n");
     printf("option name NNLeafLogLimit type spin default %d min 0 max 100000000\n", opt->nn_leaf_log_limit);

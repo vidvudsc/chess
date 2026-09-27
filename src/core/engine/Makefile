@@ -13,7 +13,7 @@ LDLIBS ?= -lm
 SRC_DIR := $(if $(wildcard src/chess_ai.c),src,.)
 BUILD_DIR := build
 ENGINE := chess_uci
-INCLUDES := -I$(SRC_DIR)
+INCLUDES := -I$(SRC_DIR) -I$(SRC_DIR)/fathom
 
 SRCS := \
 	$(SRC_DIR)/chess_state.c \
@@ -27,6 +27,8 @@ SRCS := \
 	$(SRC_DIR)/nn_search_support.c \
 	$(SRC_DIR)/hce_eval.c \
 	$(SRC_DIR)/hce_search.c \
+	$(SRC_DIR)/hce_tb.c \
+	$(SRC_DIR)/fathom/tbprobe.c \
 	$(SRC_DIR)/uci_main.c
 
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
@@ -50,6 +52,11 @@ $(BUILD_DIR)/hce_search.o: $(SRC_DIR)/hce_search.c | $(BUILD_DIR)
 $(BUILD_DIR)/nn_search.o: $(SRC_DIR)/nn_search.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(filter-out -O%,$(CFLAGS)) $(HCE_SEARCH_OPT) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+# Vendored Fathom (MIT): upstream code, built without our pedantic warnings.
+$(BUILD_DIR)/fathom/tbprobe.o: $(SRC_DIR)/fathom/tbprobe.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -Wall -Wextra -Wpedantic -std=c11,$(CFLAGS)) -std=gnu11 -w $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 $(ENGINE): $(OBJS)
 	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(OBJS) -o $@ $(LDFLAGS) $(LDLIBS)

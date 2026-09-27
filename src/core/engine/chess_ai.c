@@ -56,6 +56,13 @@ static void nn_eval_cache_clear(void) {
 // so transposed/re-visited nodes can reuse the score.
 static EvalCacheEntry g_hce_eval_cache[NN_EVAL_CACHE_SIZE];
 
+void chess_ai_clear_eval_caches(void) {
+    nn_eval_cache_clear();
+    for (size_t i = 0; i < NN_EVAL_CACHE_SIZE; ++i) {
+        atomic_store_explicit(&g_hce_eval_cache[i], 0, memory_order_relaxed);
+    }
+}
+
 void chess_ai_warmup(void) {
     hce_init_tables();
 }

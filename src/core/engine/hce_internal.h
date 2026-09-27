@@ -27,6 +27,9 @@ uint64_t hce_rook_attacks(int sq, uint64_t occ);
 uint64_t hce_attackers_to_square(const GameState *s, int sq, int side);
 
 int hce_eval_cp_stm(const GameState *s);
+// Endgame-knowledge switches; see hce_eval.c. Returns false for unknown names.
+bool hce_eval_set_option(const char *name, int value);
+int hce_eval_get_option(const char *name);
 int hce_experimental_eval_cp_stm(const GameState *s);
 bool hce_eval_breakdown(const GameState *s, ChessEvalBreakdown *out);
 
@@ -91,5 +94,7 @@ bool hce_search_stop_requested(void);
 // arriving between spawn and search entry would be silently erased.
 void hce_search_clear_stop(void);
 int hce_probe_deep_eval_cp_stm(const GameState *state);
+// Resize the classic transposition table (MB, rounded down to a power of two).
+int hce_set_hash_mb(int mb);
 
 #endif

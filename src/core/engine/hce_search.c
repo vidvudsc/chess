@@ -1,6 +1,7 @@
 #include "hce_internal.h"
 #include "chess_hash.h"
 #include "nn_eval.h"
+#include "hce_tb.h"
 
 #include <limits.h>
 #include <math.h>
@@ -55,7 +56,9 @@ typedef struct HceSearchContext {
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
 } HceSearchContext;
 
-static HceTtEntry g_hce_tt[HCE_TT_SIZE];
+static HceTtEntry g_hce_tt_default[HCE_TT_SIZE];
+static HceTtEntry *g_hce_tt = g_hce_tt_default;
+static uint64_t g_hce_tt_mask = HCE_TT_MASK;
 static uint8_t g_hce_tt_generation = 0;
 static atomic_flag g_hce_lock = ATOMIC_FLAG_INIT;
 
@@ -125,6 +128,37 @@ static void hce_lock(void) {
 
 static void hce_unlock(void) {
     atomic_flag_clear_explicit(&g_hce_lock, memory_order_release);
+}
+
+// UCI Hash: resize the classic TT to the largest power of two that fits.
+// Takes the search lock, so it never races a running search. 16 MB keeps the
+// built-in table.
+int hce_set_hash_mb(int mb) {
+    if (mb < 1) {
+        mb = 1;
+    }
+    uint64_t entries = 1;
+    while (entries * 2 * sizeof(HceTtEntry) <= (uint64_t)mb * 1024u * 1024u) {
+        entries *= 2;
+    }
+    hce_lock();
+    HceTtEntry *next = g_hce_tt_default;
+    if (entries != HCE_TT_SIZE) {
+        next = calloc((size_t)entries, sizeof(HceTtEntry));
+        if (next == NULL) {
+            hce_unlock();
+            return (int)((g_hce_tt_mask + 1) * sizeof(HceTtEntry) / (1024u * 1024u));
+        }
+    } else {
+        memset(g_hce_tt_default, 0, sizeof(g_hce_tt_default));
+    }
+    if (g_hce_tt != g_hce_tt_default) {
+        free(g_hce_tt);
+    }
+    g_hce_tt = next;
+    g_hce_tt_mask = entries - 1;
+    hce_unlock();
+    return (int)(entries * sizeof(HceTtEntry) / (1024u * 1024u));
 }
 
 static bool search_is_insufficient_material(const GameState *s) {
@@ -259,7 +293,7 @@ static int tt_score_from_store(int score, int ply) {
 }
 
 static HceTtEntry *tt_entry(uint64_t key) {
-    return &g_hce_tt[key & HCE_TT_MASK];
+    return &g_hce_tt[key & g_hce_tt_mask];
 }
 
 static uint64_t tt_pack_payload(Move move, int score, int depth, HceTtBound bound, uint8_t age) {
@@ -935,6 +969,24 @@ static int negamax(GameState *s,
         return tt_score;
     }
 
+    // Syzygy WDL: exact result for small positions right after a capture or
+    // pawn move. Cursed wins and blessed losses are draws under the 50-move rule.
+    if (ply > 0 && hce_tb_largest() > 0) {
+        int wdl = 0;
+        if (hce_tb_probe_wdl(s, &wdl)) {
+            int tb_score = 0;
+            if (wdl == 2) {
+                tb_score = HCE_TB_WIN - ply;
+            } else if (wdl == -2) {
+                tb_score = -HCE_TB_WIN + ply;
+            } else {
+                tb_score = wdl;
+            }
+            tt_store(s->zobrist_hash, depth + 6, ply, tb_score, HCE_TT_EXACT, 0);
+            return tb_score;
+        }
+    }
+
     bool in_check = chess_in_check(s, s->side_to_move);
 
     if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
@@ -1511,7 +1563,18 @@ bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchRe
         pthread_attr_destroy(&attr);
     }
 
-    ok = run_search(state, cfg, out, 0, 0);
+    Move tb_move = 0;
+    int tb_score = 0;
+    if (state != NULL && hce_tb_largest() > 0 && hce_tb_probe_root(state, &tb_move, &tb_score)) {
+        memset(out, 0, sizeof(*out));
+        out->best_move = tb_move;
+        out->found_move = true;
+        out->score_cp = tb_score;
+        out->depth_reached = 1;
+        ok = true;
+    } else {
+        ok = run_search(state, cfg, out, 0, 0);
+    }
 
     if (helpers_started > 0) {
         hce_search_request_stop();
