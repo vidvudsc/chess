@@ -101,6 +101,9 @@ typedef struct NnEvalModel {
     int8_t *acc_weight_i8;
     int8_t *threat_weight;
     int8_t *fc1_weight;
+    // fc1 widened to int16 at load (linear screlu head only): saves the
+    // per-eval sign extension; products and sums are unchanged.
+    int16_t *fc1_weight16;
     float *fc1_row_scales;
     float *fc1_bias;
     int8_t *fc2_weight;
@@ -124,6 +127,7 @@ static void nn_eval_free_model(NnEvalModel *model) {
     free(model->acc_weight_i8);
     free(model->threat_weight);
     free(model->fc1_weight);
+    free(model->fc1_weight16);
     free(model->fc1_row_scales);
     free(model->fc1_bias);
     free(model->fc2_weight);
@@ -597,6 +601,81 @@ static int64_t dot_i8_i16(const int8_t *weights, const int16_t *values, uint32_t
 #else
     return dot_i8_i16_scalar(weights, values, count);
 #endif
+}
+
+// Four fc1 rows against one activation vector. Per-lane int32 sums stay
+// exact for count <= 4096 (|w| <= 128, |v| <= 32768), as in dot_i8_i16.
+static void dot4_i16_i16(const int16_t *w0, const int16_t *w1, const int16_t *w2, const int16_t *w3,
+                         const int16_t *values, uint32_t count, int64_t out[4]) {
+#if defined(NN_HAS_NEON)
+    int32x4_t a0 = vdupq_n_s32(0), b0 = vdupq_n_s32(0);
+    int32x4_t a1 = vdupq_n_s32(0), b1 = vdupq_n_s32(0);
+    int32x4_t a2 = vdupq_n_s32(0), b2 = vdupq_n_s32(0);
+    int32x4_t a3 = vdupq_n_s32(0), b3 = vdupq_n_s32(0);
+    uint32_t i = 0;
+    for (; i + 8u <= count; i += 8u) {
+        int16x8_t v = vld1q_s16(values + i);
+        int16x4_t vl = vget_low_s16(v), vh = vget_high_s16(v);
+        int16x8_t x0 = vld1q_s16(w0 + i), x1 = vld1q_s16(w1 + i);
+        int16x8_t x2 = vld1q_s16(w2 + i), x3 = vld1q_s16(w3 + i);
+        a0 = vmlal_s16(a0, vget_low_s16(x0), vl); b0 = vmlal_s16(b0, vget_high_s16(x0), vh);
+        a1 = vmlal_s16(a1, vget_low_s16(x1), vl); b1 = vmlal_s16(b1, vget_high_s16(x1), vh);
+        a2 = vmlal_s16(a2, vget_low_s16(x2), vl); b2 = vmlal_s16(b2, vget_high_s16(x2), vh);
+        a3 = vmlal_s16(a3, vget_low_s16(x3), vl); b3 = vmlal_s16(b3, vget_high_s16(x3), vh);
+    }
+    out[0] = (int64_t)vaddlvq_s32(a0) + vaddlvq_s32(b0);
+    out[1] = (int64_t)vaddlvq_s32(a1) + vaddlvq_s32(b1);
+    out[2] = (int64_t)vaddlvq_s32(a2) + vaddlvq_s32(b2);
+    out[3] = (int64_t)vaddlvq_s32(a3) + vaddlvq_s32(b3);
+#else
+    uint32_t i = 0;
+    out[0] = out[1] = out[2] = out[3] = 0;
+#endif
+    for (; i < count; ++i) {
+        out[0] += (int64_t)w0[i] * values[i];
+        out[1] += (int64_t)w1[i] * values[i];
+        out[2] += (int64_t)w2[i] * values[i];
+        out[3] += (int64_t)w3[i] * values[i];
+    }
+}
+
+#if defined(NN_HAS_X86_64) && (defined(__GNUC__) || defined(__clang__))
+__attribute__((target("avx2")))
+static void dot4_i16_i16_avx2(const int16_t *w0, const int16_t *w1, const int16_t *w2, const int16_t *w3,
+                              const int16_t *values, uint32_t count, int64_t out[4]) {
+    __m256i a0 = _mm256_setzero_si256(), a1 = _mm256_setzero_si256();
+    __m256i a2 = _mm256_setzero_si256(), a3 = _mm256_setzero_si256();
+    uint32_t i = 0;
+    for (; i + 16u <= count; i += 16u) {
+        __m256i v = _mm256_loadu_si256((const __m256i *)(const void *)(values + i));
+        a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(_mm256_loadu_si256((const __m256i *)(const void *)(w0 + i)), v));
+        a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(_mm256_loadu_si256((const __m256i *)(const void *)(w1 + i)), v));
+        a2 = _mm256_add_epi32(a2, _mm256_madd_epi16(_mm256_loadu_si256((const __m256i *)(const void *)(w2 + i)), v));
+        a3 = _mm256_add_epi32(a3, _mm256_madd_epi16(_mm256_loadu_si256((const __m256i *)(const void *)(w3 + i)), v));
+    }
+    __m256i acc[4] = {a0, a1, a2, a3};
+    const int16_t *ws[4] = {w0, w1, w2, w3};
+    for (int k = 0; k < 4; ++k) {
+        __m256i wide = _mm256_add_epi64(_mm256_cvtepi32_epi64(_mm256_castsi256_si128(acc[k])),
+                                        _mm256_cvtepi32_epi64(_mm256_extracti128_si256(acc[k], 1)));
+        int64_t sum = horizontal_add_s64x4_avx2(wide);
+        for (uint32_t j = i; j < count; ++j) {
+            sum += (int64_t)ws[k][j] * values[j];
+        }
+        out[k] = sum;
+    }
+}
+#endif
+
+static void dot4_i16(const int16_t *w0, const int16_t *w1, const int16_t *w2, const int16_t *w3,
+                     const int16_t *values, uint32_t count, int64_t out[4]) {
+#if defined(NN_HAS_X86_64) && (defined(__GNUC__) || defined(__clang__))
+    if (cpu_supports_avx2()) {
+        dot4_i16_i16_avx2(w0, w1, w2, w3, values, count, out);
+        return;
+    }
+#endif
+    dot4_i16_i16(w0, w1, w2, w3, values, count, out);
 }
 
 static void add_row_fast(int32_t *acc, const int16_t *row, uint32_t acc_dim, int sign) {
@@ -1909,9 +1988,23 @@ static int evaluate_i16_screlu_from_frame(const GameState *state,
 
     const float fc1_activation_factor =
         model->header.act0_scale * model->header.act0_scale;
+    const uint32_t row_len = acc_dim * 2u;
+    const int16_t *fc1_w16 = model->fc1_weight16 != NULL
+                                 ? model->fc1_weight16 + (size_t)bucket * hidden_dim * row_len
+                                 : NULL;
+    int64_t sums[NN_MAX_HIDDEN_DIM];
+    uint32_t done = 0;
+    if (fc1_w16 != NULL) {
+        for (; done + 4u <= hidden_dim; done += 4u) {
+            const int16_t *r = fc1_w16 + (size_t)done * row_len;
+            dot4_i16(r, r + row_len, r + 2u * row_len, r + 3u * row_len, transformed, row_len, sums + done);
+        }
+    }
+    for (; done < hidden_dim; ++done) {
+        sums[done] = dot_i8_i16(fc1_weight + (size_t)done * row_len, transformed, row_len);
+    }
     for (uint32_t out = 0; out < hidden_dim; ++out) {
-        const int8_t *w = fc1_weight + ((size_t)out * (size_t)acc_dim * 2u);
-        int64_t sum = dot_i8_i16(w, transformed, acc_dim * 2u);
+        int64_t sum = sums[out];
         float weight_scale =
             model->fc1_row_scales != NULL
                 ? model->fc1_row_scales[(size_t)bucket * hidden_dim + out]
@@ -2179,6 +2272,17 @@ bool nn_eval_load_model(const char *path) {
     }
 
     model.loaded = true;
+    if (header_uses_i16_accumulator(&model.header) &&
+        !NN_VERSION_IS_STOCKFISH_HEAD(model.header.version) && model.fc1_weight != NULL) {
+        size_t n = (size_t)header_output_buckets(&model.header) * model.header.hidden_dim *
+                   (size_t)model.header.accumulator_dim * 2u;
+        model.fc1_weight16 = malloc(n * sizeof(int16_t));
+        if (model.fc1_weight16 != NULL) {
+            for (size_t i = 0; i < n; ++i) {
+                model.fc1_weight16[i] = model.fc1_weight[i];
+            }
+        }
+    }
     if (header_uses_i16_accumulator(&model.header)) {
         model.acc_act_shift = 16u;
         double factor = (double)model.header.acc_scale / (double)model.header.act0_scale;
