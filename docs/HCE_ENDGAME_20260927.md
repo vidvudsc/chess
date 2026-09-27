@@ -58,7 +58,16 @@ that the new passer terms carry part of that value.
 | Match | Suite | Games | Score | Elo |
 |---|---|---:|---:|---:|
 | Final (all switches, refit, 3-4-5 tables) vs 2026-09-25 live binary | endgame | 200 | 65.5% (+71 =120 -9) | +111 [+83, +142] |
+| Final vs 2026-09-25 live binary | openings | 200 | 69.8% (139.5/200) | +145 [+103, +192] |
 | Hash 4 MB vs 1 MB (proxy for 64 vs 16 MB at live node counts) | openings | 200 | 55.2% | +37 (P=97%) |
+
+Leave-one-out on the final tuned build (endgame suite, 10+0.1, 200 games
+each; negative means removing the switch loses): HcePasser -69 [-101, -38],
+HceKsFade -5, HceScale -2. No switch was harmful; all stay on.
+
+For scale: the final HCE vs the v17 NNUE (`nn-2` engine, single thread,
+30+0.3, equal openings) scored 0 wins, 3 draws, 23 losses before the match
+was stopped. The NNUE backend is several hundred Elo stronger.
 
 ## Live rollout
 
