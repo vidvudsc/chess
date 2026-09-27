@@ -1532,15 +1532,17 @@ static void apply_full_threat_diff_i16(const NnEvalModel *model,
                                        int16_t *acc,
                                        const uint16_t *new_active,
                                        uint16_t new_count) {
+    // One TLS lookup per call (Mach-O resolves each access via _tlv_get_addr).
+    uint64_t *marks = g_threat_marks;
     for (uint16_t i = 0; i < old_count; ++i) {
         uint16_t t = old_active[i];
-        g_threat_marks[t >> 6] |= UINT64_C(1) << (t & 63u);
+        marks[t >> 6] |= UINT64_C(1) << (t & 63u);
     }
     for (uint16_t i = 0; i < new_count; ++i) {
         uint16_t t = new_active[i];
         uint64_t bit = UINT64_C(1) << (t & 63u);
-        if (g_threat_marks[t >> 6] & bit) {
-            g_threat_marks[t >> 6] &= ~bit;
+        if (marks[t >> 6] & bit) {
+            marks[t >> 6] &= ~bit;
         } else {
             add_threat_row_i16(acc, model, t, 1);
         }
@@ -1548,8 +1550,8 @@ static void apply_full_threat_diff_i16(const NnEvalModel *model,
     for (uint16_t i = 0; i < old_count; ++i) {
         uint16_t t = old_active[i];
         uint64_t bit = UINT64_C(1) << (t & 63u);
-        if (g_threat_marks[t >> 6] & bit) {
-            g_threat_marks[t >> 6] &= ~bit;
+        if (marks[t >> 6] & bit) {
+            marks[t >> 6] &= ~bit;
             add_threat_row_i16(acc, model, t, -1);
         }
     }
@@ -2463,15 +2465,17 @@ static void row_batch_push_threat_diff(NnRowBatch *b, const NnEvalModel *model,
                                        const uint16_t *old_active, uint16_t old_count,
                                        const uint16_t *new_active, uint16_t new_count,
                                        int16_t *dst, const int16_t **src) {
+    // One TLS lookup per call (Mach-O resolves each access via _tlv_get_addr).
+    uint64_t *marks = g_threat_marks;
     for (uint16_t i = 0; i < old_count; ++i) {
         uint16_t t = old_active[i];
-        g_threat_marks[t >> 6] |= UINT64_C(1) << (t & 63u);
+        marks[t >> 6] |= UINT64_C(1) << (t & 63u);
     }
     for (uint16_t i = 0; i < new_count; ++i) {
         uint16_t t = new_active[i];
         uint64_t bit = UINT64_C(1) << (t & 63u);
-        if (g_threat_marks[t >> 6] & bit) {
-            g_threat_marks[t >> 6] &= ~bit;
+        if (marks[t >> 6] & bit) {
+            marks[t >> 6] &= ~bit;
         } else {
             row_batch_push_threat(b, model, t, 1, dst, src);
         }
@@ -2479,8 +2483,8 @@ static void row_batch_push_threat_diff(NnRowBatch *b, const NnEvalModel *model,
     for (uint16_t i = 0; i < old_count; ++i) {
         uint16_t t = old_active[i];
         uint64_t bit = UINT64_C(1) << (t & 63u);
-        if (g_threat_marks[t >> 6] & bit) {
-            g_threat_marks[t >> 6] &= ~bit;
+        if (marks[t >> 6] & bit) {
+            marks[t >> 6] &= ~bit;
             row_batch_push_threat(b, model, t, -1, dst, src);
         }
     }
