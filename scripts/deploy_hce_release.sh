@@ -116,12 +116,18 @@ session = requests.Session()
 session.headers['Authorization'] = 'Bearer ' + token
 
 def playing():
-    response = session.get('https://lichess.org/api/account/playing', timeout=20)
-    response.raise_for_status()
-    games = response.json().get('nowPlaying')
-    if not isinstance(games, list):
-        raise RuntimeError('Invalid playing snapshot; refusing restart')
-    return games
+    # Transient Lichess/network errors count as "still playing", never idle.
+    for attempt in range(20):
+        try:
+            response = session.get('https://lichess.org/api/account/playing', timeout=20)
+            response.raise_for_status()
+            games = response.json().get('nowPlaying')
+            if isinstance(games, list):
+                return games
+        except (requests.RequestException, ValueError) as exc:
+            print(f'playing snapshot failed ({exc}); retrying', flush=True)
+        time.sleep(min(30, 3 * (attempt + 1)))
+    raise RuntimeError('No valid playing snapshot; refusing restart')
 
 deadline = time.monotonic() + 3600
 while True:
