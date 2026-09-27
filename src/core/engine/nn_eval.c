@@ -1750,9 +1750,6 @@ static bool update_piece_feature_i16(int16_t *acc,
     return true;
 }
 
-static void update_dummy_i16(int16_t *acc, const NnEvalModel *model, int sign) {
-    add_feature_row_i16(acc, model, model->header.dummy_index, sign);
-}
 
 static bool rebuild_frame(const GameState *state, NnAccumulatorFrame *frame) {
     if (state == NULL || frame == NULL || !g_nn_model.loaded || g_nn_model.kind != NN_MODEL_KIND_QUANT) {
@@ -2328,6 +2325,182 @@ bool nn_eval_build_frame(const GameState *state, NnAccumulatorFrame *frame) {
     return rebuild_frame(state, frame);
 }
 
+// Batched accumulator update: collect every changed feature row first, then
+// write parent + added - removed into the child in one pass instead of one
+// load/store sweep over the accumulator per row. int16 adds wrap exactly, so
+// the order of rows does not matter and results are bit-identical.
+#define NN_ROW_BATCH_CAP 128u
+typedef struct NnRowBatch {
+    const int16_t *r16[NN_ROW_BATCH_CAP];
+    int8_t s16[NN_ROW_BATCH_CAP];
+    uint32_t n16;
+    const int8_t *r8[NN_ROW_BATCH_CAP];
+    int8_t s8[NN_ROW_BATCH_CAP];
+    uint32_t n8;
+} NnRowBatch;
+
+static void row_batch_apply_scalar(int16_t *dst, const int16_t *src, uint32_t dim,
+                                   const NnRowBatch *b, uint32_t start) {
+    for (uint32_t i = start; i < dim; ++i) {
+        int16_t v = src[i];
+        for (uint32_t k = 0; k < b->n16; ++k) {
+            v = (int16_t)(b->s16[k] > 0 ? v + b->r16[k][i] : v - b->r16[k][i]);
+        }
+        for (uint32_t k = 0; k < b->n8; ++k) {
+            v = (int16_t)(b->s8[k] > 0 ? v + b->r8[k][i] : v - b->r8[k][i]);
+        }
+        dst[i] = v;
+    }
+}
+
+#if defined(NN_HAS_X86_64) && (defined(__GNUC__) || defined(__clang__))
+__attribute__((target("avx2")))
+static uint32_t row_batch_apply_avx2(int16_t *dst, const int16_t *src, uint32_t dim,
+                                     const NnRowBatch *b) {
+    uint32_t i = 0;
+    for (; i + 32u <= dim; i += 32u) {
+        __m256i a0 = _mm256_loadu_si256((const __m256i *)(const void *)(src + i));
+        __m256i a1 = _mm256_loadu_si256((const __m256i *)(const void *)(src + i + 16u));
+        for (uint32_t k = 0; k < b->n16; ++k) {
+            __m256i r0 = _mm256_loadu_si256((const __m256i *)(const void *)(b->r16[k] + i));
+            __m256i r1 = _mm256_loadu_si256((const __m256i *)(const void *)(b->r16[k] + i + 16u));
+            if (b->s16[k] > 0) { a0 = _mm256_add_epi16(a0, r0); a1 = _mm256_add_epi16(a1, r1); }
+            else { a0 = _mm256_sub_epi16(a0, r0); a1 = _mm256_sub_epi16(a1, r1); }
+        }
+        for (uint32_t k = 0; k < b->n8; ++k) {
+            __m256i packed = _mm256_loadu_si256((const __m256i *)(const void *)(b->r8[k] + i));
+            __m256i r0 = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(packed));
+            __m256i r1 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(packed, 1));
+            if (b->s8[k] > 0) { a0 = _mm256_add_epi16(a0, r0); a1 = _mm256_add_epi16(a1, r1); }
+            else { a0 = _mm256_sub_epi16(a0, r0); a1 = _mm256_sub_epi16(a1, r1); }
+        }
+        _mm256_storeu_si256((__m256i *)(void *)(dst + i), a0);
+        _mm256_storeu_si256((__m256i *)(void *)(dst + i + 16u), a1);
+    }
+    return i;
+}
+#endif
+
+static void row_batch_apply(int16_t *dst, const int16_t *src, uint32_t dim, const NnRowBatch *b) {
+    uint32_t i = 0;
+#if defined(NN_HAS_X86_64) && (defined(__GNUC__) || defined(__clang__))
+    if (cpu_supports_avx2()) {
+        i = row_batch_apply_avx2(dst, src, dim, b);
+    }
+#endif
+#if defined(NN_HAS_NEON)
+    for (; i + 32u <= dim; i += 32u) {
+        int16x8_t a0 = vld1q_s16(src + i), a1 = vld1q_s16(src + i + 8u);
+        int16x8_t a2 = vld1q_s16(src + i + 16u), a3 = vld1q_s16(src + i + 24u);
+        for (uint32_t k = 0; k < b->n16; ++k) {
+            const int16_t *r = b->r16[k] + i;
+            if (b->s16[k] > 0) {
+                a0 = vaddq_s16(a0, vld1q_s16(r)); a1 = vaddq_s16(a1, vld1q_s16(r + 8u));
+                a2 = vaddq_s16(a2, vld1q_s16(r + 16u)); a3 = vaddq_s16(a3, vld1q_s16(r + 24u));
+            } else {
+                a0 = vsubq_s16(a0, vld1q_s16(r)); a1 = vsubq_s16(a1, vld1q_s16(r + 8u));
+                a2 = vsubq_s16(a2, vld1q_s16(r + 16u)); a3 = vsubq_s16(a3, vld1q_s16(r + 24u));
+            }
+        }
+        for (uint32_t k = 0; k < b->n8; ++k) {
+            int8x16_t p0 = vld1q_s8(b->r8[k] + i), p1 = vld1q_s8(b->r8[k] + i + 16u);
+            int16x8_t r0 = vmovl_s8(vget_low_s8(p0)), r1 = vmovl_s8(vget_high_s8(p0));
+            int16x8_t r2 = vmovl_s8(vget_low_s8(p1)), r3 = vmovl_s8(vget_high_s8(p1));
+            if (b->s8[k] > 0) {
+                a0 = vaddq_s16(a0, r0); a1 = vaddq_s16(a1, r1); a2 = vaddq_s16(a2, r2); a3 = vaddq_s16(a3, r3);
+            } else {
+                a0 = vsubq_s16(a0, r0); a1 = vsubq_s16(a1, r1); a2 = vsubq_s16(a2, r2); a3 = vsubq_s16(a3, r3);
+            }
+        }
+        vst1q_s16(dst + i, a0); vst1q_s16(dst + i + 8u, a1);
+        vst1q_s16(dst + i + 16u, a2); vst1q_s16(dst + i + 24u, a3);
+    }
+#endif
+    row_batch_apply_scalar(dst, src, dim, b, i);
+}
+
+// Push a row; when the batch is full, flush it into dst (later flushes read
+// dst itself as the source).
+static void row_batch_flush(NnRowBatch *b, int16_t *dst, const int16_t **src, uint32_t dim) {
+    row_batch_apply(dst, *src, dim, b);
+    *src = dst;
+    b->n16 = 0;
+    b->n8 = 0;
+}
+
+static void row_batch_push_feature(NnRowBatch *b, const NnEvalModel *model, uint32_t index, int sign,
+                                   int16_t *dst, const int16_t **src) {
+    const uint32_t dim = model->header.accumulator_dim;
+    if (b->n16 >= NN_ROW_BATCH_CAP || b->n8 >= NN_ROW_BATCH_CAP) {
+        row_batch_flush(b, dst, src, dim);
+    }
+    if (header_uses_all_i8_acc_weights(&model->header)) {
+        b->r8[b->n8] = model->acc_weight_i8 + (size_t)index * dim;
+        b->s8[b->n8++] = (int8_t)(sign > 0 ? 1 : -1);
+    } else {
+        b->r16[b->n16] = model->acc_weight + (size_t)index * dim;
+        b->s16[b->n16++] = (int8_t)(sign > 0 ? 1 : -1);
+    }
+}
+
+static void row_batch_push_threat(NnRowBatch *b, const NnEvalModel *model, uint16_t threat, int sign,
+                                  int16_t *dst, const int16_t **src) {
+    const uint32_t dim = model->header.accumulator_dim;
+    if (header_uses_all_i8_acc_weights(&model->header) ||
+        !header_uses_i8_threat_weights(&model->header)) {
+        row_batch_push_feature(b, model, NN_EXPECTED_HALFKA_HM_DIM + (uint32_t)threat, sign, dst, src);
+        return;
+    }
+    if (b->n8 >= NN_ROW_BATCH_CAP) {
+        row_batch_flush(b, dst, src, dim);
+    }
+    b->r8[b->n8] = model->threat_weight + (size_t)threat * dim;
+    b->s8[b->n8++] = (int8_t)(sign > 0 ? 1 : -1);
+}
+
+// Same set logic as apply_full_threat_diff_i16, collecting rows instead.
+static void row_batch_push_threat_diff(NnRowBatch *b, const NnEvalModel *model,
+                                       const uint16_t *old_active, uint16_t old_count,
+                                       const uint16_t *new_active, uint16_t new_count,
+                                       int16_t *dst, const int16_t **src) {
+    for (uint16_t i = 0; i < old_count; ++i) {
+        uint16_t t = old_active[i];
+        g_threat_marks[t >> 6] |= UINT64_C(1) << (t & 63u);
+    }
+    for (uint16_t i = 0; i < new_count; ++i) {
+        uint16_t t = new_active[i];
+        uint64_t bit = UINT64_C(1) << (t & 63u);
+        if (g_threat_marks[t >> 6] & bit) {
+            g_threat_marks[t >> 6] &= ~bit;
+        } else {
+            row_batch_push_threat(b, model, t, 1, dst, src);
+        }
+    }
+    for (uint16_t i = 0; i < old_count; ++i) {
+        uint16_t t = old_active[i];
+        uint64_t bit = UINT64_C(1) << (t & 63u);
+        if (g_threat_marks[t >> 6] & bit) {
+            g_threat_marks[t >> 6] &= ~bit;
+            row_batch_push_threat(b, model, t, -1, dst, src);
+        }
+    }
+}
+
+// Feature index for a piece, or -1 when the plane is absent; -2 when the
+// index is out of range (the caller must rebuild, as update_piece_feature_i16).
+static int piece_feature_index(const NnEvalModel *model, int perspective, int king_sq,
+                               int color, int piece, int sq) {
+    int plane = piece_plane(piece, color, perspective);
+    if (plane < 0) {
+        return -1;
+    }
+    int idx = halfkp_index(king_sq, plane, sq, perspective, model->header.halfkp_dim);
+    if (idx < 0 || (uint32_t)idx > model->header.dummy_index) {
+        return -2;
+    }
+    return idx;
+}
+
 static bool update_frame_i16(const GameState *state,
                              const UndoRecord *undo,
                              const NnAccumulatorFrame *parent,
@@ -2343,8 +2516,6 @@ static bool update_frame_i16(const GameState *state,
     frame->valid = parent->valid;
     frame->key = parent->key;
     frame->non_king_piece_count = parent->non_king_piece_count;
-    memcpy(frame->white_acc16, parent->white_acc16, acc_bytes);
-    memcpy(frame->black_acc16, parent->black_acc16, acc_bytes);
     memcpy(frame->white_psqt, parent->white_psqt, sizeof(frame->white_psqt));
     memcpy(frame->black_psqt, parent->black_psqt, sizeof(frame->black_psqt));
     frame->white_threat_count = parent->white_threat_count;
@@ -2360,6 +2531,8 @@ static bool update_frame_i16(const GameState *state,
             undo->captured_piece != PIECE_NONE) {
             return rebuild_frame(state, frame);
         }
+        memcpy(frame->white_acc16, parent->white_acc16, acc_bytes);
+        memcpy(frame->black_acc16, parent->black_acc16, acc_bytes);
         if (mover == PIECE_WHITE) {
             accumulate_perspective_i16(state, model, PIECE_WHITE, frame->white_acc16, NULL);
             accumulate_psqt_perspective(state, model, PIECE_WHITE, frame->white_psqt);
@@ -2418,17 +2591,30 @@ static bool update_frame_i16(const GameState *state,
         return true;
     }
     if (parent->non_king_piece_count == 0 && undo->captured_piece == PIECE_NONE) {
+        memcpy(frame->white_acc16, parent->white_acc16, acc_bytes);
+        memcpy(frame->black_acc16, parent->black_acc16, acc_bytes);
         frame->key = state->zobrist_hash;
         return true;
     }
-    if (parent->non_king_piece_count == 0) {
-        update_dummy_i16(frame->white_acc16, model, -1);
-        update_dummy_i16(frame->black_acc16, model, -1);
-    }
-    if (!update_piece_feature_i16(frame->white_acc16, model, PIECE_WHITE, white_king_sq, mover, piece, from, -1) ||
-        !update_piece_feature_i16(frame->black_acc16, model, PIECE_BLACK, black_king_sq, mover, piece, from, -1) ||
-        !update_piece_feature_i16(frame->white_acc16, model, PIECE_WHITE, white_king_sq, mover, placed_piece, to, 1) ||
-        !update_piece_feature_i16(frame->black_acc16, model, PIECE_BLACK, black_king_sq, mover, placed_piece, to, 1)) {
+    // Collect feature rows per perspective, then apply once (see NnRowBatch).
+    const uint32_t dim = model->header.accumulator_dim;
+    static _Thread_local NnRowBatch wb, bb;
+    wb.n16 = wb.n8 = bb.n16 = bb.n8 = 0;
+    const int16_t *wsrc = parent->white_acc16;
+    const int16_t *bsrc = parent->black_acc16;
+    int16_t *wdst = frame->white_acc16;
+    int16_t *bdst = frame->black_acc16;
+    int victim = state->side_to_move;
+    bool captured = undo->captured_piece != PIECE_NONE;
+    int w_from = piece_feature_index(model, PIECE_WHITE, white_king_sq, mover, piece, from);
+    int b_from = piece_feature_index(model, PIECE_BLACK, black_king_sq, mover, piece, from);
+    int w_to = piece_feature_index(model, PIECE_WHITE, white_king_sq, mover, placed_piece, to);
+    int b_to = piece_feature_index(model, PIECE_BLACK, black_king_sq, mover, placed_piece, to);
+    int w_cap = captured ? piece_feature_index(model, PIECE_WHITE, white_king_sq, victim,
+                                               undo->captured_piece, undo->captured_square) : -1;
+    int b_cap = captured ? piece_feature_index(model, PIECE_BLACK, black_king_sq, victim,
+                                               undo->captured_piece, undo->captured_square) : -1;
+    if (w_from == -2 || b_from == -2 || w_to == -2 || b_to == -2 || w_cap == -2 || b_cap == -2) {
         return rebuild_frame(state, frame);
     }
     if (!update_piece_psqt(frame->white_psqt, model, PIECE_WHITE, white_king_sq,
@@ -2441,26 +2627,7 @@ static bool update_frame_i16(const GameState *state,
                            mover, placed_piece, to, 1)) {
         return rebuild_frame(state, frame);
     }
-    if (undo->captured_piece != PIECE_NONE) {
-        int victim = state->side_to_move;
-        if (!update_piece_feature_i16(frame->white_acc16,
-                                      model,
-                                      PIECE_WHITE,
-                                      white_king_sq,
-                                      victim,
-                                      undo->captured_piece,
-                                      undo->captured_square,
-                                      -1) ||
-            !update_piece_feature_i16(frame->black_acc16,
-                                      model,
-                                      PIECE_BLACK,
-                                      black_king_sq,
-                                      victim,
-                                      undo->captured_piece,
-                                      undo->captured_square,
-                                      -1)) {
-            return rebuild_frame(state, frame);
-        }
+    if (captured) {
         if (!update_piece_psqt(frame->white_psqt, model, PIECE_WHITE, white_king_sq,
                                victim, undo->captured_piece, undo->captured_square, -1) ||
             !update_piece_psqt(frame->black_psqt, model, PIECE_BLACK, black_king_sq,
@@ -2471,25 +2638,32 @@ static bool update_frame_i16(const GameState *state,
             frame->non_king_piece_count -= 1;
         }
     }
-    if (frame->non_king_piece_count == 0) {
-        update_dummy_i16(frame->white_acc16, model, 1);
-        update_dummy_i16(frame->black_acc16, model, 1);
+    bool dummy_before = parent->non_king_piece_count == 0;
+    bool dummy_after = frame->non_king_piece_count == 0;
+    if (dummy_before != dummy_after) {
+        int sign = dummy_after ? 1 : -1;
+        row_batch_push_feature(&wb, model, model->header.dummy_index, sign, wdst, &wsrc);
+        row_batch_push_feature(&bb, model, model->header.dummy_index, sign, bdst, &bsrc);
     }
+    if (w_from >= 0) row_batch_push_feature(&wb, model, (uint32_t)w_from, -1, wdst, &wsrc);
+    if (b_from >= 0) row_batch_push_feature(&bb, model, (uint32_t)b_from, -1, bdst, &bsrc);
+    if (w_to >= 0) row_batch_push_feature(&wb, model, (uint32_t)w_to, 1, wdst, &wsrc);
+    if (b_to >= 0) row_batch_push_feature(&bb, model, (uint32_t)b_to, 1, bdst, &bsrc);
+    if (w_cap >= 0) row_batch_push_feature(&wb, model, (uint32_t)w_cap, -1, wdst, &wsrc);
+    if (b_cap >= 0) row_batch_push_feature(&bb, model, (uint32_t)b_cap, -1, bdst, &bsrc);
     if (header_uses_full_threats(&model->header)) {
         collect_full_threats_both(
             state,
             frame->white_threats, &frame->white_threat_count,
             frame->black_threats, &frame->black_threat_count
         );
-        apply_full_threat_diff_i16(
-            model, parent->white_threats, parent->white_threat_count,
-            frame->white_acc16, frame->white_threats, frame->white_threat_count
-        );
-        apply_full_threat_diff_i16(
-            model, parent->black_threats, parent->black_threat_count,
-            frame->black_acc16, frame->black_threats, frame->black_threat_count
-        );
+        row_batch_push_threat_diff(&wb, model, parent->white_threats, parent->white_threat_count,
+                                   frame->white_threats, frame->white_threat_count, wdst, &wsrc);
+        row_batch_push_threat_diff(&bb, model, parent->black_threats, parent->black_threat_count,
+                                   frame->black_threats, frame->black_threat_count, bdst, &bsrc);
     }
+    row_batch_apply(wdst, wsrc, dim, &wb);
+    row_batch_apply(bdst, bsrc, dim, &bb);
     frame->valid = true;
     frame->key = state->zobrist_hash;
     return true;
