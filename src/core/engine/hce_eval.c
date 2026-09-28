@@ -896,10 +896,8 @@ static void compute_pawn_eval_terms(const GameState *s, int side, PawnEvalTerms 
                       hce_piece_value[PIECE_PAWN]);
         int pidx = pawn_pst_index(view);
         eval_term_add(&out->piece_square, k_pawn_pst[pidx], k_pawn_pst_eg[pidx]);
-        int front_sq = sq + ((side == PIECE_WHITE) ? 8 : -8);
-        if (front_sq >= 0 && front_sq < 64 && s->sq_piece[front_sq] == PIECE_NONE) {
-            eval_term_add(&out->pawn_activity, k_pawn_push_mg, k_pawn_push_eg);
-        }
+        // The free-push bonus depends on every piece, not just pawns, so it is
+        // added per position in eval_side rather than cached here.
         if (is_isolated_pawn(s, side, sq)) {
             eval_term_add(&out->pawn_structure, k_iso_mg, k_iso_eg);
         }
@@ -920,7 +918,7 @@ static void compute_pawn_eval_terms(const GameState *s, int side, PawnEvalTerms 
             passer_mg += 10;
             passer_eg += 28;
         }
-        front_sq = sq + ((side == PIECE_WHITE) ? 8 : -8);
+        int front_sq = sq + ((side == PIECE_WHITE) ? 8 : -8);
         if (front_sq >= 0 && front_sq < 64 && square_supported_by_pawn(s, side, front_sq)) {
             passer_mg += 4;
             passer_eg += 8;
@@ -1148,6 +1146,13 @@ static int eval_side(const GameState *s,
         terms.pawn_structure = pawn_terms->pawn_structure;
         terms.passed_pawns = pawn_terms->passed_pawns;
         terms.pawn_activity = pawn_terms->pawn_activity;
+        // Pawns whose push square is empty (outside the pawn-structure cache:
+        // it was keyed by pawns only, so pieces moving in front left it stale).
+        uint64_t own_pawns = s->bb[side][PIECE_PAWN];
+        uint64_t pushable = side == PIECE_WHITE ? ((own_pawns << 8) & ~s->occ_all)
+                                                : ((own_pawns >> 8) & ~s->occ_all);
+        int pushes = chess_count_bits(pushable);
+        eval_term_add(&terms.pawn_activity, pushes * k_pawn_push_mg, pushes * k_pawn_push_eg);
         passers = pawn_terms->passers;
     } else {
         uint64_t scan = s->bb[side][PIECE_PAWN];
