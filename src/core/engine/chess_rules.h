@@ -30,6 +30,10 @@ typedef struct ChessMagicEntry {
     uint64_t *attacks;
     int shift;
 } ChessMagicEntry;
+// Leaper attack tables (valid after chess_attack_tables_init()).
+extern uint64_t g_chess_knight_attacks[64];
+extern uint64_t g_chess_king_attacks[64];
+extern uint64_t g_chess_pawn_attacks[PIECE_COLOR_COUNT][64];
 extern ChessMagicEntry g_chess_rook_magic[64];
 extern ChessMagicEntry g_chess_bishop_magic[64];
 
