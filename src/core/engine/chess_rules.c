@@ -13,9 +13,16 @@ static bool g_attacks_ready = false;
 static void init_attack_tables(void);
 static void init_slider_tables(void);
 
-static void ensure_engine_ready(void) {
+static bool g_engine_ready = false;
+
+// Hot path: every make/generate call lands here, so check one flag inline.
+static inline void ensure_engine_ready(void) {
+    if (g_engine_ready) {
+        return;
+    }
     init_attack_tables();
     chess_hash_init();
+    g_engine_ready = true;
 }
 
 static void init_attack_tables(void) {
