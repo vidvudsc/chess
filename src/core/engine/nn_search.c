@@ -88,6 +88,7 @@ typedef struct HceSearchProfile {
     int lmr_bad_history_threshold;
     int lmr_backend_adjust;
     int lmr_log;
+    int qsearch_tt;
     int history_gravity;
     int internal_reduction;
     int probcut_min_depth;
@@ -143,6 +144,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .lmr_bad_history_threshold = -8000,
     .lmr_backend_adjust = 0,
     .lmr_log = 0,
+    .qsearch_tt = 0,
     .history_gravity = 0,
     .internal_reduction = 0,
     .probcut_min_depth = 0,
@@ -178,6 +180,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .lmr_bad_history_threshold = -8000,
     .lmr_backend_adjust = 0,
     .lmr_log = 0,
+    .qsearch_tt = 0,
     .history_gravity = 0,
     .internal_reduction = 1,
     .probcut_min_depth = 0,
@@ -213,6 +216,7 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .lmr_bad_history_threshold = -8000,
     .lmr_backend_adjust = 0,
     .lmr_log = 0,
+    .qsearch_tt = 0,
     .history_gravity = 0,
     .internal_reduction = 1,
     .probcut_min_depth = 0,
@@ -349,6 +353,10 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.null_move_eval_gate;
         return true;
     }
+    if (hce_option_ieq(name, "NNQsearchTT")) {
+        *out = &g_hce_search_profile_nn.qsearch_tt;
+        return true;
+    }
     if (hce_option_ieq(name, "NNLmrLog")) {
         *out = &g_hce_search_profile_nn.lmr_log;
         return true;
@@ -440,6 +448,7 @@ bool hce_nn_search_set_option(const char *name, int value) {
             return false;
         }
     } else if (field == &g_hce_search_profile_nn.lmr_log ||
+               field == &g_hce_search_profile_nn.qsearch_tt ||
                field == &g_hce_search_profile_nn.twofold_draw ||
                field == &g_hce_search_profile_nn.check_extensions ||
                field == &g_hce_search_profile_nn.countermove_ordering ||
@@ -1602,6 +1611,18 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
         return term;
     }
 
+    // Optional TT use at depth 0: any stored entry (qsearch or full search)
+    // may cut, and the result is stored back as a depth-0 bound.
+    const bool use_tt = search_profile(ctx)->qsearch_tt != 0;
+    const int alpha_orig = alpha;
+    if (use_tt) {
+        int tt_score = 0;
+        Move tt_move_q = 0;
+        if (tt_probe(s->zobrist_hash, 0, ply, alpha, beta, &tt_move_q, &tt_score)) {
+            return tt_score;
+        }
+    }
+
     bool in_check = chess_in_check(s, s->side_to_move);
     int stand_pat = 0;
     if (!in_check) {
@@ -1660,6 +1681,9 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
             return alpha;
         }
         if (score >= beta) {
+            if (use_tt) {
+                tt_store(s->zobrist_hash, 0, ply, beta, HCE_TT_LOWER, m);
+            }
             return beta;
         }
         if (score > alpha) {
@@ -1667,6 +1691,10 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
         }
     }
 
+    if (use_tt && !ctx->timed_out) {
+        tt_store(s->zobrist_hash, 0, ply, alpha,
+                 alpha > alpha_orig ? HCE_TT_EXACT : HCE_TT_UPPER, 0);
+    }
     return alpha;
 }
 
