@@ -190,7 +190,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .lmr_log = 0,
     .qsearch_tt = 1,  // +47 Elo [+11, +85] vs off, 200 games at 10+0.1 (2026-09-28)
     .improving = 0,
-    .singular = 0,
+    .singular = 1,  // +33 Elo [-0.3, +67], P=97%, 200 games at 10+0.1 (2026-09-28)
     .history_gravity = 0,
     .internal_reduction = 1,
     .probcut_min_depth = 0,
@@ -228,7 +228,7 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .lmr_log = 0,
     .qsearch_tt = 1,
     .improving = 0,
-    .singular = 0,
+    .singular = 1,
     .history_gravity = 0,
     .internal_reduction = 1,
     .probcut_min_depth = 0,
