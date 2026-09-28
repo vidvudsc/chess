@@ -10,6 +10,12 @@
 #include "hce_internal.h"
 #include "hce_tb.h"
 
+// "position ... moves" grows ~5 bytes per ply; the game history holds
+// CHESS_MAX_GAME_PLY (4096) plies, so size the line for that plus a FEN.
+// A 2048-byte line cut long games off near ply 390 and made the engine
+// search a stale position (illegal bestmove).
+enum { UCI_LINE_MAX = 32768 };
+
 typedef struct UciOptions {
     int think_time_ms;
     int max_depth;
@@ -430,7 +436,7 @@ static void handle_position(GameState *state, const char *line) {
         return;
     }
 
-    char buf[2048];
+    static char buf[UCI_LINE_MAX];
     snprintf(buf, sizeof(buf), "%s", line);
     trim_in_place(buf);
 
@@ -939,8 +945,18 @@ int main(void) {
     reset_start_position(&state);
     chess_ai_warmup();
 
-    char line[2048];
+    static char line[UCI_LINE_MAX];
     while (fgets(line, sizeof(line), stdin) != NULL) {
+        size_t line_len = strlen(line);
+        if (line_len == sizeof(line) - 1 && line[line_len - 1] != '\n') {
+            // Over-long command: drop it whole instead of acting on a prefix.
+            int ch;
+            while ((ch = getchar()) != EOF && ch != '\n') {
+            }
+            printf("info string command longer than %d bytes ignored\n", UCI_LINE_MAX - 1);
+            fflush(stdout);
+            continue;
+        }
         trim_in_place(line);
         if (line[0] == '\0') {
             continue;
