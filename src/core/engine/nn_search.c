@@ -223,7 +223,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .twofold_draw = 1,
     .pawn_correction_weight_permille = 0,
     .structure_correction_weight_permille = 0,
-    .cont_hist = 0,
+    .cont_hist = 1,  // +42 Elo [+10, +75], P=99%, 200 games at 10+0.1 (2026-09-28)
     .rfp_max_depth = 3,
     .null_eval_reduction = 0,
     .multi_cut = 0,
@@ -266,7 +266,7 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .twofold_draw = 1,
     .pawn_correction_weight_permille = 0,
     .structure_correction_weight_permille = 0,
-    .cont_hist = 0,
+    .cont_hist = 1,
     .rfp_max_depth = 3,
     .null_eval_reduction = 0,
     .multi_cut = 0,
