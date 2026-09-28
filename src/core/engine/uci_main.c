@@ -847,7 +847,7 @@ static int run_tune_dump(const char *infile, const char *outfile, bool quiet_onl
             noisy += 1;
             continue;
         }
-        fprintf(fout, "%.1f %d %d", label, phase, eval_true);
+        fprintf(fout, "%.4f %d %d", label, phase, eval_true);
         for (int side_i = 0; side_i < 2; ++side_i) {
             const HceTuneFeatures *f = (side_i == 0) ? &w : &b;
             // Scalar feature counts (order must match texel_tune.py layout).
