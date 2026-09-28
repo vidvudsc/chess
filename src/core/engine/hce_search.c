@@ -296,6 +296,16 @@ static HceTtEntry *tt_entry(uint64_t key) {
     return &g_hce_tt[key & g_hce_tt_mask];
 }
 
+// Start loading a child's TT slot while the caller finishes bookkeeping;
+// TT probes are mostly cache misses at 64 MB. No effect on search results.
+static inline void tt_prefetch(uint64_t key) {
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_prefetch(&g_hce_tt[key & g_hce_tt_mask]);
+#else
+    (void)key;
+#endif
+}
+
 static uint64_t tt_pack_payload(Move move, int score, int depth, HceTtBound bound, uint8_t age) {
     return ((uint64_t)move & HCE_TT_MOVE_MASK) |
            ((uint64_t)(uint16_t)(int16_t)score << HCE_TT_SCORE_SHIFT) |
@@ -897,6 +907,7 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
         if (!chess_make_move_trusted(s, m)) {
             continue;
         }
+        tt_prefetch(s->zobrist_hash);
         ctx->nodes += 1;
         int score = -quiescence(s, -beta, -alpha, ply + 1, ctx);
         chess_undo_move(s);
@@ -1063,6 +1074,7 @@ static int negamax(GameState *s,
         if (!chess_make_move_trusted(s, m)) {
             continue;
         }
+        tt_prefetch(s->zobrist_hash);
         ctx->nodes += 1;
 
         int extension = search_move_extension(s, m, depth);
@@ -1193,6 +1205,7 @@ static int search_root(GameState *root,
         if (!chess_make_move_trusted(root, m)) {
             continue;
         }
+        tt_prefetch(root->zobrist_hash);
         ctx->nodes += 1;
 
         int extension = search_move_extension(root, m, depth);

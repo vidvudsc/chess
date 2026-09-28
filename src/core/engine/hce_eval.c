@@ -364,8 +364,8 @@ uint64_t hce_pawn_attacks(int side, int sq) {
     return g_pawn_attacks[side][sq];
 }
 
+// Only called from inside the evaluation, after hce_init_tables().
 uint64_t hce_attackers_to_square(const GameState *s, int sq, int side) {
-    hce_init_tables();
     uint64_t occ = s->occ_all;
     uint64_t attackers = 0;
     attackers |= s->bb[side][PIECE_PAWN] & g_pawn_attacks[side ^ 1][sq];
