@@ -1100,6 +1100,20 @@ static int negamax(GameState *s,
             depth <= 8 &&
             searched >= 3 + depth * depth &&
             best_score > -HCE_MATE_THRESHOLD) {
+            // Every later quiet is skipped too (nothing above changes while
+            // skipping), and captures always order before quiets. If no
+            // non-quiet move remains, stop instead of selection-picking each
+            // remaining quiet just to skip it: same tree, no O(n^2) tail.
+            bool tactical_left = false;
+            for (int j = i + 1; j < n; ++j) {
+                if (!is_quiet_move(moves[j])) {
+                    tactical_left = true;
+                    break;
+                }
+            }
+            if (!tactical_left) {
+                break;
+            }
             continue;
         }
         if (!chess_make_move_trusted(s, m)) {
