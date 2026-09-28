@@ -1148,6 +1148,8 @@ static uint16_t g_threat_geometry_index[12][64][64];
 static uint16_t g_threat_geometry_size[12];
 static uint16_t g_threat_index_base[2][2][5][2][5][2];
 static uint64_t g_threat_knight_attacks[64];
+// Full rank/file/diagonal line through two squares (0 if not aligned).
+static uint64_t g_threat_line[64][64];
 static const uint32_t k_threat_piece_offset[12] = {
     0, 336, 3696, 8176, 15344, 29904, 29904, 30240, 33600, 38080, 45248, 59808,
 };
@@ -1183,6 +1185,26 @@ static void init_threat_tables(void) {
     hce_init_tables();
     for (int sq = 0; sq < 64; ++sq) {
         g_threat_knight_attacks[sq] = hce_knight_attacks(sq);
+    }
+    for (int a = 0; a < 64; ++a) {
+        for (int b = 0; b < 64; ++b) {
+            uint64_t line = 0;
+            if (a != b) {
+                int fa = a & 7, ra = a >> 3, fb = b & 7, rb = b >> 3;
+                int df = (fb > fa) - (fb < fa), dr = (rb > ra) - (rb < ra);
+                bool aligned = fa == fb || ra == rb || (fb - fa) == (rb - ra) || (fb - fa) == (ra - rb);
+                if (aligned) {
+                    line = (1ULL << a);
+                    for (int f = fa + df, r = ra + dr; f >= 0 && f < 8 && r >= 0 && r < 8; f += df, r += dr) {
+                        line |= 1ULL << (r * 8 + f);
+                    }
+                    for (int f = fa - df, r = ra - dr; f >= 0 && f < 8 && r >= 0 && r < 8; f -= df, r -= dr) {
+                        line |= 1ULL << (r * 8 + f);
+                    }
+                }
+            }
+            g_threat_line[a][b] = line;
+        }
     }
     for (int attacker = 0; attacker < 12; ++attacker) {
         int type = attacker % 6;
@@ -2367,6 +2389,7 @@ static uint64_t threat_attackers_to(const ThreatPosition *pos, int sq) {
 // Emit threat indices of the attackers on `attackers` in `pos` for the
 // perspectives in `persp_mask` (bit 0 white, bit 1 black).
 static void threat_emit(const ThreatPosition *pos, uint64_t attackers, int persp_mask,
+                        uint64_t restricted, uint64_t key,
                         int white_orientation, int black_orientation,
                         uint16_t *white, uint16_t *white_count,
                         uint16_t *black, uint16_t *black_count) {
@@ -2398,6 +2421,18 @@ static void threat_emit(const ThreatPosition *pos, uint64_t attackers, int persp
         else if (type == 3) attacks = hce_rook_attacks(from, pos->occ);
         else attacks = hce_bishop_attacks(from, pos->occ) | hce_rook_attacks(from, pos->occ);
         attacks &= target_masks[type];
+        if (restricted & (1ULL << from)) {
+            // An unmoved attacker's threats can only differ on the changed
+            // squares (non-sliders) or on lines through them (sliders).
+            uint64_t keep = key;
+            if (type >= 2) {
+                uint64_t k = key;
+                while (k != 0ULL) {
+                    keep |= g_threat_line[from][threat_pop_lsb(&k)];
+                }
+            }
+            attacks &= keep;
+        }
         while (attacks != 0ULL) {
             int to = threat_pop_lsb(&attacks);
             int tpiece, tcolor;
@@ -2490,9 +2525,9 @@ static void threat_incremental_delta(const GameState *state, const UndoRecord *u
     uint16_t wold[NN_MAX_ACTIVE_THREATS], wnew[NN_MAX_ACTIVE_THREATS];
     uint16_t bold[NN_MAX_ACTIVE_THREATS], bnew[NN_MAX_ACTIVE_THREATS];
     uint16_t nwo = 0, nwn = 0, nbo = 0, nbn = 0;
-    threat_emit(&before, old_set, persp_mask, white_orientation, black_orientation,
+    threat_emit(&before, old_set, persp_mask, unaffected, key, white_orientation, black_orientation,
                 wold, &nwo, bold, &nbo);
-    threat_emit(&now, new_set, persp_mask, white_orientation, black_orientation,
+    threat_emit(&now, new_set, persp_mask, unaffected, key, white_orientation, black_orientation,
                 wnew, &nwn, bnew, &nbn);
     if (persp_mask & 1) {
         row_batch_push_threat_diff(wb, model, wold, nwo, wnew, nwn, wdst, wsrc);
