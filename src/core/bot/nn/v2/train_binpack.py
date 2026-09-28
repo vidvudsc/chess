@@ -276,7 +276,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--resume-fresh-loader", action="store_true",
                    help="Resume optimizer/schedule state but start the supplied dataset at its beginning.")
     p.add_argument("--resume-loader-batch", type=int, default=None,
-                   help="Override native-loader batches to fast-forward when resuming.")
+                   help="Native-loader batches to fast-forward: overrides the resumed position, "
+                        "or skips already-used data for a fresh --init-checkpoint run.")
     p.add_argument("--new-features-only", action="store_true",
                    help="Freeze the warm-started model and train only new HalfKA king/threat rows.")
     p.add_argument("--new-channels-only", action="store_true",
@@ -332,8 +333,6 @@ def main() -> int:
         raise SystemExit("staged training modes require --init-checkpoint")
     if args.resume_fresh_loader and args.resume_checkpoint is None:
         raise SystemExit("--resume-fresh-loader requires --resume-checkpoint")
-    if args.resume_loader_batch is not None and args.resume_checkpoint is None:
-        raise SystemExit("--resume-loader-batch requires --resume-checkpoint")
     if args.resume_loader_batch is not None and args.resume_loader_batch < 0:
         raise SystemExit("--resume-loader-batch must be non-negative")
     if args.resume_fresh_loader and args.resume_loader_batch is not None:
@@ -390,13 +389,20 @@ def main() -> int:
             f"loader_batch={loader_batch_index}",
             flush=True,
         )
+    elif args.resume_loader_batch is not None:
+        loader_batch_index = args.resume_loader_batch
     init_payload = None
     if args.init_checkpoint is not None:
         init_payload = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
-        copied = initialize_from_checkpoint(
-            model, init_payload["model_state"], halfka="halfka" in args.arch
-        )
-        print(f"[init] checkpoint={args.init_checkpoint} copied={','.join(copied)}", flush=True)
+        if resume_payload is None:
+            copied = initialize_from_checkpoint(
+                model, init_payload["model_state"], halfka="halfka" in args.arch
+            )
+            print(f"[init] checkpoint={args.init_checkpoint} copied={','.join(copied)}", flush=True)
+        else:
+            # A supervisor restart keeps --init-checkpoint for the staged-mode
+            # masks; the resumed weights must not be overwritten by it.
+            print(f"[init] checkpoint={args.init_checkpoint} used for masks only (resuming)", flush=True)
     if args.new_features_only:
         if args.feature_set != "HalfKAv2_hm+Full_Threats" or args.init_checkpoint is None:
             raise SystemExit("--new-features-only requires a warm-started HalfKAv2_hm+Full_Threats model")
