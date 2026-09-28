@@ -1,4 +1,5 @@
 #include "hce_internal.h"
+#include "chess_rules.h"
 
 #include <string.h>
 
@@ -291,192 +292,15 @@ static uint64_t pawn_attacks_mask(int side, int sq) {
     return mask;
 }
 
-static uint64_t bishop_attacks_slow(int sq, uint64_t occ) {
-    int f = square_file(sq);
-    int r = square_rank(sq);
-    uint64_t attacks = 0;
 
-    for (int nf = f + 1, nr = r + 1; nf <= 7 && nr <= 7; ++nf, ++nr) {
-        int nsq = make_square(nf, nr);
-        attacks |= 1ULL << nsq;
-        if ((occ & (1ULL << nsq)) != 0) {
-            break;
-        }
-    }
-    for (int nf = f - 1, nr = r + 1; nf >= 0 && nr <= 7; --nf, ++nr) {
-        int nsq = make_square(nf, nr);
-        attacks |= 1ULL << nsq;
-        if ((occ & (1ULL << nsq)) != 0) {
-            break;
-        }
-    }
-    for (int nf = f + 1, nr = r - 1; nf <= 7 && nr >= 0; ++nf, --nr) {
-        int nsq = make_square(nf, nr);
-        attacks |= 1ULL << nsq;
-        if ((occ & (1ULL << nsq)) != 0) {
-            break;
-        }
-    }
-    for (int nf = f - 1, nr = r - 1; nf >= 0 && nr >= 0; --nf, --nr) {
-        int nsq = make_square(nf, nr);
-        attacks |= 1ULL << nsq;
-        if ((occ & (1ULL << nsq)) != 0) {
-            break;
-        }
-    }
 
-    return attacks;
-}
-
-static uint64_t rook_attacks_slow(int sq, uint64_t occ) {
-    int f = square_file(sq);
-    int r = square_rank(sq);
-    uint64_t attacks = 0;
-
-    for (int nf = f + 1; nf <= 7; ++nf) {
-        int nsq = make_square(nf, r);
-        attacks |= 1ULL << nsq;
-        if ((occ & (1ULL << nsq)) != 0) {
-            break;
-        }
-    }
-    for (int nf = f - 1; nf >= 0; --nf) {
-        int nsq = make_square(nf, r);
-        attacks |= 1ULL << nsq;
-        if ((occ & (1ULL << nsq)) != 0) {
-            break;
-        }
-    }
-    for (int nr = r + 1; nr <= 7; ++nr) {
-        int nsq = make_square(f, nr);
-        attacks |= 1ULL << nsq;
-        if ((occ & (1ULL << nsq)) != 0) {
-            break;
-        }
-    }
-    for (int nr = r - 1; nr >= 0; --nr) {
-        int nsq = make_square(f, nr);
-        attacks |= 1ULL << nsq;
-        if ((occ & (1ULL << nsq)) != 0) {
-            break;
-        }
-    }
-
-    return attacks;
-}
-
-// Fancy magic bitboards for slider attacks. Magics are found once at init by
-// random search and verified to map every relevant occupancy without harmful
-// collisions, so lookups are exact.
-typedef struct MagicEntry {
-    uint64_t mask;
-    uint64_t magic;
-    uint64_t *attacks;
-    int shift;
-} MagicEntry;
-
-static MagicEntry g_rook_magic[64];
-static MagicEntry g_bishop_magic[64];
-static uint64_t g_rook_attack_table[102400];
-static uint64_t g_bishop_attack_table[5248];
-
-static uint64_t slider_relevant_mask(int sq, bool rook) {
-    int f = square_file(sq);
-    int r = square_rank(sq);
-    uint64_t mask = 0;
-    if (rook) {
-        for (int nf = f + 1; nf <= 6; ++nf) mask |= 1ULL << make_square(nf, r);
-        for (int nf = f - 1; nf >= 1; --nf) mask |= 1ULL << make_square(nf, r);
-        for (int nr = r + 1; nr <= 6; ++nr) mask |= 1ULL << make_square(f, nr);
-        for (int nr = r - 1; nr >= 1; --nr) mask |= 1ULL << make_square(f, nr);
-    } else {
-        for (int nf = f + 1, nr = r + 1; nf <= 6 && nr <= 6; ++nf, ++nr) mask |= 1ULL << make_square(nf, nr);
-        for (int nf = f - 1, nr = r + 1; nf >= 1 && nr <= 6; --nf, ++nr) mask |= 1ULL << make_square(nf, nr);
-        for (int nf = f + 1, nr = r - 1; nf <= 6 && nr >= 1; ++nf, --nr) mask |= 1ULL << make_square(nf, nr);
-        for (int nf = f - 1, nr = r - 1; nf >= 1 && nr >= 1; --nf, --nr) mask |= 1ULL << make_square(nf, nr);
-    }
-    return mask;
-}
-
-static uint64_t magic_rand_state = 0x9E3779B97F4A7C15ULL;
-
-static uint64_t magic_rand64(void) {
-    magic_rand_state ^= magic_rand_state >> 12;
-    magic_rand_state ^= magic_rand_state << 25;
-    magic_rand_state ^= magic_rand_state >> 27;
-    return magic_rand_state * 0x2545F4914F6CDD1DULL;
-}
-
-static void init_magic_square(int sq, bool rook, MagicEntry *entry, uint64_t *table_slot) {
-    uint64_t mask = slider_relevant_mask(sq, rook);
-    int bits = chess_count_bits(mask);
-    int table_size = 1 << bits;
-    uint64_t occs[4096];
-    uint64_t refs[4096];
-
-    int n = 0;
-    uint64_t subset = 0;
-    do {
-        occs[n] = subset;
-        refs[n] = rook ? rook_attacks_slow(sq, subset) : bishop_attacks_slow(sq, subset);
-        ++n;
-        subset = (subset - mask) & mask;
-    } while (subset != 0);
-
-    entry->mask = mask;
-    entry->shift = 64 - bits;
-    entry->attacks = table_slot;
-
-    for (;;) {
-        uint64_t magic = magic_rand64() & magic_rand64() & magic_rand64();
-        if (chess_count_bits((mask * magic) >> 56) < 6) {
-            continue;
-        }
-        for (int i = 0; i < table_size; ++i) {
-            table_slot[i] = 0;
-        }
-        bool ok = true;
-        for (int i = 0; i < n; ++i) {
-            uint64_t idx = (occs[i] * magic) >> entry->shift;
-            if (table_slot[idx] == 0) {
-                table_slot[idx] = refs[i];
-            } else if (table_slot[idx] != refs[i]) {
-                ok = false;
-                break;
-            }
-        }
-        if (ok) {
-            entry->magic = magic;
-            return;
-        }
-    }
-}
-
-static void init_magics(void) {
-    uint64_t *rook_slot = g_rook_attack_table;
-    uint64_t *bishop_slot = g_bishop_attack_table;
-    for (int sq = 0; sq < 64; ++sq) {
-        init_magic_square(sq, true, &g_rook_magic[sq], rook_slot);
-        rook_slot += 1 << chess_count_bits(g_rook_magic[sq].mask);
-        init_magic_square(sq, false, &g_bishop_magic[sq], bishop_slot);
-        bishop_slot += 1 << chess_count_bits(g_bishop_magic[sq].mask);
-    }
-}
 
 uint64_t hce_bishop_attacks(int sq, uint64_t occ) {
-    if (!g_hce_tables_ready) {
-        hce_init_tables();
-    }
-    const MagicEntry *e = &g_bishop_magic[sq];
-    return e->attacks[((occ & e->mask) * e->magic) >> e->shift];
+    return chess_bishop_attacks(sq, occ);
 }
 
 uint64_t hce_rook_attacks(int sq, uint64_t occ) {
-    if (!g_hce_tables_ready) {
-        hce_init_tables();
-    }
-    const MagicEntry *e = &g_rook_magic[sq];
-    return e->attacks[((occ & e->mask) * e->magic) >> e->shift];
+    return chess_rook_attacks(sq, occ);
 }
 
 void hce_init_tables(void) {
@@ -526,7 +350,6 @@ void hce_init_tables(void) {
         }
     }
 
-    init_magics();
 
     g_hce_tables_ready = true;
 }

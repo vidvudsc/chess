@@ -11,6 +11,7 @@ static uint64_t g_pawn_attacks[PIECE_COLOR_COUNT][64];
 static bool g_attacks_ready = false;
 
 static void init_attack_tables(void);
+static void init_slider_tables(void);
 
 static void ensure_engine_ready(void) {
     init_attack_tables();
@@ -71,10 +72,11 @@ static void init_attack_tables(void) {
         g_pawn_attacks[PIECE_BLACK][sq] = black_pawn;
     }
 
+    init_slider_tables();
     g_attacks_ready = true;
 }
 
-static uint64_t rook_attacks(int sq, uint64_t occ) {
+static uint64_t rook_attacks_slow(int sq, uint64_t occ) {
     uint64_t attacks = 0;
     int f = square_file(sq);
     int r = square_rank(sq);
@@ -111,7 +113,7 @@ static uint64_t rook_attacks(int sq, uint64_t occ) {
     return attacks;
 }
 
-static uint64_t bishop_attacks(int sq, uint64_t occ) {
+static uint64_t bishop_attacks_slow(int sq, uint64_t occ) {
     uint64_t attacks = 0;
     int f = square_file(sq);
     int r = square_rank(sq);
@@ -162,137 +164,148 @@ static int piece_for_color_on_square(const GameState *s, int color, int sq) {
     return piece;
 }
 
+// Fancy magic bitboards (moved here so move generation, check detection and
+// both evaluators share one fast implementation). Magics are found once at
+// init by a fixed-seed random search and verified collision-free.
+typedef struct MagicEntry {
+    uint64_t mask;
+    uint64_t magic;
+    uint64_t *attacks;
+    int shift;
+} MagicEntry;
+
+static MagicEntry g_rook_magic[64];
+static MagicEntry g_bishop_magic[64];
+static uint64_t g_rook_attack_table[102400];
+static uint64_t g_bishop_attack_table[5248];
+// Squares strictly between two aligned squares (0 if not aligned).
+static uint64_t g_between[64][64];
+
+static uint64_t slider_relevant_mask(int sq, bool rook) {
+    int f = square_file(sq);
+    int r = square_rank(sq);
+    uint64_t mask = 0;
+    if (rook) {
+        for (int nf = f + 1; nf <= 6; ++nf) mask |= 1ULL << make_square(nf, r);
+        for (int nf = f - 1; nf >= 1; --nf) mask |= 1ULL << make_square(nf, r);
+        for (int nr = r + 1; nr <= 6; ++nr) mask |= 1ULL << make_square(f, nr);
+        for (int nr = r - 1; nr >= 1; --nr) mask |= 1ULL << make_square(f, nr);
+    } else {
+        for (int nf = f + 1, nr = r + 1; nf <= 6 && nr <= 6; ++nf, ++nr) mask |= 1ULL << make_square(nf, nr);
+        for (int nf = f - 1, nr = r + 1; nf >= 1 && nr <= 6; --nf, ++nr) mask |= 1ULL << make_square(nf, nr);
+        for (int nf = f + 1, nr = r - 1; nf <= 6 && nr >= 1; ++nf, --nr) mask |= 1ULL << make_square(nf, nr);
+        for (int nf = f - 1, nr = r - 1; nf >= 1 && nr >= 1; --nf, --nr) mask |= 1ULL << make_square(nf, nr);
+    }
+    return mask;
+}
+
+static uint64_t g_magic_rand_state = 0x9E3779B97F4A7C15ULL;
+
+static uint64_t magic_rand64(void) {
+    g_magic_rand_state ^= g_magic_rand_state >> 12;
+    g_magic_rand_state ^= g_magic_rand_state << 25;
+    g_magic_rand_state ^= g_magic_rand_state >> 27;
+    return g_magic_rand_state * 0x2545F4914F6CDD1DULL;
+}
+
+static void init_magic_square(int sq, bool rook, MagicEntry *entry, uint64_t *table_slot) {
+    uint64_t mask = slider_relevant_mask(sq, rook);
+    int bits = chess_count_bits(mask);
+    int table_size = 1 << bits;
+    static uint64_t occs[4096];
+    static uint64_t refs[4096];
+    int n = 0;
+    uint64_t subset = 0;
+    do {
+        occs[n] = subset;
+        refs[n] = rook ? rook_attacks_slow(sq, subset) : bishop_attacks_slow(sq, subset);
+        ++n;
+        subset = (subset - mask) & mask;
+    } while (subset != 0);
+    entry->mask = mask;
+    entry->shift = 64 - bits;
+    entry->attacks = table_slot;
+    for (;;) {
+        uint64_t magic = magic_rand64() & magic_rand64() & magic_rand64();
+        if (chess_count_bits((mask * magic) >> 56) < 6) {
+            continue;
+        }
+        memset(table_slot, 0, (size_t)table_size * sizeof(uint64_t));
+        bool ok = true;
+        for (int i = 0; i < n; ++i) {
+            uint64_t idx = (occs[i] * magic) >> entry->shift;
+            if (table_slot[idx] == 0) {
+                table_slot[idx] = refs[i];
+            } else if (table_slot[idx] != refs[i]) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            entry->magic = magic;
+            return;
+        }
+    }
+}
+
+static inline uint64_t rook_attacks(int sq, uint64_t occ) {
+    const MagicEntry *e = &g_rook_magic[sq];
+    return e->attacks[((occ & e->mask) * e->magic) >> e->shift];
+}
+
+static inline uint64_t bishop_attacks(int sq, uint64_t occ) {
+    const MagicEntry *e = &g_bishop_magic[sq];
+    return e->attacks[((occ & e->mask) * e->magic) >> e->shift];
+}
+
+static void init_slider_tables(void) {
+    uint64_t *rook_slot = g_rook_attack_table;
+    uint64_t *bishop_slot = g_bishop_attack_table;
+    for (int sq = 0; sq < 64; ++sq) {
+        init_magic_square(sq, true, &g_rook_magic[sq], rook_slot);
+        rook_slot += 1 << chess_count_bits(g_rook_magic[sq].mask);
+        init_magic_square(sq, false, &g_bishop_magic[sq], bishop_slot);
+        bishop_slot += 1 << chess_count_bits(g_bishop_magic[sq].mask);
+    }
+    for (int a = 0; a < 64; ++a) {
+        for (int b = 0; b < 64; ++b) {
+            uint64_t between = 0;
+            uint64_t bb = 1ULL << b;
+            if (rook_attacks_slow(a, 0) & bb) {
+                between = rook_attacks_slow(a, bb) & rook_attacks_slow(b, 1ULL << a);
+            } else if (bishop_attacks_slow(a, 0) & bb) {
+                between = bishop_attacks_slow(a, bb) & bishop_attacks_slow(b, 1ULL << a);
+            }
+            g_between[a][b] = between;
+        }
+    }
+}
+
+uint64_t chess_rook_attacks(int sq, uint64_t occ) {
+    ensure_engine_ready();
+    return rook_attacks(sq, occ);
+}
+
+uint64_t chess_bishop_attacks(int sq, uint64_t occ) {
+    ensure_engine_ready();
+    return bishop_attacks(sq, occ);
+}
+
 static bool square_attacked(const GameState *s, int sq, int by_color) {
-    uint64_t pawns = s->bb[by_color][PIECE_PAWN];
-    if ((pawns & g_pawn_attacks[by_color ^ 1][sq]) != 0) {
+    if ((s->bb[by_color][PIECE_PAWN] & g_pawn_attacks[by_color ^ 1][sq]) != 0) {
         return true;
     }
-
     if ((s->bb[by_color][PIECE_KNIGHT] & g_knight_attacks[sq]) != 0) {
         return true;
     }
     if ((s->bb[by_color][PIECE_KING] & g_king_attacks[sq]) != 0) {
         return true;
     }
-
-    int f = square_file(sq);
-    int r = square_rank(sq);
-
-    for (int nf = f + 1, nr = r + 1; nf < 8 && nr < 8; ++nf, ++nr) {
-        int nsq = make_square(nf, nr);
-        int color = s->sq_color[nsq];
-        if (color < 0) {
-            continue;
-        }
-        if (color == by_color) {
-            int piece = s->sq_piece[nsq];
-            if (piece == PIECE_BISHOP || piece == PIECE_QUEEN) {
-                return true;
-            }
-        }
-        break;
+    uint64_t queens = s->bb[by_color][PIECE_QUEEN];
+    if (((s->bb[by_color][PIECE_BISHOP] | queens) & bishop_attacks(sq, s->occ_all)) != 0) {
+        return true;
     }
-    for (int nf = f - 1, nr = r + 1; nf >= 0 && nr < 8; --nf, ++nr) {
-        int nsq = make_square(nf, nr);
-        int color = s->sq_color[nsq];
-        if (color < 0) {
-            continue;
-        }
-        if (color == by_color) {
-            int piece = s->sq_piece[nsq];
-            if (piece == PIECE_BISHOP || piece == PIECE_QUEEN) {
-                return true;
-            }
-        }
-        break;
-    }
-    for (int nf = f + 1, nr = r - 1; nf < 8 && nr >= 0; ++nf, --nr) {
-        int nsq = make_square(nf, nr);
-        int color = s->sq_color[nsq];
-        if (color < 0) {
-            continue;
-        }
-        if (color == by_color) {
-            int piece = s->sq_piece[nsq];
-            if (piece == PIECE_BISHOP || piece == PIECE_QUEEN) {
-                return true;
-            }
-        }
-        break;
-    }
-    for (int nf = f - 1, nr = r - 1; nf >= 0 && nr >= 0; --nf, --nr) {
-        int nsq = make_square(nf, nr);
-        int color = s->sq_color[nsq];
-        if (color < 0) {
-            continue;
-        }
-        if (color == by_color) {
-            int piece = s->sq_piece[nsq];
-            if (piece == PIECE_BISHOP || piece == PIECE_QUEEN) {
-                return true;
-            }
-        }
-        break;
-    }
-
-    for (int nr = r + 1; nr < 8; ++nr) {
-        int nsq = make_square(f, nr);
-        int color = s->sq_color[nsq];
-        if (color < 0) {
-            continue;
-        }
-        if (color == by_color) {
-            int piece = s->sq_piece[nsq];
-            if (piece == PIECE_ROOK || piece == PIECE_QUEEN) {
-                return true;
-            }
-        }
-        break;
-    }
-    for (int nr = r - 1; nr >= 0; --nr) {
-        int nsq = make_square(f, nr);
-        int color = s->sq_color[nsq];
-        if (color < 0) {
-            continue;
-        }
-        if (color == by_color) {
-            int piece = s->sq_piece[nsq];
-            if (piece == PIECE_ROOK || piece == PIECE_QUEEN) {
-                return true;
-            }
-        }
-        break;
-    }
-    for (int nf = f + 1; nf < 8; ++nf) {
-        int nsq = make_square(nf, r);
-        int color = s->sq_color[nsq];
-        if (color < 0) {
-            continue;
-        }
-        if (color == by_color) {
-            int piece = s->sq_piece[nsq];
-            if (piece == PIECE_ROOK || piece == PIECE_QUEEN) {
-                return true;
-            }
-        }
-        break;
-    }
-    for (int nf = f - 1; nf >= 0; --nf) {
-        int nsq = make_square(nf, r);
-        int color = s->sq_color[nsq];
-        if (color < 0) {
-            continue;
-        }
-        if (color == by_color) {
-            int piece = s->sq_piece[nsq];
-            if (piece == PIECE_ROOK || piece == PIECE_QUEEN) {
-                return true;
-            }
-        }
-        break;
-    }
-
-    return false;
+    return ((s->bb[by_color][PIECE_ROOK] | queens) & rook_attacks(sq, s->occ_all)) != 0;
 }
 
 static void add_move(Move out[CHESS_MAX_MOVES], int *count, Move m) {
@@ -695,9 +708,6 @@ static void compute_checkers_and_pins(const GameState *s,
                                       int king_sq,
                                       uint64_t *checkers_out,
                                       uint64_t pin_masks[64]) {
-    static const int dir_df[8] = {0, 0, 1, -1, 1, -1, 1, -1};
-    static const int dir_dr[8] = {1, -1, 0, 0, 1, 1, -1, -1};
-
     uint64_t checkers = 0;
     memset(pin_masks, 0, sizeof(uint64_t) * 64);
 
@@ -706,53 +716,20 @@ static void compute_checkers_and_pins(const GameState *s,
     checkers |= s->bb[opp][PIECE_KNIGHT] & g_knight_attacks[king_sq];
     checkers |= s->bb[opp][PIECE_KING] & g_king_attacks[king_sq];
 
-    int kf = square_file(king_sq);
-    int kr = square_rank(king_sq);
-    for (int dir = 0; dir < 8; ++dir) {
-        int df = dir_df[dir];
-        int dr = dir_dr[dir];
-        int f = kf + df;
-        int r = kr + dr;
-        int blocker_sq = CHESS_NO_SQUARE;
-        uint64_t ray_mask = 1ULL << king_sq;
-
-        while (f >= 0 && f < 8 && r >= 0 && r < 8) {
-            int sq = make_square(f, r);
-            ray_mask |= 1ULL << sq;
-
-            int color = s->sq_color[sq];
-            if (color < 0) {
-                f += df;
-                r += dr;
-                continue;
-            }
-
-            if (color == side) {
-                if (blocker_sq != CHESS_NO_SQUARE) {
-                    break;
-                }
-                blocker_sq = sq;
-                f += df;
-                r += dr;
-                continue;
-            }
-
-            int piece = s->sq_piece[sq];
-            bool slider = false;
-            if (dir < 4) {
-                slider = (piece == PIECE_ROOK || piece == PIECE_QUEEN);
-            } else {
-                slider = (piece == PIECE_BISHOP || piece == PIECE_QUEEN);
-            }
-
-            if (slider) {
-                if (blocker_sq == CHESS_NO_SQUARE) {
-                    checkers |= 1ULL << sq;
-                } else {
-                    pin_masks[blocker_sq] = ray_mask;
-                }
-            }
-            break;
+    // Enemy sliders on an open line to the king give check; with exactly one
+    // own piece between, that piece is pinned to the line (king through
+    // pinner inclusive, as the former ray walk produced).
+    uint64_t queens = s->bb[opp][PIECE_QUEEN];
+    uint64_t snipers = ((s->bb[opp][PIECE_ROOK] | queens) & rook_attacks(king_sq, 0)) |
+                       ((s->bb[opp][PIECE_BISHOP] | queens) & bishop_attacks(king_sq, 0));
+    while (snipers != 0) {
+        int sq = chess_pop_lsb(&snipers);
+        uint64_t between = g_between[king_sq][sq] & s->occ_all;
+        if (between == 0) {
+            checkers |= 1ULL << sq;
+        } else if ((between & (between - 1)) == 0 && (between & s->occ[side]) != 0) {
+            int blocker = __builtin_ctzll(between);
+            pin_masks[blocker] = g_between[king_sq][sq] | (1ULL << sq) | (1ULL << king_sq);
         }
     }
 
