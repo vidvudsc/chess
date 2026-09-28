@@ -242,6 +242,19 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         return;
     }
 
+    for (int i = 0; i < hce_search_option_count(); ++i) {
+        const char *sw = hce_search_option_name(i);
+        if (str_ieq(name_buf, sw)) {
+            int v = 0;
+            if (parse_int_token(value_buf, &v)) {
+                hce_search_set_option(sw, v);
+                printf("info string %s set to %d\n", sw, hce_search_get_option(sw));
+                fflush(stdout);
+            }
+            return;
+        }
+    }
+
     if (str_ieq(name_buf, "Hash")) {
         int mb = 0;
         if (parse_int_token(value_buf, &mb) && mb > 0) {
@@ -734,6 +747,10 @@ static void print_uci_intro(const UciOptions *opt) {
     printf("option name SyzygyPath type string default <empty>\n");
     printf("option name Hash type spin default 16 min 1 max 1024\n");
     printf("option name HceQsearchTT type spin default %d min 0 max 1\n", hce_search_get_qsearch_tt());
+    for (int i = 0; i < hce_search_option_count(); ++i) {
+        const char *sw = hce_search_option_name(i);
+        printf("option name %s type spin default %d min 0 max 1\n", sw, hce_search_get_option(sw));
+    }
     printf("option name NNModel type string default auto\n");
     printf("option name NNLeafLog type string default off\n");
     printf("option name NNLeafLogLimit type spin default %d min 0 max 100000000\n", opt->nn_leaf_log_limit);

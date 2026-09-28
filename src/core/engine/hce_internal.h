@@ -106,5 +106,11 @@ int hce_set_hash_mb(int mb);
 // Optional quiescence TT probing (UCI HceQsearchTT).
 void hce_search_set_qsearch_tt(int on);
 int hce_search_get_qsearch_tt(void);
+// On/off search switches (HceNmpEval, HceIIR, ...). set returns false for
+// unknown names; get returns -1 for unknown names.
+int hce_search_option_count(void);
+const char *hce_search_option_name(int index);
+bool hce_search_set_option(const char *name, int value);
+int hce_search_get_option(const char *name);
 
 #endif

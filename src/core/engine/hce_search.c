@@ -54,6 +54,12 @@ typedef struct HceSearchContext {
     int lmr_move_bonus_at;
     Move killer[HCE_MAX_PLY][2];
     int history[PIECE_COLOR_COUNT][64][64];
+    // Move skipped at this ply by a singular-extension verification search.
+    Move excluded[HCE_MAX_PLY];
+    // Static eval per ply for the improving heuristic (INT_MIN = none).
+    int eval_stack[HCE_MAX_PLY];
+    // hash_history index of the root position (repetition handling).
+    int root_hist_index;
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
 } HceSearchContext;
 
@@ -200,6 +206,30 @@ static bool search_is_repetition_draw(const GameState *s) {
     return false;
 }
 
+// HceRepFix: a repeat of a position reached inside this search is a draw
+// (either side could repeat again), but a position that only occurred before
+// the root (or is the root) must occur a third time, as over the board.
+static bool search_is_repetition_draw_rootaware(const GameState *s, int root_index) {
+    if (s == NULL || s->hash_history_count <= 0) {
+        return false;
+    }
+    uint64_t current = s->zobrist_hash;
+    int begin = s->irreversible_ply < 0 ? 0 : s->irreversible_ply;
+    int cur_index = s->hash_history_count;
+    if (s->hash_history[cur_index - 1] == current) {
+        cur_index -= 1;
+    }
+    int prior = 0;
+    for (int i = cur_index - 2; i >= begin; i -= 2) {
+        if (s->hash_history[i] == current) {
+            if (i > root_index || ++prior >= 2) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static bool search_is_threefold_draw(const GameState *s) {
     if (s == NULL || s->hash_history_count <= 0) {
         return false;
@@ -219,7 +249,7 @@ static bool search_is_threefold_draw(const GameState *s) {
     return false;
 }
 
-static int score_search_draw_internal(const GameState *s) {
+static int score_search_draw_internal(const GameState *s, int root_index) {
     if (s == NULL) {
         return INT_MIN;
     }
@@ -229,7 +259,8 @@ static int score_search_draw_internal(const GameState *s) {
     if (s->halfmove_clock >= 100) {
         return 0;
     }
-    if (search_is_repetition_draw(s)) {
+    if (root_index >= 0 ? search_is_repetition_draw_rootaware(s, root_index)
+                        : search_is_repetition_draw(s)) {
         return 0;
     }
     return INT_MIN;
@@ -247,7 +278,8 @@ int hce_score_search_draw_stm(const GameState *s) {
     return INT_MIN;
 }
 
-static int score_terminal_stm(const GameState *s, int ply) {
+// root_index >= 0 selects the root-aware repetition rule (HceRepFix).
+static int score_terminal_stm(const GameState *s, int ply, int root_index) {
     if (s == NULL) {
         return 0;
     }
@@ -267,9 +299,9 @@ static int score_terminal_stm(const GameState *s, int ply) {
         case GAME_RESULT_DRAW_AGREED:
             return 0;
         case GAME_RESULT_ONGOING:
-            return score_search_draw_internal(s);
+            return score_search_draw_internal(s, root_index);
         default:
-            return score_search_draw_internal(s);
+            return score_search_draw_internal(s, root_index);
     }
 }
 
@@ -368,6 +400,28 @@ static bool tt_probe(uint64_t key, int depth, int ply, int alpha, int beta, Move
         return true;
     }
     return false;
+}
+
+// Read an entry without cutoff logic (singular extensions need its depth,
+// bound and score).
+static bool tt_peek(uint64_t key, int ply, Move *move_out, int *score_out, int *depth_out,
+                    HceTtBound *bound_out) {
+    HceTtEntry *entry = tt_entry(key);
+    uint64_t key_before = atomic_load_explicit(&entry->key, memory_order_acquire);
+    if (key_before != key || key_before == HCE_TT_WRITE_LOCK) {
+        return false;
+    }
+    uint64_t payload = atomic_load_explicit(&entry->payload, memory_order_relaxed);
+    uint64_t key_after = atomic_load_explicit(&entry->key, memory_order_acquire);
+    HceTtBound bound = tt_payload_bound(payload);
+    if (key_after != key_before || bound == HCE_TT_NONE) {
+        return false;
+    }
+    *move_out = tt_payload_move(payload);
+    *score_out = tt_score_from_store(tt_payload_score(payload), ply);
+    *depth_out = tt_payload_depth(payload);
+    *bound_out = bound;
+    return true;
 }
 
 static void tt_store(uint64_t key, int depth, int ply, int score, HceTtBound bound, Move move) {
@@ -578,8 +632,15 @@ static bool select_least_valuable_attacker(const uint64_t bb[PIECE_COLOR_COUNT][
 
 // Lightweight SEE for qsearch pruning. Promotions and king moves are handled
 // outside this path to keep the pruning conservative.
-static int static_exchange_eval(const GameState *s, Move m) {
-    if (s == NULL || !move_has_flag(m, MOVE_FLAG_CAPTURE)) {
+// With allow_quiet a non-capture is scored too (gain 0, then the swap list):
+// the material the moving piece can lose on its destination square.
+static int see_impl(const GameState *s, Move m, bool allow_quiet) {
+    if (s == NULL) {
+        return 0;
+    }
+    bool is_capture = move_has_flag(m, MOVE_FLAG_CAPTURE);
+    if (!is_capture && (!allow_quiet || move_has_flag(m, MOVE_FLAG_CASTLE) ||
+                        move_has_flag(m, MOVE_FLAG_PROMOTION))) {
         return 0;
     }
     if (move_has_flag(m, MOVE_FLAG_PROMOTION) || move_has_flag(m, MOVE_FLAG_CASTLE)) {
@@ -592,7 +653,7 @@ static int static_exchange_eval(const GameState *s, Move m) {
     int to = move_to(m);
     int moving_piece = move_piece(m);
     int captured_piece = captured_piece_for_move(s, m);
-    if (from < 0 || from >= 64 || to < 0 || to >= 64 || captured_piece == PIECE_NONE) {
+    if (from < 0 || from >= 64 || to < 0 || to >= 64 || (is_capture && captured_piece == PIECE_NONE)) {
         return 0;
     }
 
@@ -617,9 +678,11 @@ static int static_exchange_eval(const GameState *s, Move m) {
     occ[side] &= ~from_mask;
     occ_all &= ~from_mask;
 
-    bb[opp][captured_piece] &= ~captured_mask;
-    occ[opp] &= ~captured_mask;
-    occ_all &= ~captured_mask;
+    if (is_capture) {
+        bb[opp][captured_piece] &= ~captured_mask;
+        occ[opp] &= ~captured_mask;
+        occ_all &= ~captured_mask;
+    }
 
     bb[side][moving_piece] |= to_mask;
     occ[side] |= to_mask;
@@ -627,7 +690,7 @@ static int static_exchange_eval(const GameState *s, Move m) {
 
     int gain[32];
     int depth = 0;
-    gain[0] = hce_piece_value[captured_piece];
+    gain[0] = is_capture ? hce_piece_value[captured_piece] : 0;
 
     int target_side = side;
     int target_piece = moving_piece;
@@ -678,6 +741,14 @@ static int static_exchange_eval(const GameState *s, Move m) {
     return gain[0];
 }
 
+static int static_exchange_eval(const GameState *s, Move m) {
+    return see_impl(s, m, false);
+}
+
+static int see_any_move(const GameState *s, Move m) {
+    return see_impl(s, m, true);
+}
+
 static bool has_non_pawn_material(const GameState *s, int side) {
     return (s->bb[side][PIECE_QUEEN] |
             s->bb[side][PIECE_ROOK] |
@@ -723,6 +794,43 @@ static void undo_null_move(GameState *s, const NullMoveUndo *u) {
     s->has_last_move = u->has_last_move;
 }
 
+// Whether a quiet (non-capture, non-promotion) move gives check, without
+// making it: a direct check by the moved piece or a discovered slider check.
+// Castling is reported as checking (never pruned on that basis).
+static bool quiet_move_gives_check(const GameState *s, Move m) {
+    if (move_has_flag(m, MOVE_FLAG_CASTLE)) {
+        return true;
+    }
+    int side = s->side_to_move;
+    int enemy = side ^ 1;
+    uint64_t king = s->bb[enemy][PIECE_KING];
+    if (king == 0) {
+        return false;
+    }
+    int ksq = __builtin_ctzll(king);
+    int from = move_from(m);
+    int to = move_to(m);
+    int piece = move_piece(m);
+    uint64_t from_bit = 1ULL << from;
+    uint64_t to_bit = 1ULL << to;
+    if (piece == PIECE_PAWN && (g_chess_pawn_attacks[side][to] & king) != 0) {
+        return true;
+    }
+    if (piece == PIECE_KNIGHT && (g_chess_knight_attacks[to] & king) != 0) {
+        return true;
+    }
+    uint64_t occ = (s->occ_all & ~from_bit) | to_bit;
+    uint64_t rq = s->bb[side][PIECE_ROOK] | s->bb[side][PIECE_QUEEN];
+    uint64_t bq = s->bb[side][PIECE_BISHOP] | s->bb[side][PIECE_QUEEN];
+    if (rq & from_bit) {
+        rq = (rq & ~from_bit) | to_bit;
+    }
+    if (bq & from_bit) {
+        bq = (bq & ~from_bit) | to_bit;
+    }
+    return (hce_rook_attacks(ksq, occ) & rq) != 0 || (hce_bishop_attacks(ksq, occ) & bq) != 0;
+}
+
 static bool is_quiet_move(Move m) {
     return !move_has_flag(m, MOVE_FLAG_CAPTURE) &&
            !move_has_flag(m, MOVE_FLAG_PROMOTION);
@@ -735,7 +843,8 @@ static bool is_recapture_move(const GameState *s, Move m) {
     return move_to(m) == move_to(s->last_move);
 }
 
-static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext *ctx, int ply) {
+static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext *ctx, int ply,
+                      bool see_order) {
     if (m == tt_move) {
         return 200000000;
     }
@@ -747,7 +856,16 @@ static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext
         if (victim == PIECE_NONE) {
             victim = PIECE_PAWN;
         }
-        score += 1000000 + hce_piece_value[victim] * 16 - hce_piece_value[attacker];
+        // HceSeeOrder: a capture that loses material (only possible when the
+        // victim is worth less than the attacker) goes after every quiet.
+        int base = 1000000;
+        if (see_order &&
+            hce_piece_value[victim] < hce_piece_value[attacker] &&
+            !move_has_flag(m, MOVE_FLAG_PROMOTION) &&
+            static_exchange_eval(s, m) < 0) {
+            base = -300000;
+        }
+        score += base + hce_piece_value[victim] * 16 - hce_piece_value[attacker];
     } else {
         if (ply >= 0 && ply < HCE_MAX_PLY) {
             if (ctx->killer[ply][0] == m) {
@@ -773,9 +891,10 @@ static void score_moves(const GameState *s,
                          int n,
                          Move tt_move,
                          HceSearchContext *ctx,
-                         int ply) {
+                         int ply,
+                         bool see_order) {
     for (int i = 0; i < n; ++i) {
-        scores[i] = move_score(s, moves[i], tt_move, ctx, ply);
+        scores[i] = move_score(s, moves[i], tt_move, ctx, ply, see_order);
     }
 }
 
@@ -861,12 +980,71 @@ int hce_search_get_qsearch_tt(void) {
     return g_hce_qsearch_tt;
 }
 
+// Search switches (UCI Hce*). Each at 0 reproduces the previous search
+// exactly (same nodes and moves at fixed depth); see docs/HCE_NEXT_20260928.md.
+static int g_opt_nmp_eval = 0;   // HceNmpEval: null move only when eval >= beta, deeper R
+static int g_opt_iir = 0;        // HceIIR: one ply less without a TT move
+static int g_opt_improving = 0;  // HceImproving: RFP/LMP/LMR use the improving flag
+static int g_opt_futility = 0;   // HceFutility: skip quiet non-checks far below alpha
+static int g_opt_see_prune = 0;  // HceSeePrune: skip SEE-losing moves at low depth
+static int g_opt_see_order = 0;  // HceSeeOrder: SEE-losing captures after quiets
+static int g_opt_singular = 0;   // HceSingular: singular extension of the TT move
+static int g_opt_lmr_pv = 0;     // HceLmrPv: one ply less reduction in PV nodes
+static int g_opt_rep_fix = 0;    // HceRepFix: pre-root positions need a threefold
+
+typedef struct HceSearchSwitch {
+    const char *name;
+    int *slot;
+} HceSearchSwitch;
+
+static const HceSearchSwitch k_hce_search_switches[] = {
+    {"HceNmpEval", &g_opt_nmp_eval},
+    {"HceIIR", &g_opt_iir},
+    {"HceImproving", &g_opt_improving},
+    {"HceFutility", &g_opt_futility},
+    {"HceSeePrune", &g_opt_see_prune},
+    {"HceSeeOrder", &g_opt_see_order},
+    {"HceSingular", &g_opt_singular},
+    {"HceLmrPv", &g_opt_lmr_pv},
+    {"HceRepFix", &g_opt_rep_fix},
+};
+
+int hce_search_option_count(void) {
+    return (int)(sizeof(k_hce_search_switches) / sizeof(k_hce_search_switches[0]));
+}
+
+const char *hce_search_option_name(int index) {
+    if (index < 0 || index >= hce_search_option_count()) {
+        return NULL;
+    }
+    return k_hce_search_switches[index].name;
+}
+
+bool hce_search_set_option(const char *name, int value) {
+    for (int i = 0; i < hce_search_option_count(); ++i) {
+        if (strcmp(name, k_hce_search_switches[i].name) == 0) {
+            *k_hce_search_switches[i].slot = value ? 1 : 0;
+            return true;
+        }
+    }
+    return false;
+}
+
+int hce_search_get_option(const char *name) {
+    for (int i = 0; i < hce_search_option_count(); ++i) {
+        if (strcmp(name, k_hce_search_switches[i].name) == 0) {
+            return *k_hce_search_switches[i].slot;
+        }
+    }
+    return -1;
+}
+
 static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchContext *ctx) {
     if (should_stop(ctx)) {
         return search_eval_cp_stm(s, ctx, ply);
     }
 
-    int term = score_terminal_stm(s, ply);
+    int term = score_terminal_stm(s, ply, g_opt_rep_fix ? ctx->root_hist_index : -1);
     if (term != INT_MIN) {
         return term;
     }
@@ -907,7 +1085,7 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
         }
     }
     int tactical_scores[CHESS_MAX_MOVES];
-    score_moves(s, tactical_scores, tactical_moves, tactical_n, 0, ctx, ply);
+    score_moves(s, tactical_scores, tactical_moves, tactical_n, 0, ctx, ply, false);
 
     for (int i = 0; i < tactical_n; ++i) {
         Move m = pick_next_move(tactical_moves, tactical_scores, i, tactical_n);
@@ -981,7 +1159,7 @@ static int negamax(GameState *s,
         return search_eval_cp_stm(s, ctx, ply);
     }
 
-    int term = score_terminal_stm(s, ply);
+    int term = score_terminal_stm(s, ply, g_opt_rep_fix ? ctx->root_hist_index : -1);
     if (term != INT_MIN) {
         return term;
     }
@@ -1007,13 +1185,20 @@ static int negamax(GameState *s,
 
     Move tt_move = 0;
     int tt_score = 0;
-    if (tt_probe(s->zobrist_hash, depth, ply, alpha, beta, &tt_move, &tt_score)) {
-        return tt_score;
+    // A singular-extension verification search re-enters this node with its
+    // TT move excluded: no TT cutoff or store, no null move, no tablebase.
+    const Move excluded = ctx->excluded[ply];
+    if (excluded == 0) {
+        if (tt_probe(s->zobrist_hash, depth, ply, alpha, beta, &tt_move, &tt_score)) {
+            return tt_score;
+        }
+    } else {
+        (void)tt_probe(s->zobrist_hash, depth, ply, alpha, beta, &tt_move, NULL);
     }
 
     // Syzygy WDL: exact result for small positions right after a capture or
     // pawn move. Cursed wins and blessed losses are draws under the 50-move rule.
-    if (ply > 0 && hce_tb_largest() > 0) {
+    if (excluded == 0 && ply > 0 && hce_tb_largest() > 0) {
         int wdl = 0;
         if (hce_tb_probe_wdl(s, &wdl)) {
             int tb_score = 0;
@@ -1030,20 +1215,45 @@ static int negamax(GameState *s,
     }
 
     bool in_check = chess_in_check(s, s->side_to_move);
+    const bool pv_node = beta - alpha > 1;
+
+    // Static eval: needed by reverse futility at depth <= 3 and by the
+    // eval-driven switches. The eval is a pure function of the position, so
+    // computing it more often never changes the search.
+    int static_eval = 0;
+    bool static_eval_valid = false;
+    if (!in_check && (depth <= 3 || g_opt_nmp_eval || g_opt_improving || g_opt_futility)) {
+        static_eval = search_eval_cp_stm(s, ctx, ply);
+        static_eval_valid = true;
+    }
+    // Improving: this side's static eval beats its value two plies ago.
+    bool improving = false;
+    if (g_opt_improving) {
+        ctx->eval_stack[ply] = static_eval_valid ? static_eval : INT_MIN;
+        improving = static_eval_valid && ply >= 2 && ctx->eval_stack[ply - 2] != INT_MIN &&
+                    static_eval > ctx->eval_stack[ply - 2];
+    }
 
     if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
-        int margin = ctx_rfp_margin_per_depth(ctx) * depth;
-        if (search_eval_cp_stm(s, ctx, ply) >= beta + margin) {
+        int margin = ctx_rfp_margin_per_depth(ctx) * (depth - (improving ? 1 : 0));
+        if (static_eval >= beta + margin) {
             return beta;
         }
     }
 
-    if (ply > 0 &&
+    if (excluded == 0 &&
+        ply > 0 &&
         depth >= 3 &&
         !in_check &&
         beta < HCE_MATE_THRESHOLD &&
-        has_non_pawn_material(s, s->side_to_move)) {
+        has_non_pawn_material(s, s->side_to_move) &&
+        (!g_opt_nmp_eval || static_eval >= beta)) {
         int reduction = ctx_null_base_reduction(ctx) + depth / ctx_null_depth_divisor(ctx);
+        if (g_opt_nmp_eval) {
+            // HceNmpEval: reduce more the further the eval sits above beta.
+            int extra = (static_eval - beta) / 200;
+            reduction += extra > 2 ? 2 : extra;
+        }
         if (reduction > depth - 1) {
             reduction = depth - 1;
         }
@@ -1068,6 +1278,11 @@ static int negamax(GameState *s,
         }
     }
 
+    // HceIIR: without a TT move the ordering is poor; search one ply less.
+    if (g_opt_iir && excluded == 0 && depth >= 4 && tt_move == 0 && !in_check) {
+        depth -= 1;
+    }
+
     Move moves[CHESS_MAX_MOVES];
     int n = chess_generate_legal_moves_mut(s, moves);
     if (n <= 0) {
@@ -1077,7 +1292,30 @@ static int negamax(GameState *s,
         return 0;
     }
     int move_scores[CHESS_MAX_MOVES];
-    score_moves(s, move_scores, moves, n, tt_move, ctx, ply);
+    score_moves(s, move_scores, moves, n, tt_move, ctx, ply, g_opt_see_order != 0);
+
+    // HceSingular: if every move but the TT move fails well below the TT
+    // score in a reduced search that excludes it, extend the TT move.
+    bool singular = false;
+    if (g_opt_singular && excluded == 0 && tt_move != 0 && depth >= 8 && ply < HCE_MAX_PLY - 2) {
+        Move se_move = 0;
+        int se_score = 0;
+        int se_depth = 0;
+        HceTtBound se_bound = HCE_TT_NONE;
+        if (tt_peek(s->zobrist_hash, ply, &se_move, &se_score, &se_depth, &se_bound) &&
+            se_move == tt_move && se_depth >= depth - 3 &&
+            (se_bound == HCE_TT_LOWER || se_bound == HCE_TT_EXACT) &&
+            se_score > -HCE_MATE_THRESHOLD && se_score < HCE_MATE_THRESHOLD) {
+            int singular_beta = se_score - 2 * depth;
+            ctx->excluded[ply] = tt_move;
+            int v = negamax(s, (depth - 1) / 2, singular_beta - 1, singular_beta, ply, ctx, NULL);
+            ctx->excluded[ply] = 0;
+            if (ctx->timed_out) {
+                return alpha;
+            }
+            singular = v < singular_beta;
+        }
+    }
 
     Move best_move = moves[0];
     int best_score = -HCE_INF;
@@ -1086,9 +1324,19 @@ static int negamax(GameState *s,
     int searched = 0;
     Move failed_quiets[CHESS_MAX_MOVES];
     int failed_quiet_count = 0;
+    int lmp_limit = 3 + depth * depth;
+    if (g_opt_improving && !improving) {
+        lmp_limit = (3 + depth * depth) / 2;
+    }
+    const bool futile_node = g_opt_futility && static_eval_valid && depth <= 6 &&
+                             alpha < HCE_MATE_THRESHOLD &&
+                             static_eval + 80 + 90 * depth <= alpha;
 
     for (int i = 0; i < n; ++i) {
         Move m = pick_next_move(moves, move_scores, i, n);
+        if (m == excluded) {
+            continue;
+        }
         bool quiet = is_quiet_move(m);
         bool recapture = is_recapture_move(s, m);
         // Late move pruning: with moves ordered best-first, once enough quiet
@@ -1098,15 +1346,16 @@ static int negamax(GameState *s,
         if (!in_check &&
             quiet &&
             depth <= 8 &&
-            searched >= 3 + depth * depth &&
+            searched >= lmp_limit &&
             best_score > -HCE_MATE_THRESHOLD) {
             // Every later quiet is skipped too (nothing above changes while
             // skipping), and captures always order before quiets. If no
             // non-quiet move remains, stop instead of selection-picking each
             // remaining quiet just to skip it: same tree, no O(n^2) tail.
+            // (SEE-losing captures order after quiets, so they still count.)
             bool tactical_left = false;
             for (int j = i + 1; j < n; ++j) {
-                if (!is_quiet_move(moves[j])) {
+                if (!is_quiet_move(moves[j]) && moves[j] != excluded) {
                     tactical_left = true;
                     break;
                 }
@@ -1116,6 +1365,28 @@ static int negamax(GameState *s,
             }
             continue;
         }
+        // HceSeePrune: at low depth skip moves that lose material by SEE
+        // (captures beyond a pawn per ply, quiets by a depth-squared margin).
+        if (g_opt_see_prune &&
+            !in_check &&
+            searched > 0 &&
+            best_score > -HCE_MATE_THRESHOLD &&
+            depth <= 6 &&
+            !move_has_flag(m, MOVE_FLAG_PROMOTION)) {
+            if (quiet) {
+                if (see_any_move(s, m) < -15 * depth * depth) {
+                    continue;
+                }
+            } else if (static_exchange_eval(s, m) < -90 * depth) {
+                continue;
+            }
+        }
+        // HceFutility: far below alpha a quiet move that does not give
+        // check cannot recover the gap at this depth.
+        if (futile_node && quiet && searched > 0 && best_score > -HCE_MATE_THRESHOLD &&
+            !quiet_move_gives_check(s, m)) {
+            continue;
+        }
         if (!chess_make_move_trusted(s, m)) {
             continue;
         }
@@ -1123,6 +1394,9 @@ static int negamax(GameState *s,
         ctx->nodes += 1;
 
         int extension = search_move_extension(s, m, depth);
+        if (singular && m == tt_move && extension == 0) {
+            extension = 1;
+        }
 
         int score;
         int next_depth = depth - 1 + extension;
@@ -1145,6 +1419,12 @@ static int negamax(GameState *s,
                     reduction -= 1;
                 }
                 if (search_uses_nn_backend()) {
+                    reduction -= 1;
+                }
+                if (g_opt_improving && !improving) {
+                    reduction += 1;
+                }
+                if (g_opt_lmr_pv && pv_node) {
                     reduction -= 1;
                 }
                 if (reduction < 0) {
@@ -1184,7 +1464,9 @@ static int negamax(GameState *s,
                 if (has_non_pawn_material(s, side)) {
                     penalize_quiet_history(ctx, side, failed_quiets, failed_quiet_count, depth);
                 }
-                tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
+                if (excluded == 0) {
+                    tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
+                }
                 if (best_move_out != NULL) {
                     *best_move_out = m;
                 }
@@ -1197,6 +1479,11 @@ static int negamax(GameState *s,
     }
 
     if (best_score == -HCE_INF) {
+        if (excluded != 0) {
+            // Only the excluded move exists (or every other was pruned):
+            // nothing refutes singularity.
+            return alpha;
+        }
         best_score = in_check ? 0 : search_eval_cp_stm(s, ctx, ply);
     }
 
@@ -1206,7 +1493,7 @@ static int negamax(GameState *s,
     } else if (best_score >= beta) {
         bound = HCE_TT_LOWER;
     }
-    if (!ctx->timed_out) {
+    if (!ctx->timed_out && excluded == 0) {
         tt_store(s->zobrist_hash, depth, ply, best_score, bound, best_move);
     }
     if (best_move_out != NULL) {
@@ -1236,12 +1523,17 @@ static int search_root(GameState *root,
         if (best_move_out != NULL) {
             *best_move_out = 0;
         }
-        return score_terminal_stm(root, 0);
+        return score_terminal_stm(root, 0, -1);
     }
 
     (void)tt_probe(root->zobrist_hash, depth, 0, alpha, beta, &tt_move, &tt_score);
+    if (g_opt_improving) {
+        ctx->eval_stack[0] = chess_in_check(root, root->side_to_move)
+                                 ? INT_MIN
+                                 : search_eval_cp_stm(root, ctx, 0);
+    }
     int root_scores[CHESS_MAX_MOVES];
-    score_moves(root, root_scores, moves, n, tt_move, ctx, 0);
+    score_moves(root, root_scores, moves, n, tt_move, ctx, 0, false);
 
     for (int i = 0; i < n; ++i) {
         Move m = pick_next_move(moves, root_scores, i, n);
@@ -1455,6 +1747,11 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     HceSearchContext ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.start_ms = now_ms();
+    ctx.root_hist_index = root.hash_history_count;
+    if (root.hash_history_count > 0 &&
+        root.hash_history[root.hash_history_count - 1] == root.zobrist_hash) {
+        ctx.root_hist_index = root.hash_history_count - 1;
+    }
     int think_ms = (override_ms > 0) ? override_ms : ((cfg != NULL && cfg->think_time_ms > 0) ? cfg->think_time_ms : 120);
     int hard_ms = think_ms;
     if (override_ms <= 0 && cfg != NULL && cfg->hard_time_ms > think_ms) {
