@@ -5,9 +5,12 @@
 
 #include "chess_hash.h"
 
-static uint64_t g_knight_attacks[64];
-static uint64_t g_king_attacks[64];
-static uint64_t g_pawn_attacks[PIECE_COLOR_COUNT][64];
+uint64_t g_chess_knight_attacks[64];
+uint64_t g_chess_king_attacks[64];
+uint64_t g_chess_pawn_attacks[PIECE_COLOR_COUNT][64];
+#define g_knight_attacks g_chess_knight_attacks
+#define g_king_attacks g_chess_king_attacks
+#define g_pawn_attacks g_chess_pawn_attacks
 static bool g_attacks_ready = false;
 
 static void init_attack_tables(void);

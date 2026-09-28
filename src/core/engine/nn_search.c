@@ -1090,9 +1090,9 @@ static uint64_t attackers_to_square_local(const uint64_t bb[PIECE_COLOR_COUNT][P
                                           int sq,
                                           int side) {
     uint64_t attackers = 0;
-    attackers |= bb[side][PIECE_PAWN] & hce_pawn_attacks(side ^ 1, sq);
-    attackers |= bb[side][PIECE_KNIGHT] & hce_knight_attacks(sq);
-    attackers |= bb[side][PIECE_KING] & hce_king_attacks(sq);
+    attackers |= bb[side][PIECE_PAWN] & g_chess_pawn_attacks[side ^ 1][sq];
+    attackers |= bb[side][PIECE_KNIGHT] & g_chess_knight_attacks[sq];
+    attackers |= bb[side][PIECE_KING] & g_chess_king_attacks[sq];
 
     uint64_t bishop_like = bb[side][PIECE_BISHOP] | bb[side][PIECE_QUEEN];
     uint64_t rook_like = bb[side][PIECE_ROOK] | bb[side][PIECE_QUEEN];

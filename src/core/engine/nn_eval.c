@@ -17,6 +17,7 @@
 #endif
 
 #include "chess_types.h"
+#include "chess_rules.h"
 #include "hce_internal.h"
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -1171,20 +1172,21 @@ static int threat_piece_type(int piece) {
 static uint64_t threat_pseudo_attacks(int type, int color, int sq) {
     if (type == 0) {
         int rank = square_rank(sq);
-        return rank >= 1 && rank <= 6 ? hce_pawn_attacks(color, sq) : 0ULL;
+        return rank >= 1 && rank <= 6 ? g_chess_pawn_attacks[color][sq] : 0ULL;
     }
-    if (type == 1) return hce_knight_attacks(sq);
+    if (type == 1) return g_chess_knight_attacks[sq];
     if (type == 2) return hce_bishop_attacks(sq, 0ULL);
     if (type == 3) return hce_rook_attacks(sq, 0ULL);
     if (type == 4) return hce_bishop_attacks(sq, 0ULL) | hce_rook_attacks(sq, 0ULL);
-    return hce_king_attacks(sq);
+    return g_chess_king_attacks[sq];
 }
 
 static void init_threat_tables(void) {
     if (g_threat_tables_ready) return;
     hce_init_tables();
+    chess_attack_tables_init();
     for (int sq = 0; sq < 64; ++sq) {
-        g_threat_knight_attacks[sq] = hce_knight_attacks(sq);
+        g_threat_knight_attacks[sq] = g_chess_knight_attacks[sq];
     }
     for (int a = 0; a < 64; ++a) {
         for (int b = 0; b < 64; ++b) {
@@ -1337,8 +1339,8 @@ static uint16_t collect_full_threats(const GameState *state,
             while (attackers != 0ULL) {
                 int from = chess_pop_lsb(&attackers);
                 uint64_t attacks;
-                if (type == 0) attacks = hce_pawn_attacks(color, from);
-                else if (type == 1) attacks = hce_knight_attacks(from);
+                if (type == 0) attacks = g_chess_pawn_attacks[color][from];
+                else if (type == 1) attacks = g_chess_knight_attacks[from];
                 else if (type == 2) attacks = hce_bishop_attacks(from, state->occ_all);
                 else if (type == 3) attacks = hce_rook_attacks(from, state->occ_all);
                 else attacks = hce_bishop_attacks(from, state->occ_all)
@@ -2394,8 +2396,8 @@ static inline void threat_position_piece(const ThreatPosition *pos, int sq, int 
 
 static uint64_t threat_attackers_to(const ThreatPosition *pos, int sq) {
     uint64_t a = 0;
-    a |= pos->bb[PIECE_WHITE][PIECE_PAWN] & hce_pawn_attacks(PIECE_BLACK, sq);
-    a |= pos->bb[PIECE_BLACK][PIECE_PAWN] & hce_pawn_attacks(PIECE_WHITE, sq);
+    a |= pos->bb[PIECE_WHITE][PIECE_PAWN] & g_chess_pawn_attacks[PIECE_BLACK][sq];
+    a |= pos->bb[PIECE_BLACK][PIECE_PAWN] & g_chess_pawn_attacks[PIECE_WHITE][sq];
     a |= (pos->bb[PIECE_WHITE][PIECE_KNIGHT] | pos->bb[PIECE_BLACK][PIECE_KNIGHT]) &
          g_threat_knight_attacks[sq];
     uint64_t diag = pos->bb[PIECE_WHITE][PIECE_BISHOP] | pos->bb[PIECE_BLACK][PIECE_BISHOP] |
@@ -2436,7 +2438,7 @@ static void threat_emit(const ThreatPosition *pos, uint64_t attackers, int persp
             continue;
         }
         uint64_t attacks;
-        if (type == 0) attacks = hce_pawn_attacks(color, from);
+        if (type == 0) attacks = g_chess_pawn_attacks[color][from];
         else if (type == 1) attacks = g_threat_knight_attacks[from];
         else if (type == 2) attacks = hce_bishop_attacks(from, pos->occ);
         else if (type == 3) attacks = hce_rook_attacks(from, pos->occ);
