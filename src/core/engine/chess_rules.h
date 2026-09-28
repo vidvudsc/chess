@@ -17,6 +17,9 @@ GameResult chess_update_result(GameState *s);
 uint64_t chess_perft(GameState *s, int depth);
 bool chess_is_move_legal(const GameState *s, Move m);
 bool chess_has_mating_material(const GameState *s, int side);
+// Magic-bitboard slider attacks shared by move generation and evaluators.
+uint64_t chess_rook_attacks(int sq, uint64_t occ);
+uint64_t chess_bishop_attacks(int sq, uint64_t occ);
 void chess_set_result(GameState *s, GameResult result);
 void chess_tick_clock(GameState *s, int delta_ms);
 
