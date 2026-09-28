@@ -2168,6 +2168,27 @@ static void row_batch_apply(int16_t *dst, const int16_t *src, uint32_t dim, cons
     }
 #endif
 #if defined(NN_HAS_NEON)
+    if (dim == 128u) {
+        // Whole 128-lane accumulator in 16 registers: one pass over the rows.
+        int16x8_t a[16];
+        for (int j = 0; j < 16; ++j) a[j] = vld1q_s16(src + 8 * j);
+        for (uint32_t k = 0; k < b->n16; ++k) {
+            const int16_t *r = b->r16[k];
+            if (b->s16[k] > 0) { for (int j = 0; j < 16; ++j) a[j] = vaddq_s16(a[j], vld1q_s16(r + 8 * j)); }
+            else { for (int j = 0; j < 16; ++j) a[j] = vsubq_s16(a[j], vld1q_s16(r + 8 * j)); }
+        }
+        for (uint32_t k = 0; k < b->n8; ++k) {
+            const int8_t *r = b->r8[k];
+            for (int j = 0; j < 8; ++j) {
+                int8x16_t p = vld1q_s8(r + 16 * j);
+                int16x8_t lo = vmovl_s8(vget_low_s8(p)), hi = vmovl_s8(vget_high_s8(p));
+                if (b->s8[k] > 0) { a[2 * j] = vaddq_s16(a[2 * j], lo); a[2 * j + 1] = vaddq_s16(a[2 * j + 1], hi); }
+                else { a[2 * j] = vsubq_s16(a[2 * j], lo); a[2 * j + 1] = vsubq_s16(a[2 * j + 1], hi); }
+            }
+        }
+        for (int j = 0; j < 16; ++j) vst1q_s16(dst + 8 * j, a[j]);
+        return;
+    }
     for (; i + 32u <= dim; i += 32u) {
         int16x8_t a0 = vld1q_s16(src + i), a1 = vld1q_s16(src + i + 8u);
         int16x8_t a2 = vld1q_s16(src + i + 16u), a3 = vld1q_s16(src + i + 24u);
