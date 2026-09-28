@@ -334,6 +334,7 @@ static HceTtEntry *tt_entry(uint64_t key) {
 static inline void tt_prefetch(uint64_t key) {
 #if defined(__GNUC__) || defined(__clang__)
     __builtin_prefetch(&g_hce_tt[key & g_hce_tt_mask]);
+    chess_ai_prefetch_eval(key);
 #else
     (void)key;
 #endif

@@ -56,6 +56,15 @@ static void nn_eval_cache_clear(void) {
 // so transposed/re-visited nodes can reuse the score.
 static EvalCacheEntry g_hce_eval_cache[NN_EVAL_CACHE_SIZE];
 
+// Start loading a child's eval-cache slot while make/undo bookkeeping runs.
+void chess_ai_prefetch_eval(uint64_t key) {
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_prefetch(&g_hce_eval_cache[key & NN_EVAL_CACHE_MASK]);
+#else
+    (void)key;
+#endif
+}
+
 void chess_ai_clear_eval_caches(void) {
     nn_eval_cache_clear();
     for (size_t i = 0; i < NN_EVAL_CACHE_SIZE; ++i) {
