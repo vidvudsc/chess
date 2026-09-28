@@ -43,6 +43,8 @@
 #define HCE_NN_PAWN_CORRECTION_MASK (HCE_NN_PAWN_CORRECTION_SIZE - 1u)
 #define HCE_NN_PAWN_CORRECTION_GRAIN 64
 
+#define HCE_CONT_KEYS (PIECE_COLOR_COUNT * PIECE_TYPE_COUNT * 64)
+
 typedef enum HceTtBound {
     HCE_TT_NONE = 0,
     HCE_TT_EXACT = 1,
@@ -106,6 +108,11 @@ typedef struct HceSearchProfile {
     int twofold_draw;
     int pawn_correction_weight_permille;
     int structure_correction_weight_permille;
+    int cont_hist;            // continuation history (1- and 2-ply) in quiet ordering
+    int rfp_max_depth;        // reverse futility pruning depth limit
+    int null_eval_reduction;  // extra null-move reduction from (eval - beta)
+    int multi_cut;            // singular search failing high above beta cuts the node
+    int tt_eval;              // refine static eval with a bound-compatible TT score
 } HceSearchProfile;
 
 typedef struct HceSearchContext {
@@ -128,6 +135,11 @@ typedef struct HceSearchContext {
     int eval_stack[HCE_MAX_PLY];
     // Move excluded at this ply by a singular-extension verification search.
     Move excluded[HCE_MAX_PLY];
+    // Continuation history: [previous piece-to][current piece-to], heap
+    // allocated only when NNContHist is on. cont_key[ply] is the piece-to of
+    // the move made at ply (-1 for a null move).
+    int16_t (*cont_hist)[HCE_CONT_KEYS];
+    int cont_key[HCE_MAX_PLY];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
     HceEvalCacheEntry nn_eval_cache[HCE_NN_EVAL_CACHE_SIZE];
 } HceSearchContext;
@@ -168,6 +180,11 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .twofold_draw = 0,
     .pawn_correction_weight_permille = 0,
     .structure_correction_weight_permille = 0,
+    .cont_hist = 0,
+    .rfp_max_depth = 3,
+    .null_eval_reduction = 0,
+    .multi_cut = 0,
+    .tt_eval = 0,
 };
 
 static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
@@ -206,6 +223,11 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .twofold_draw = 1,
     .pawn_correction_weight_permille = 0,
     .structure_correction_weight_permille = 0,
+    .cont_hist = 0,
+    .rfp_max_depth = 3,
+    .null_eval_reduction = 0,
+    .multi_cut = 0,
+    .tt_eval = 0,
 };
 
 static HceSearchProfile g_hce_search_profile_nn = {
@@ -244,6 +266,11 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .twofold_draw = 1,
     .pawn_correction_weight_permille = 0,
     .structure_correction_weight_permille = 0,
+    .cont_hist = 0,
+    .rfp_max_depth = 3,
+    .null_eval_reduction = 0,
+    .multi_cut = 0,
+    .tt_eval = 0,
 };
 
 static HceTtEntry g_hce_tt_default[HCE_TT_SIZE];
@@ -365,6 +392,26 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.null_move_eval_gate;
         return true;
     }
+    if (hce_option_ieq(name, "NNContHist")) {
+        *out = &g_hce_search_profile_nn.cont_hist;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNRfpDepth")) {
+        *out = &g_hce_search_profile_nn.rfp_max_depth;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNNullEvalRed")) {
+        *out = &g_hce_search_profile_nn.null_eval_reduction;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNMultiCut")) {
+        *out = &g_hce_search_profile_nn.multi_cut;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNTTEval")) {
+        *out = &g_hce_search_profile_nn.tt_eval;
+        return true;
+    }
     if (hce_option_ieq(name, "NNSingular")) {
         *out = &g_hce_search_profile_nn.singular;
         return true;
@@ -471,6 +518,10 @@ bool hce_nn_search_set_option(const char *name, int value) {
                field == &g_hce_search_profile_nn.qsearch_tt ||
                field == &g_hce_search_profile_nn.improving ||
                field == &g_hce_search_profile_nn.singular ||
+               field == &g_hce_search_profile_nn.cont_hist ||
+               field == &g_hce_search_profile_nn.null_eval_reduction ||
+               field == &g_hce_search_profile_nn.multi_cut ||
+               field == &g_hce_search_profile_nn.tt_eval ||
                field == &g_hce_search_profile_nn.twofold_draw ||
                field == &g_hce_search_profile_nn.check_extensions ||
                field == &g_hce_search_profile_nn.countermove_ordering ||
@@ -478,6 +529,10 @@ bool hce_nn_search_set_option(const char *name, int value) {
                field == &g_hce_search_profile_nn.history_gravity ||
                field == &g_hce_search_profile_nn.internal_reduction) {
         if (value < 0 || value > 1) {
+            return false;
+        }
+    } else if (field == &g_hce_search_profile_nn.rfp_max_depth) {
+        if (value < 0 || value > 12) {
             return false;
         }
     } else if (field == &g_hce_search_profile_nn.capture_see_ordering) {
@@ -1291,6 +1346,16 @@ static bool is_recapture_move(const GameState *s, Move m) {
     return move_to(m) == move_to(s->last_move);
 }
 
+static inline int cont_key_of(int side, Move m) {
+    return (side * PIECE_TYPE_COUNT + move_piece(m)) * 64 + move_to(m);
+}
+
+static inline void cont_key_set(HceSearchContext *ctx, int ply, int key) {
+    if (ply >= 0 && ply < HCE_MAX_PLY) {
+        ctx->cont_key[ply] = key;
+    }
+}
+
 static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext *ctx, int ply) {
     if (m == tt_move) {
         return 200000000;
@@ -1332,6 +1397,16 @@ static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext
             score += 800000;
         }
         score += ctx->history[s->side_to_move][move_from(m)][move_to(m)];
+        if (ctx->cont_hist != NULL && ply >= 1 && ply < HCE_MAX_PLY) {
+            int cur = cont_key_of(s->side_to_move, m);
+            int k1 = ctx->cont_key[ply - 1];
+            if (k1 >= 0) {
+                score += ctx->cont_hist[k1][cur];
+            }
+            if (ply >= 2 && ctx->cont_key[ply - 2] >= 0) {
+                score += ctx->cont_hist[ctx->cont_key[ply - 2]][cur];
+            }
+        }
     }
     if (move_has_flag(m, MOVE_FLAG_PROMOTION)) {
         score += 700000 + hce_piece_value[move_promo(m)] * 8;
@@ -1488,6 +1563,43 @@ static void penalize_quiet_history(HceSearchContext *ctx,
     }
     for (int i = 0; i < quiet_count; ++i) {
         history_update_delta(ctx, side, quiets[i], -malus);
+    }
+}
+
+static void cont_hist_update(HceSearchContext *ctx, int ply, int side, Move m, int bonus) {
+    int cur = cont_key_of(side, m);
+    for (int back = 1; back <= 2 && ply - back >= 0; ++back) {
+        int k = ctx->cont_key[ply - back];
+        if (k < 0) {
+            continue;
+        }
+        int16_t *h = &ctx->cont_hist[k][cur];
+        int magnitude = bonus >= 0 ? bonus : -bonus;
+        int v = *h + bonus - (*h * magnitude) / 16384;
+        *h = (int16_t)(v > 16384 ? 16384 : (v < -16384 ? -16384 : v));
+    }
+}
+
+// Quiet beta cutoff: reward the cutoff move, punish the quiets tried before it.
+static void cont_hist_on_cutoff(HceSearchContext *ctx,
+                                int ply,
+                                int side,
+                                Move best,
+                                const Move quiets[CHESS_MAX_MOVES],
+                                int quiet_count,
+                                int depth) {
+    if (ctx->cont_hist == NULL || ply < 1 || ply >= HCE_MAX_PLY) {
+        return;
+    }
+    int bonus = 120 * depth - 80;
+    if (bonus > 1600) {
+        bonus = 1600;
+    } else if (bonus < 40) {
+        bonus = 40;
+    }
+    cont_hist_update(ctx, ply, side, best, bonus);
+    for (int i = 0; i < quiet_count; ++i) {
+        cont_hist_update(ctx, ply, side, quiets[i], -bonus);
     }
 }
 
@@ -1718,6 +1830,7 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
             continue;
         }
         ctx->nodes += 1;
+        cont_key_set(ctx, ply, cont_key_of(s->side_to_move ^ 1, m));
         search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
         int score = -quiescence(s, -beta, -alpha, ply + 1, ctx);
         chess_undo_move(s);
@@ -1845,13 +1958,28 @@ static int negamax(GameState *s,
         beta < HCE_MATE_THRESHOLD &&
         has_non_pawn_material(s, s->side_to_move);
     if (!in_check &&
-        (depth <= 3 || profile->improving != 0 ||
+        (depth <= profile->rfp_max_depth || profile->improving != 0 ||
+         (profile->null_eval_reduction != 0 && null_move_candidate) ||
          (profile->futility_max_depth > 0 && depth <= profile->futility_max_depth) ||
          (profile->null_move_eval_gate != 0 && null_move_candidate) ||
          (profile->probcut_min_depth > 0 && depth >= profile->probcut_min_depth))) {
         raw_static_eval = search_eval_cp_stm(s, ctx, ply, depth, "static_eval");
         static_eval = apply_eval_correction(s, ctx, raw_static_eval);
         static_eval_valid = true;
+        if (profile->tt_eval != 0) {
+            // A stored search score bounds the true value better than the
+            // static eval whenever its bound points the right way.
+            Move te_move = 0;
+            int te_score = 0, te_depth = 0;
+            HceTtBound te_bound = HCE_TT_NONE;
+            if (tt_peek(s->zobrist_hash, ply, &te_move, &te_score, &te_depth, &te_bound) &&
+                te_score > -HCE_MATE_THRESHOLD && te_score < HCE_MATE_THRESHOLD &&
+                (te_bound == HCE_TT_EXACT ||
+                 (te_bound == HCE_TT_LOWER && te_score > static_eval) ||
+                 (te_bound == HCE_TT_UPPER && te_score < static_eval))) {
+                static_eval = te_score;
+            }
+        }
     }
     // Improving: this side's static eval beats its value two plies ago.
     bool improving = false;
@@ -1860,7 +1988,7 @@ static int negamax(GameState *s,
         improving = static_eval_valid && ply >= 2 && ctx->eval_stack[ply - 2] != INT_MIN &&
                     static_eval > ctx->eval_stack[ply - 2];
     }
-    if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
+    if (!in_check && depth <= profile->rfp_max_depth && beta < HCE_MATE_THRESHOLD) {
         int margin = profile->static_prune_margin_per_depth * (depth - (improving ? 1 : 0));
         if (static_eval >= beta + margin) {
             return beta;
@@ -1871,6 +1999,10 @@ static int negamax(GameState *s,
         (profile->null_move_eval_gate == 0 ||
          (static_eval_valid && static_eval >= beta))) {
         int reduction = search_profile(ctx)->null_move_base_reduction + depth / 4;
+        if (profile->null_eval_reduction != 0 && static_eval_valid && static_eval > beta) {
+            int extra = (static_eval - beta) / 200;
+            reduction += extra > 3 ? 3 : extra;
+        }
         if (reduction > depth - 1) {
             reduction = depth - 1;
         }
@@ -1881,6 +2013,7 @@ static int negamax(GameState *s,
                 (void)search_ensure_nn_frame(s, ctx, ply);
             }
             make_null_move(s, &null_undo);
+            cont_key_set(ctx, ply, -1);
             search_prepare_nn_null_frame(s, ctx, ply, ply + 1);
             int score = -negamax(s,
                                  depth - 1 - reduction,
@@ -1927,6 +2060,7 @@ static int negamax(GameState *s,
                 continue;
             }
             ctx->nodes += 1;
+            cont_key_set(ctx, ply, cont_key_of(s->side_to_move ^ 1, m));
             search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
             int score = -quiescence(
                 s, -probcut_beta, -probcut_beta + 1, ply + 1, ctx);
@@ -1984,6 +2118,9 @@ static int negamax(GameState *s,
             }
             if (v < singular_beta) {
                 singular_extension = 1;
+            } else if (profile->multi_cut != 0 && singular_beta >= beta) {
+                // Another move also beats beta at reduced depth: cut.
+                return beta;
             }
         }
     }
@@ -2039,6 +2176,7 @@ static int negamax(GameState *s,
             continue;
         }
         ctx->nodes += 1;
+        cont_key_set(ctx, ply, cont_key_of(side, m));
         search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
 
         int extension = search_move_extension(s, m, depth, ctx);
@@ -2118,6 +2256,9 @@ static int negamax(GameState *s,
                 update_history(ctx, side, m, depth);
                 if (has_non_pawn_material(s, side)) {
                     penalize_quiet_history(ctx, side, failed_quiets, failed_quiet_count, depth);
+                }
+                if (quiet) {
+                    cont_hist_on_cutoff(ctx, ply, side, m, failed_quiets, failed_quiet_count, depth);
                 }
                 if (quiet && static_eval_valid && beta > raw_static_eval) {
                     update_eval_correction(s, ctx, depth, raw_static_eval, beta);
@@ -2199,6 +2340,7 @@ static int search_root(GameState *root,
             continue;
         }
         ctx->nodes += 1;
+        cont_key_set(ctx, 0, cont_key_of(side, m));
         search_prepare_nn_child_frame(&child, ctx, 0, 1);
 
         int extension = search_move_extension(&child, m, depth, ctx);
@@ -2398,6 +2540,9 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     HceSearchContext ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.profile = search_profile_for_current_backend();
+    if (ctx.profile->cont_hist != 0) {
+        ctx.cont_hist = calloc(HCE_CONT_KEYS, sizeof(*ctx.cont_hist));
+    }
     if (ctx.profile->pawn_correction_weight_permille > 0 ||
         ctx.profile->structure_correction_weight_permille > 0) {
         const char *model_path = nn_eval_model_path();
@@ -2524,6 +2669,7 @@ static bool run_search(const GameState *state, const AiSearchConfig *cfg, AiSear
     if (g_nn_leaf_log_fp != NULL) {
         fflush(g_nn_leaf_log_fp);
     }
+    free(ctx.cont_hist);
     return true;
 }
 
