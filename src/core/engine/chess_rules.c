@@ -319,6 +319,25 @@ static bool square_attacked(const GameState *s, int sq, int by_color) {
     return ((s->bb[by_color][PIECE_ROOK] | queens) & rook_attacks(sq, s->occ_all)) != 0;
 }
 
+// square_attacked with a caller-supplied occupancy (king-move legality: the
+// king's own square is vacated so sliders see through it).
+static bool square_attacked_occ(const GameState *s, int sq, int by_color, uint64_t occ) {
+    if ((s->bb[by_color][PIECE_PAWN] & g_pawn_attacks[by_color ^ 1][sq]) != 0) {
+        return true;
+    }
+    if ((s->bb[by_color][PIECE_KNIGHT] & g_knight_attacks[sq]) != 0) {
+        return true;
+    }
+    if ((s->bb[by_color][PIECE_KING] & g_king_attacks[sq]) != 0) {
+        return true;
+    }
+    uint64_t queens = s->bb[by_color][PIECE_QUEEN];
+    if (((s->bb[by_color][PIECE_BISHOP] | queens) & bishop_attacks(sq, occ)) != 0) {
+        return true;
+    }
+    return ((s->bb[by_color][PIECE_ROOK] | queens) & rook_attacks(sq, occ)) != 0;
+}
+
 static void add_move(Move out[CHESS_MAX_MOVES], int *count, Move m) {
     if (*count >= CHESS_MAX_MOVES) {
         return;
@@ -901,11 +920,15 @@ static int generate_moves_impl(GameState *s, Move out[CHESS_MAX_MOVES], bool tac
     if (tactical_only) {
         king_targets &= opp_occ;
     }
+    // A king move is legal iff its target is not attacked once the king has
+    // left its square (a captured piece cannot attack its own square).
+    uint64_t occ_without_king = all_occ & ~(1ULL << king_sq);
     while (king_targets != 0) {
         int to = chess_pop_lsb(&king_targets);
         uint32_t flags = ((opp_occ & (1ULL << to)) != 0) ? MOVE_FLAG_CAPTURE : MOVE_FLAG_NONE;
-        Move m = move_pack(king_sq, to, PIECE_KING, CHESS_PROMO_NONE, flags);
-        add_move_if_legal_after_apply(s, out, &legal_count, m, to);
+        if (!square_attacked_occ(s, to, opp, occ_without_king)) {
+            add_move(out, &legal_count, move_pack(king_sq, to, PIECE_KING, CHESS_PROMO_NONE, flags));
+        }
     }
 
     if (check_count == 0 && !tactical_only) {
