@@ -89,6 +89,7 @@ typedef struct HceSearchProfile {
     int lmr_backend_adjust;
     int lmr_log;
     int qsearch_tt;
+    int improving;
     int history_gravity;
     int internal_reduction;
     int probcut_min_depth;
@@ -122,6 +123,8 @@ typedef struct HceSearchContext {
     Move killer[HCE_MAX_PLY][2];
     Move countermove[64][64];
     int history[PIECE_COLOR_COUNT][64][64];
+    // Static eval per ply for the improving heuristic (INT_MIN = none).
+    int eval_stack[HCE_MAX_PLY];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
     HceEvalCacheEntry nn_eval_cache[HCE_NN_EVAL_CACHE_SIZE];
 } HceSearchContext;
@@ -145,6 +148,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .lmr_backend_adjust = 0,
     .lmr_log = 0,
     .qsearch_tt = 0,
+    .improving = 0,
     .history_gravity = 0,
     .internal_reduction = 0,
     .probcut_min_depth = 0,
@@ -181,6 +185,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .lmr_backend_adjust = 0,
     .lmr_log = 0,
     .qsearch_tt = 0,
+    .improving = 0,
     .history_gravity = 0,
     .internal_reduction = 1,
     .probcut_min_depth = 0,
@@ -217,6 +222,7 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .lmr_backend_adjust = 0,
     .lmr_log = 0,
     .qsearch_tt = 0,
+    .improving = 0,
     .history_gravity = 0,
     .internal_reduction = 1,
     .probcut_min_depth = 0,
@@ -353,6 +359,10 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.null_move_eval_gate;
         return true;
     }
+    if (hce_option_ieq(name, "NNImproving")) {
+        *out = &g_hce_search_profile_nn.improving;
+        return true;
+    }
     if (hce_option_ieq(name, "NNQsearchTT")) {
         *out = &g_hce_search_profile_nn.qsearch_tt;
         return true;
@@ -449,6 +459,7 @@ bool hce_nn_search_set_option(const char *name, int value) {
         }
     } else if (field == &g_hce_search_profile_nn.lmr_log ||
                field == &g_hce_search_profile_nn.qsearch_tt ||
+               field == &g_hce_search_profile_nn.improving ||
                field == &g_hce_search_profile_nn.twofold_draw ||
                field == &g_hce_search_profile_nn.check_extensions ||
                field == &g_hce_search_profile_nn.countermove_ordering ||
@@ -1791,7 +1802,7 @@ static int negamax(GameState *s,
         beta < HCE_MATE_THRESHOLD &&
         has_non_pawn_material(s, s->side_to_move);
     if (!in_check &&
-        (depth <= 3 ||
+        (depth <= 3 || profile->improving != 0 ||
          (profile->futility_max_depth > 0 && depth <= profile->futility_max_depth) ||
          (profile->null_move_eval_gate != 0 && null_move_candidate) ||
          (profile->probcut_min_depth > 0 && depth >= profile->probcut_min_depth))) {
@@ -1799,8 +1810,15 @@ static int negamax(GameState *s,
         static_eval = apply_eval_correction(s, ctx, raw_static_eval);
         static_eval_valid = true;
     }
+    // Improving: this side's static eval beats its value two plies ago.
+    bool improving = false;
+    if (profile->improving != 0 && ply >= 0 && ply < HCE_MAX_PLY) {
+        ctx->eval_stack[ply] = static_eval_valid ? static_eval : INT_MIN;
+        improving = static_eval_valid && ply >= 2 && ctx->eval_stack[ply - 2] != INT_MIN &&
+                    static_eval > ctx->eval_stack[ply - 2];
+    }
     if (!in_check && depth <= 3 && beta < HCE_MATE_THRESHOLD) {
-        int margin = profile->static_prune_margin_per_depth * depth;
+        int margin = profile->static_prune_margin_per_depth * (depth - (improving ? 1 : 0));
         if (static_eval >= beta + margin) {
             return beta;
         }
@@ -1972,6 +1990,9 @@ static int negamax(GameState *s,
                 }
                 if (recapture) {
                     reduction -= 1;
+                }
+                if (profile->improving != 0 && !improving) {
+                    reduction += 1;
                 }
                 reduction += profile->lmr_backend_adjust;
                 if (reduction < 0) {
