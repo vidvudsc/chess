@@ -90,6 +90,7 @@ typedef struct HceSearchProfile {
     int lmr_log;
     int qsearch_tt;
     int improving;
+    int singular;
     int history_gravity;
     int internal_reduction;
     int probcut_min_depth;
@@ -125,6 +126,8 @@ typedef struct HceSearchContext {
     int history[PIECE_COLOR_COUNT][64][64];
     // Static eval per ply for the improving heuristic (INT_MIN = none).
     int eval_stack[HCE_MAX_PLY];
+    // Move excluded at this ply by a singular-extension verification search.
+    Move excluded[HCE_MAX_PLY];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
     HceEvalCacheEntry nn_eval_cache[HCE_NN_EVAL_CACHE_SIZE];
 } HceSearchContext;
@@ -149,6 +152,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .lmr_log = 0,
     .qsearch_tt = 0,
     .improving = 0,
+    .singular = 0,
     .history_gravity = 0,
     .internal_reduction = 0,
     .probcut_min_depth = 0,
@@ -186,6 +190,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .lmr_log = 0,
     .qsearch_tt = 0,
     .improving = 0,
+    .singular = 0,
     .history_gravity = 0,
     .internal_reduction = 1,
     .probcut_min_depth = 0,
@@ -223,6 +228,7 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .lmr_log = 0,
     .qsearch_tt = 0,
     .improving = 0,
+    .singular = 0,
     .history_gravity = 0,
     .internal_reduction = 1,
     .probcut_min_depth = 0,
@@ -359,6 +365,10 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.null_move_eval_gate;
         return true;
     }
+    if (hce_option_ieq(name, "NNSingular")) {
+        *out = &g_hce_search_profile_nn.singular;
+        return true;
+    }
     if (hce_option_ieq(name, "NNImproving")) {
         *out = &g_hce_search_profile_nn.improving;
         return true;
@@ -460,6 +470,7 @@ bool hce_nn_search_set_option(const char *name, int value) {
     } else if (field == &g_hce_search_profile_nn.lmr_log ||
                field == &g_hce_search_profile_nn.qsearch_tt ||
                field == &g_hce_search_profile_nn.improving ||
+               field == &g_hce_search_profile_nn.singular ||
                field == &g_hce_search_profile_nn.twofold_draw ||
                field == &g_hce_search_profile_nn.check_extensions ||
                field == &g_hce_search_profile_nn.countermove_ordering ||
@@ -704,6 +715,28 @@ static bool tt_probe(uint64_t key, int depth, int ply, int alpha, int beta, Move
         return true;
     }
     return false;
+}
+
+// Read a TT entry without cutoff logic (singular extensions need its depth,
+// bound and score).
+static bool tt_peek(uint64_t key, int ply, Move *move, int *score, int *depth, HceTtBound *bound) {
+    HceTtEntry *entry = tt_entry(key);
+    uint64_t key_before = atomic_load_explicit(&entry->key, memory_order_acquire);
+    if (key_before != key || key_before == HCE_TT_WRITE_LOCK) {
+        return false;
+    }
+    uint64_t payload = atomic_load_explicit(&entry->payload, memory_order_relaxed);
+    if (atomic_load_explicit(&entry->key, memory_order_acquire) != key_before) {
+        return false;
+    }
+    *bound = tt_payload_bound(payload);
+    if (*bound == HCE_TT_NONE) {
+        return false;
+    }
+    *move = tt_payload_move(payload);
+    *score = tt_score_from_store(tt_payload_score(payload), ply);
+    *depth = tt_payload_depth(payload);
+    return true;
 }
 
 static void tt_store(uint64_t key, int depth, int ply, int score, HceTtBound bound, Move move) {
@@ -1764,8 +1797,17 @@ static int negamax(GameState *s,
 
     Move tt_move = 0;
     int tt_score = 0;
-    if (tt_probe(s->zobrist_hash, depth, ply, alpha, beta, &tt_move, &tt_score)) {
+    const Move excluded = (ply >= 0 && ply < HCE_MAX_PLY) ? ctx->excluded[ply] : 0;
+    if (excluded == 0 && tt_probe(s->zobrist_hash, depth, ply, alpha, beta, &tt_move, &tt_score)) {
         return tt_score;
+    }
+    if (excluded != 0) {
+        Move peek_move = 0;
+        int peek_score = 0, peek_depth = 0;
+        HceTtBound peek_bound = HCE_TT_NONE;
+        if (tt_peek(s->zobrist_hash, ply, &peek_move, &peek_score, &peek_depth, &peek_bound)) {
+            tt_move = peek_move;
+        }
     }
 
     // Syzygy WDL right after a capture or pawn move; cursed wins and blessed
@@ -1796,6 +1838,7 @@ static int negamax(GameState *s,
     int raw_static_eval = 0;
     int static_eval = 0;
     bool null_move_candidate =
+        excluded == 0 &&
         ply > 0 &&
         depth >= 3 &&
         !in_check &&
@@ -1920,6 +1963,31 @@ static int negamax(GameState *s,
         (void)search_ensure_nn_frame(s, ctx, ply);
     }
 
+    // Singular extension: if every move but the TT move fails well below the
+    // TT score in a reduced search that excludes it, extend the TT move.
+    int singular_extension = 0;
+    if (profile->singular != 0 && excluded == 0 && tt_move != 0 && ply > 0 &&
+        depth >= 8 && ply < HCE_MAX_PLY - 1) {
+        Move se_move = 0;
+        int se_score = 0, se_depth = 0;
+        HceTtBound se_bound = HCE_TT_NONE;
+        if (tt_peek(s->zobrist_hash, ply, &se_move, &se_score, &se_depth, &se_bound) &&
+            se_move == tt_move && se_depth >= depth - 3 &&
+            (se_bound == HCE_TT_LOWER || se_bound == HCE_TT_EXACT) &&
+            se_score > -HCE_MATE_THRESHOLD && se_score < HCE_MATE_THRESHOLD) {
+            int singular_beta = se_score - 2 * depth;
+            ctx->excluded[ply] = tt_move;
+            int v = negamax(s, (depth - 1) / 2, singular_beta - 1, singular_beta, ply, ctx, NULL);
+            ctx->excluded[ply] = 0;
+            if (ctx->timed_out) {
+                return alpha;
+            }
+            if (v < singular_beta) {
+                singular_extension = 1;
+            }
+        }
+    }
+
     Move best_move = moves[0];
     int best_score = -HCE_INF;
     int alpha_orig = alpha;
@@ -1930,6 +1998,9 @@ static int negamax(GameState *s,
 
     for (int i = 0; i < n; ++i) {
         Move m = pick_next_move(moves, move_scores, i, n);
+        if (m == excluded) {
+            continue;
+        }
         bool quiet = is_quiet_move(m);
         bool recapture = is_recapture_move(s, m);
         if (quiet && !in_check && profile->lmp_max_depth > 0 &&
@@ -1959,6 +2030,9 @@ static int negamax(GameState *s,
         search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
 
         int extension = search_move_extension(s, m, depth, ctx);
+        if (singular_extension != 0 && m == tt_move && extension == 0) {
+            extension = 1;
+        }
 
         int score;
         int next_depth = depth - 1 + extension;
@@ -2036,7 +2110,9 @@ static int negamax(GameState *s,
                 if (quiet && static_eval_valid && beta > raw_static_eval) {
                     update_eval_correction(s, ctx, depth, raw_static_eval, beta);
                 }
-                tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
+                if (excluded == 0) {
+                    tt_store(s->zobrist_hash, depth, ply, beta, HCE_TT_LOWER, m);
+                }
                 if (best_move_out != NULL) {
                     *best_move_out = m;
                 }
@@ -2058,7 +2134,7 @@ static int negamax(GameState *s,
     } else if (best_score >= beta) {
         bound = HCE_TT_LOWER;
     }
-    if (!ctx->timed_out) {
+    if (!ctx->timed_out && excluded == 0) {
         if (static_eval_valid && is_quiet_move(best_move)) {
             if (bound == HCE_TT_EXACT ||
                 (bound == HCE_TT_UPPER && best_score < raw_static_eval)) {
