@@ -949,7 +949,10 @@ static const PawnEvalTerms *probe_pawn_eval_terms(const GameState *s, int side) 
     uint64_t mixed = white ^ ((black << 1) | (black >> 63));
     mixed ^= mixed >> 32;
     mixed *= 0x9e3779b97f4a7c15ULL;
-    PawnEvalCacheEntry *entry = &g_pawn_eval_cache[mixed & HCE_PAWN_CACHE_MASK];
+    // Index by the product's high bits: its low 16 bits depend only on the
+    // low 16 bits of `mixed` (ranks 1-2 and 5-6), so structures differing on
+    // ranks 3-4 or 7-8 all shared one slot.
+    PawnEvalCacheEntry *entry = &g_pawn_eval_cache[mixed >> (64u - HCE_PAWN_CACHE_BITS)];
     if (!entry->valid || entry->white_pawns != white || entry->black_pawns != black ||
         entry->flags != g_opt_pawn_pst_fix) {
         entry->flags = g_opt_pawn_pst_fix;
