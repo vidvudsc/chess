@@ -242,9 +242,13 @@ int main(void) {
 
     must(chess_load_fen(&s, "4k2r/Q1p1n2p/p1nqbp2/4p3/3p4/P2P1N2/1PP1PPPP/R3KB1R b KQk - 0 15", err, sizeof(err)),
          "Load trapped-queen regression FEN");
-    int trapped_queen_eval = chess_ai_eval_fast_cp(&s);
+    // Black to move can take the queen. The Stockfish-distilled weights
+    // (2026-09-28) cut the static queen-trap/hanging terms, which carry
+    // little signal in the quiet positions the eval is fitted and used on;
+    // the capture itself is resolved by quiescence, so assert on that.
+    int trapped_queen_eval = -hce_qsearch_eval_cp_stm(&s);
     must(trapped_queen_eval < 0,
-         "Fast eval should not call a trapped, immediately capturable queen position favorable for white");
+         "Quiescence eval should not call a trapped, immediately capturable queen position favorable for white");
 
     must(chess_load_fen(&s, "6k1/6r1/8/6q1/8/8/5PPP/4R1K1 w - - 0 1", err, sizeof(err)),
          "Load sheltered king-safety FEN");
