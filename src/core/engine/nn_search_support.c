@@ -182,18 +182,13 @@ static uint64_t pawn_attacks_mask(int side, int sq) {
 
 
 
-uint64_t hce_bishop_attacks(int sq, uint64_t occ) {
-    return chess_bishop_attacks(sq, occ);
-}
 
-uint64_t hce_rook_attacks(int sq, uint64_t occ) {
-    return chess_rook_attacks(sq, occ);
-}
 
 void hce_init_tables(void) {
     if (g_hce_tables_ready) {
         return;
     }
+    chess_attack_tables_init();
 
     for (int sq = 0; sq < 64; ++sq) {
         g_knight_attacks[sq] = knight_attacks_mask(sq);

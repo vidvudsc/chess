@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "chess_ai.h"
+#include "chess_rules.h"
 #include "chess_io.h"
 #include "chess_opening_book.h"
 
@@ -22,8 +23,14 @@ void hce_init_tables(void);
 uint64_t hce_knight_attacks(int sq);
 uint64_t hce_king_attacks(int sq);
 uint64_t hce_pawn_attacks(int side, int sq);
-uint64_t hce_bishop_attacks(int sq, uint64_t occ);
-uint64_t hce_rook_attacks(int sq, uint64_t occ);
+// Inline magic lookups into the shared chess_rules tables; valid once
+// hce_init_tables() (which initializes them) has run.
+static inline uint64_t hce_bishop_attacks(int sq, uint64_t occ) {
+    return chess_bishop_attacks_fast(sq, occ);
+}
+static inline uint64_t hce_rook_attacks(int sq, uint64_t occ) {
+    return chess_rook_attacks_fast(sq, occ);
+}
 uint64_t hce_attackers_to_square(const GameState *s, int sq, int side);
 
 int hce_eval_cp_stm(const GameState *s);

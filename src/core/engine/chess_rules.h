@@ -20,6 +20,28 @@ bool chess_has_mating_material(const GameState *s, int side);
 // Magic-bitboard slider attacks shared by move generation and evaluators.
 uint64_t chess_rook_attacks(int sq, uint64_t occ);
 uint64_t chess_bishop_attacks(int sq, uint64_t occ);
+// Build the attack tables (idempotent). The *_fast lookups below skip the
+// readiness check and must only run after this (or any move generation).
+void chess_attack_tables_init(void);
+
+typedef struct ChessMagicEntry {
+    uint64_t mask;
+    uint64_t magic;
+    uint64_t *attacks;
+    int shift;
+} ChessMagicEntry;
+extern ChessMagicEntry g_chess_rook_magic[64];
+extern ChessMagicEntry g_chess_bishop_magic[64];
+
+static inline uint64_t chess_rook_attacks_fast(int sq, uint64_t occ) {
+    const ChessMagicEntry *e = &g_chess_rook_magic[sq];
+    return e->attacks[((occ & e->mask) * e->magic) >> e->shift];
+}
+
+static inline uint64_t chess_bishop_attacks_fast(int sq, uint64_t occ) {
+    const ChessMagicEntry *e = &g_chess_bishop_magic[sq];
+    return e->attacks[((occ & e->mask) * e->magic) >> e->shift];
+}
 void chess_set_result(GameState *s, GameResult result);
 void chess_tick_clock(GameState *s, int delta_ms);
 
