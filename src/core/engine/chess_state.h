@@ -61,9 +61,54 @@ enum {
 void chess_state_clear(GameState *s);
 void chess_state_rebuild_occupancy(GameState *s);
 int chess_piece_on_square(const GameState *s, int sq, int *out_color);
-int chess_pop_lsb(uint64_t *bb);
-int chess_count_bits(uint64_t bb);
-int chess_find_king_square(const GameState *s, int side);
+// Hot bitboard helpers, inline so every loop compiles to single instructions.
+static inline int chess_pop_lsb(uint64_t *bb) {
+    if (*bb == 0) {
+        return -1;
+    }
+#if defined(__GNUC__) || defined(__clang__)
+    int sq = __builtin_ctzll(*bb);
+#else
+    int sq = 0;
+    uint64_t temp = *bb;
+    while ((temp & 1ULL) == 0) {
+        temp >>= 1;
+        ++sq;
+    }
+#endif
+    *bb &= (*bb - 1);
+    return sq;
+}
+
+static inline int chess_count_bits(uint64_t bb) {
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_popcountll(bb);
+#else
+    int c = 0;
+    while (bb != 0) {
+        bb &= (bb - 1);
+        ++c;
+    }
+    return c;
+#endif
+}
+
+static inline int chess_find_king_square(const GameState *s, int side) {
+    uint64_t bb = s->bb[side][PIECE_KING];
+    if (bb == 0) {
+        return -1;
+    }
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_ctzll(bb);
+#else
+    int sq = 0;
+    while ((bb & 1ULL) == 0) {
+        bb >>= 1;
+        ++sq;
+    }
+    return sq;
+#endif
+}
 void chess_reset_clocks(GameState *s);
 
 #endif

@@ -174,15 +174,12 @@ static int piece_for_color_on_square(const GameState *s, int color, int sq) {
 // Fancy magic bitboards (moved here so move generation, check detection and
 // both evaluators share one fast implementation). Magics are found once at
 // init by a fixed-seed random search and verified collision-free.
-typedef struct MagicEntry {
-    uint64_t mask;
-    uint64_t magic;
-    uint64_t *attacks;
-    int shift;
-} MagicEntry;
+typedef ChessMagicEntry MagicEntry;
 
-static MagicEntry g_rook_magic[64];
-static MagicEntry g_bishop_magic[64];
+ChessMagicEntry g_chess_rook_magic[64];
+ChessMagicEntry g_chess_bishop_magic[64];
+#define g_rook_magic g_chess_rook_magic
+#define g_bishop_magic g_chess_bishop_magic
 static uint64_t g_rook_attack_table[102400];
 static uint64_t g_bishop_attack_table[5248];
 // Squares strictly between two aligned squares (0 if not aligned).
@@ -296,6 +293,10 @@ uint64_t chess_rook_attacks(int sq, uint64_t occ) {
 uint64_t chess_bishop_attacks(int sq, uint64_t occ) {
     ensure_engine_ready();
     return bishop_attacks(sq, occ);
+}
+
+void chess_attack_tables_init(void) {
+    ensure_engine_ready();
 }
 
 static bool square_attacked(const GameState *s, int sq, int by_color) {
