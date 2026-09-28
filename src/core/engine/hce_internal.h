@@ -103,5 +103,8 @@ void hce_search_clear_stop(void);
 int hce_probe_deep_eval_cp_stm(const GameState *state);
 // Resize the classic transposition table (MB, rounded down to a power of two).
 int hce_set_hash_mb(int mb);
+// Optional quiescence TT probing (UCI HceQsearchTT).
+void hce_search_set_qsearch_tt(int on);
+int hce_search_get_qsearch_tt(void);
 
 #endif

@@ -849,6 +849,18 @@ static void penalize_quiet_history(HceSearchContext *ctx,
     }
 }
 
+// UCI HceQsearchTT: probe/store the TT at depth 0 in quiescence (the NN
+// search gained +47 Elo from the same change). Off by default until tested.
+static int g_hce_qsearch_tt = 0;
+
+void hce_search_set_qsearch_tt(int on) {
+    g_hce_qsearch_tt = on ? 1 : 0;
+}
+
+int hce_search_get_qsearch_tt(void) {
+    return g_hce_qsearch_tt;
+}
+
 static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchContext *ctx) {
     if (should_stop(ctx)) {
         return search_eval_cp_stm(s, ctx, ply);
@@ -857,6 +869,16 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
     int term = score_terminal_stm(s, ply);
     if (term != INT_MIN) {
         return term;
+    }
+
+    const bool use_tt = g_hce_qsearch_tt != 0;
+    const int alpha_orig = alpha;
+    if (use_tt) {
+        int tt_score = 0;
+        Move tt_move_q = 0;
+        if (tt_probe(s->zobrist_hash, 0, ply, alpha, beta, &tt_move_q, &tt_score)) {
+            return tt_score;
+        }
     }
 
     bool in_check = chess_in_check(s, s->side_to_move);
@@ -917,6 +939,9 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
             return alpha;
         }
         if (score >= beta) {
+            if (use_tt) {
+                tt_store(s->zobrist_hash, 0, ply, beta, HCE_TT_LOWER, m);
+            }
             return beta;
         }
         if (score > alpha) {
@@ -924,6 +949,10 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
         }
     }
 
+    if (use_tt && !ctx->timed_out) {
+        tt_store(s->zobrist_hash, 0, ply, alpha,
+                 alpha > alpha_orig ? HCE_TT_EXACT : HCE_TT_UPPER, 0);
+    }
     return alpha;
 }
 
