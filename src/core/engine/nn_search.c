@@ -2006,6 +2006,18 @@ static int negamax(GameState *s,
         if (quiet && !in_check && profile->lmp_max_depth > 0 &&
             depth <= profile->lmp_max_depth &&
             searched >= profile->lmp_base_moves + depth * 3) {
+            // Every later quiet is skipped too; stop once no non-quiet move
+            // remains instead of selection-picking quiets just to skip them.
+            bool tactical_left = false;
+            for (int j = i + 1; j < n; ++j) {
+                if (!is_quiet_move(moves[j]) && moves[j] != excluded) {
+                    tactical_left = true;
+                    break;
+                }
+            }
+            if (!tactical_left) {
+                break;
+            }
             continue;
         }
         if (!quiet && searched > 0 && !in_check &&
