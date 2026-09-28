@@ -18,14 +18,21 @@ static void init_slider_tables(void);
 
 static bool g_engine_ready = false;
 
-// Hot path: every make/generate call lands here, so check one flag inline.
-static inline void ensure_engine_ready(void) {
-    if (g_engine_ready) {
-        return;
-    }
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline, cold))
+#endif
+static void engine_init_slow(void) {
     init_attack_tables();
     chess_hash_init();
     g_engine_ready = true;
+}
+
+// Hot path: every make/generate call lands here, so check one flag inline
+// and keep the one-time initialization out of line.
+static inline void ensure_engine_ready(void) {
+    if (!g_engine_ready) {
+        engine_init_slow();
+    }
 }
 
 static void init_attack_tables(void) {
@@ -737,9 +744,12 @@ static void compute_checkers_and_pins(const GameState *s,
                                       int side,
                                       int king_sq,
                                       uint64_t *checkers_out,
-                                      uint64_t pin_masks[64]) {
+                                      uint64_t pin_masks[64],
+                                      uint64_t *pinned_out) {
+    // Only squares in *pinned_out get a pin_masks entry; the rest of the
+    // array is left unwritten (callers test the pinned set first).
     uint64_t checkers = 0;
-    memset(pin_masks, 0, sizeof(uint64_t) * 64);
+    uint64_t pinned = 0;
 
     int opp = side ^ 1;
     checkers |= s->bb[opp][PIECE_PAWN] & g_pawn_attacks[side][king_sq];
@@ -760,10 +770,12 @@ static void compute_checkers_and_pins(const GameState *s,
         } else if ((between & (between - 1)) == 0 && (between & s->occ[side]) != 0) {
             int blocker = __builtin_ctzll(between);
             pin_masks[blocker] = g_between[king_sq][sq] | (1ULL << sq) | (1ULL << king_sq);
+            pinned |= 1ULL << blocker;
         }
     }
 
     *checkers_out = checkers;
+    *pinned_out = pinned;
 }
 
 static int generate_moves_impl(GameState *s, Move out[CHESS_MAX_MOVES], bool tactical_only) {
@@ -780,7 +792,8 @@ static int generate_moves_impl(GameState *s, Move out[CHESS_MAX_MOVES], bool tac
     uint64_t all_occ = s->occ_all;
     uint64_t checkers = 0;
     uint64_t pin_masks[64];
-    compute_checkers_and_pins(s, side, king_sq, &checkers, pin_masks);
+    uint64_t pinned = 0;
+    compute_checkers_and_pins(s, side, king_sq, &checkers, pin_masks, &pinned);
 
     int check_count = chess_count_bits(checkers);
     uint64_t check_mask = ~0ULL;
@@ -801,7 +814,7 @@ static int generate_moves_impl(GameState *s, Move out[CHESS_MAX_MOVES], bool tac
         uint64_t pawns = s->bb[side][PIECE_PAWN];
         while (pawns != 0) {
             int from = chess_pop_lsb(&pawns);
-            uint64_t pin_mask = pin_masks[from];
+            uint64_t pin_mask = (pinned & (1ULL << from)) != 0 ? pin_masks[from] : 0;
             int file = square_file(from);
             int rank = square_rank(from);
             int step = (side == PIECE_WHITE) ? 8 : -8;
@@ -867,7 +880,7 @@ static int generate_moves_impl(GameState *s, Move out[CHESS_MAX_MOVES], bool tac
         while (knights != 0) {
             int from = chess_pop_lsb(&knights);
             uint64_t targets = g_knight_attacks[from] & ~own_occ & check_mask;
-            if (pin_masks[from] != 0) {
+            if ((pinned & (1ULL << from)) != 0) {
                 targets &= pin_masks[from];
             }
             if (tactical_only) {
@@ -880,7 +893,7 @@ static int generate_moves_impl(GameState *s, Move out[CHESS_MAX_MOVES], bool tac
         while (bishops != 0) {
             int from = chess_pop_lsb(&bishops);
             uint64_t targets = bishop_attacks(from, all_occ) & ~own_occ & check_mask;
-            if (pin_masks[from] != 0) {
+            if ((pinned & (1ULL << from)) != 0) {
                 targets &= pin_masks[from];
             }
             if (tactical_only) {
@@ -893,7 +906,7 @@ static int generate_moves_impl(GameState *s, Move out[CHESS_MAX_MOVES], bool tac
         while (rooks != 0) {
             int from = chess_pop_lsb(&rooks);
             uint64_t targets = rook_attacks(from, all_occ) & ~own_occ & check_mask;
-            if (pin_masks[from] != 0) {
+            if ((pinned & (1ULL << from)) != 0) {
                 targets &= pin_masks[from];
             }
             if (tactical_only) {
@@ -906,7 +919,7 @@ static int generate_moves_impl(GameState *s, Move out[CHESS_MAX_MOVES], bool tac
         while (queens != 0) {
             int from = chess_pop_lsb(&queens);
             uint64_t targets = (rook_attacks(from, all_occ) | bishop_attacks(from, all_occ)) & ~own_occ & check_mask;
-            if (pin_masks[from] != 0) {
+            if ((pinned & (1ULL << from)) != 0) {
                 targets &= pin_masks[from];
             }
             if (tactical_only) {
