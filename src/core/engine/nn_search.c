@@ -881,6 +881,18 @@ int nn_search_set_hash_mb(int mb) {
     return (int)(entries * sizeof(HceTtEntry) / (1024u * 1024u));
 }
 
+// Start loading the child's TT and eval-cache slots while the move bookkeeping
+// runs; purely a cache hint, results are unchanged.
+static inline void search_prefetch(const HceSearchContext *ctx, uint64_t key) {
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_prefetch(tt_entry(key));
+    __builtin_prefetch(&ctx->nn_eval_cache[key & HCE_NN_EVAL_CACHE_MASK]);
+#else
+    (void)ctx;
+    (void)key;
+#endif
+}
+
 static bool should_stop(HceSearchContext *ctx) {
     if (ctx == NULL || ctx->in_first_iteration) {
         return false;
@@ -1856,6 +1868,7 @@ static int quiescence(GameState *s, int alpha, int beta, int ply, HceSearchConte
         if (!chess_make_move_trusted(s, m)) {
             continue;
         }
+        search_prefetch(ctx, s->zobrist_hash);
         ctx->nodes += 1;
         cont_key_set(ctx, ply, cont_key_of(s->side_to_move ^ 1, m));
         search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
@@ -2040,6 +2053,7 @@ static int negamax(GameState *s,
                 (void)search_ensure_nn_frame(s, ctx, ply);
             }
             make_null_move(s, &null_undo);
+            search_prefetch(ctx, s->zobrist_hash);
             cont_key_set(ctx, ply, -1);
             search_prepare_nn_null_frame(s, ctx, ply, ply + 1);
             int score = -negamax(s,
@@ -2086,6 +2100,7 @@ static int negamax(GameState *s,
             if (!chess_make_move_trusted(s, m)) {
                 continue;
             }
+            search_prefetch(ctx, s->zobrist_hash);
             ctx->nodes += 1;
             cont_key_set(ctx, ply, cont_key_of(s->side_to_move ^ 1, m));
             search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
@@ -2199,6 +2214,7 @@ static int negamax(GameState *s,
         if (!chess_make_move_trusted(s, m)) {
             continue;
         }
+        search_prefetch(ctx, s->zobrist_hash);
         if (quiet && !recapture && searched > 0 && static_eval_valid &&
             profile->futility_max_depth > 0 && depth <= profile->futility_max_depth &&
             alpha < HCE_MATE_THRESHOLD &&
@@ -2388,6 +2404,7 @@ static int search_root(GameState *root,
         if (!chess_make_move_trusted(&child, m)) {
             continue;
         }
+        search_prefetch(ctx, child.zobrist_hash);
         ctx->nodes += 1;
         cont_key_set(ctx, 0, cont_key_of(side, m));
         search_prepare_nn_child_frame(&child, ctx, 0, 1);
