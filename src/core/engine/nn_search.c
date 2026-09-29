@@ -117,6 +117,9 @@ typedef struct HceSearchProfile {
     int lmr_cont_hist;        // continuation history counts in the LMR history bands
     int lmr_capture;          // reduce SEE-losing captures by one ply
     int capt_hist;            // capture history (piece-to x victim) in capture ordering
+    int singular_min_depth;   // depth at which the singular test runs
+    int singular_double;      // extend 2 plies when the TT move is far more singular
+    int singular_neg;         // reduce the TT move when a failed singular test still beats beta
 } HceSearchProfile;
 
 typedef struct HceSearchContext {
@@ -144,6 +147,8 @@ typedef struct HceSearchContext {
     // the move made at ply (-1 for a null move).
     int16_t (*cont_hist)[HCE_CONT_KEYS];
     int cont_key[HCE_MAX_PLY];
+    // Double singular extensions on the current line (NNSingularDouble).
+    int dext[HCE_MAX_PLY + 1];
     // Capture history: [mover piece-to][victim type], used when NNCaptHist is on.
     int16_t capt_hist[HCE_CONT_KEYS][PIECE_TYPE_COUNT];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
@@ -195,6 +200,9 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .lmr_cont_hist = 0,
     .lmr_capture = 0,
     .capt_hist = 0,
+    .singular_min_depth = 8,
+    .singular_double = 0,
+    .singular_neg = 0,
 };
 
 static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
@@ -242,6 +250,9 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .lmr_cont_hist = 0,
     .lmr_capture = 0,
     .capt_hist = 0,
+    .singular_min_depth = 8,
+    .singular_double = 0,
+    .singular_neg = 0,
 };
 
 static HceSearchProfile g_hce_search_profile_nn = {
@@ -289,6 +300,9 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .lmr_cont_hist = 0,
     .lmr_capture = 0,
     .capt_hist = 0,
+    .singular_min_depth = 8,
+    .singular_double = 0,
+    .singular_neg = 0,
 };
 
 static HceTtEntry g_hce_tt_default[HCE_TT_SIZE];
@@ -426,6 +440,18 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.multi_cut;
         return true;
     }
+    if (hce_option_ieq(name, "NNSingularDepth")) {
+        *out = &g_hce_search_profile_nn.singular_min_depth;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNSingularDouble")) {
+        *out = &g_hce_search_profile_nn.singular_double;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNSingularNeg")) {
+        *out = &g_hce_search_profile_nn.singular_neg;
+        return true;
+    }
     if (hce_option_ieq(name, "NNCaptHist")) {
         *out = &g_hce_search_profile_nn.capt_hist;
         return true;
@@ -558,6 +584,8 @@ bool hce_nn_search_set_option(const char *name, int value) {
                field == &g_hce_search_profile_nn.tt_eval ||
                field == &g_hce_search_profile_nn.lmr_pv ||
                field == &g_hce_search_profile_nn.capt_hist ||
+               field == &g_hce_search_profile_nn.singular_double ||
+               field == &g_hce_search_profile_nn.singular_neg ||
                field == &g_hce_search_profile_nn.lmr_cont_hist ||
                field == &g_hce_search_profile_nn.lmr_capture ||
                field == &g_hce_search_profile_nn.twofold_draw ||
@@ -567,6 +595,10 @@ bool hce_nn_search_set_option(const char *name, int value) {
                field == &g_hce_search_profile_nn.history_gravity ||
                field == &g_hce_search_profile_nn.internal_reduction) {
         if (value < 0 || value > 1) {
+            return false;
+        }
+    } else if (field == &g_hce_search_profile_nn.singular_min_depth) {
+        if (value < 4 || value > 16) {
             return false;
         }
     } else if (field == &g_hce_search_profile_nn.rfp_max_depth) {
@@ -2167,7 +2199,7 @@ static int negamax(GameState *s,
     // TT score in a reduced search that excludes it, extend the TT move.
     int singular_extension = 0;
     if (profile->singular != 0 && excluded == 0 && tt_move != 0 && ply > 0 &&
-        depth >= 8 && ply < HCE_MAX_PLY - 1) {
+        depth >= profile->singular_min_depth && ply < HCE_MAX_PLY - 1) {
         Move se_move = 0;
         int se_score = 0, se_depth = 0;
         HceTtBound se_bound = HCE_TT_NONE;
@@ -2184,9 +2216,25 @@ static int negamax(GameState *s,
             }
             if (v < singular_beta) {
                 singular_extension = 1;
+                if (profile->singular_double != 0 && ctx->dext[ply] < 5) {
+                    // Scores fail hard, so test the lower margin with its own
+                    // zero-window search instead of reading it off v.
+                    const int double_beta = singular_beta - 16;
+                    ctx->excluded[ply] = tt_move;
+                    int v2 = negamax(s, (depth - 1) / 2, double_beta - 1, double_beta, ply, ctx, NULL);
+                    ctx->excluded[ply] = 0;
+                    if (ctx->timed_out) {
+                        return alpha;
+                    }
+                    if (v2 < double_beta) {
+                        singular_extension = 2;
+                    }
+                }
             } else if (profile->multi_cut != 0 && singular_beta >= beta) {
                 // Another move also beats beta at reduced depth: cut.
                 return beta;
+            } else if (profile->singular_neg != 0 && se_score >= beta) {
+                singular_extension = -1;
             }
         }
     }
@@ -2257,9 +2305,12 @@ static int negamax(GameState *s,
         search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
 
         int extension = search_move_extension(s, m, depth, ctx);
-        if (singular_extension != 0 && m == tt_move && extension == 0) {
-            extension = 1;
+        if (singular_extension > 0 && m == tt_move && extension == 0) {
+            extension = singular_extension;
+        } else if (singular_extension < 0 && m == tt_move) {
+            extension += singular_extension;
         }
+        ctx->dext[ply + 1] = ctx->dext[ply] + (extension >= 2 ? 1 : 0);
 
         int score;
         int next_depth = depth - 1 + extension;
