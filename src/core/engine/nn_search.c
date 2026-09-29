@@ -113,6 +113,9 @@ typedef struct HceSearchProfile {
     int null_eval_reduction;  // extra null-move reduction from (eval - beta)
     int multi_cut;            // singular search failing high above beta cuts the node
     int tt_eval;              // refine static eval with a bound-compatible TT score
+    int lmr_pv;               // one ply less LMR in PV nodes
+    int lmr_cont_hist;        // continuation history counts in the LMR history bands
+    int lmr_capture;          // reduce SEE-losing captures by one ply
 } HceSearchProfile;
 
 typedef struct HceSearchContext {
@@ -185,6 +188,9 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .null_eval_reduction = 0,
     .multi_cut = 0,
     .tt_eval = 0,
+    .lmr_pv = 0,
+    .lmr_cont_hist = 0,
+    .lmr_capture = 0,
 };
 
 static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
@@ -228,6 +234,9 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .null_eval_reduction = 0,
     .multi_cut = 1,  // +15.6 then +20.9 (on cont. history): pooled ~+18, 400 games at 10+0.1
     .tt_eval = 0,
+    .lmr_pv = 0,
+    .lmr_cont_hist = 0,
+    .lmr_capture = 0,
 };
 
 static HceSearchProfile g_hce_search_profile_nn = {
@@ -271,6 +280,9 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .null_eval_reduction = 0,
     .multi_cut = 1,
     .tt_eval = 0,
+    .lmr_pv = 0,
+    .lmr_cont_hist = 0,
+    .lmr_capture = 0,
 };
 
 static HceTtEntry g_hce_tt_default[HCE_TT_SIZE];
@@ -408,6 +420,18 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.multi_cut;
         return true;
     }
+    if (hce_option_ieq(name, "NNLmrPv")) {
+        *out = &g_hce_search_profile_nn.lmr_pv;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNLmrContHist")) {
+        *out = &g_hce_search_profile_nn.lmr_cont_hist;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNLmrCapture")) {
+        *out = &g_hce_search_profile_nn.lmr_capture;
+        return true;
+    }
     if (hce_option_ieq(name, "NNTTEval")) {
         *out = &g_hce_search_profile_nn.tt_eval;
         return true;
@@ -522,6 +546,9 @@ bool hce_nn_search_set_option(const char *name, int value) {
                field == &g_hce_search_profile_nn.null_eval_reduction ||
                field == &g_hce_search_profile_nn.multi_cut ||
                field == &g_hce_search_profile_nn.tt_eval ||
+               field == &g_hce_search_profile_nn.lmr_pv ||
+               field == &g_hce_search_profile_nn.lmr_cont_hist ||
+               field == &g_hce_search_profile_nn.lmr_capture ||
                field == &g_hce_search_profile_nn.twofold_draw ||
                field == &g_hce_search_profile_nn.check_extensions ||
                field == &g_hce_search_profile_nn.countermove_ordering ||
@@ -2164,6 +2191,11 @@ static int negamax(GameState *s,
             static_exchange_eval(s, m) < -profile->see_prune_margin_per_depth * depth) {
             continue;
         }
+        const bool bad_capture = profile->lmr_capture != 0 && !quiet && !in_check &&
+                                 depth >= 3 && searched >= 2 &&
+                                 move_has_flag(m, MOVE_FLAG_CAPTURE) &&
+                                 !move_has_flag(m, MOVE_FLAG_PROMOTION) &&
+                                 static_exchange_eval(s, m) < 0;
         if (!chess_make_move_trusted(s, m)) {
             continue;
         }
@@ -2190,6 +2222,11 @@ static int negamax(GameState *s,
             score = -negamax(s, next_depth, -beta, -alpha, ply + 1, ctx, NULL);
         } else {
             int reduction = 0;
+            if (profile->lmr_capture != 0 && !in_check && !quiet && depth >= 3 && searched >= 2 &&
+                move_has_flag(m, MOVE_FLAG_CAPTURE) && !move_has_flag(m, MOVE_FLAG_PROMOTION) &&
+                bad_capture) {
+                reduction = next_depth > 1 ? 1 : 0;
+            }
             if (!in_check &&
                 quiet &&
                 depth >= 3 &&
@@ -2207,6 +2244,15 @@ static int negamax(GameState *s,
                     }
                 }
                 int hist = ctx->history[side][move_from(m)][move_to(m)];
+                if (profile->lmr_cont_hist != 0 && ctx->cont_hist != NULL && ply >= 1) {
+                    int cur = cont_key_of(side, m);
+                    if (ctx->cont_key[ply - 1] >= 0) {
+                        hist += ctx->cont_hist[ctx->cont_key[ply - 1]][cur];
+                    }
+                    if (ply >= 2 && ctx->cont_key[ply - 2] >= 0) {
+                        hist += ctx->cont_hist[ctx->cont_key[ply - 2]][cur];
+                    }
+                }
                 if (hist > profile->lmr_good_history_threshold) {
                     reduction -= 1;
                 } else if (hist < profile->lmr_bad_history_threshold) {
@@ -2217,6 +2263,9 @@ static int negamax(GameState *s,
                 }
                 if (profile->improving != 0 && !improving) {
                     reduction += 1;
+                }
+                if (profile->lmr_pv != 0 && beta - alpha_orig > 1) {
+                    reduction -= 1;
                 }
                 reduction += profile->lmr_backend_adjust;
                 if (reduction < 0) {
