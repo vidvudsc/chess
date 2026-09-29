@@ -240,7 +240,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .aspiration_depth_scale = 10,
     .twofold_draw = 1,
     .pawn_correction_weight_permille = 0,
-    .structure_correction_weight_permille = 0,
+    .structure_correction_weight_permille = 1000,  // +19.1 then +34.9: pooled ~+27, 400 games (2026-09-29)
     .cont_hist = 1,  // +42 Elo [+10, +75], P=99%, 200 games at 10+0.1 (2026-09-28)
     .rfp_max_depth = 3,
     .null_eval_reduction = 0,
@@ -290,7 +290,7 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .aspiration_depth_scale = 10,
     .twofold_draw = 1,
     .pawn_correction_weight_permille = 0,
-    .structure_correction_weight_permille = 0,
+    .structure_correction_weight_permille = 1000,
     .cont_hist = 1,
     .rfp_max_depth = 3,
     .null_eval_reduction = 0,
