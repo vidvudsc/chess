@@ -116,6 +116,7 @@ typedef struct HceSearchProfile {
     int lmr_pv;               // one ply less LMR in PV nodes
     int lmr_cont_hist;        // continuation history counts in the LMR history bands
     int lmr_capture;          // reduce SEE-losing captures by one ply
+    int capt_hist;            // capture history (piece-to x victim) in capture ordering
 } HceSearchProfile;
 
 typedef struct HceSearchContext {
@@ -143,6 +144,8 @@ typedef struct HceSearchContext {
     // the move made at ply (-1 for a null move).
     int16_t (*cont_hist)[HCE_CONT_KEYS];
     int cont_key[HCE_MAX_PLY];
+    // Capture history: [mover piece-to][victim type], used when NNCaptHist is on.
+    int16_t capt_hist[HCE_CONT_KEYS][PIECE_TYPE_COUNT];
     NnAccumulatorFrame nn_frames[HCE_MAX_PLY];
     HceEvalCacheEntry nn_eval_cache[HCE_NN_EVAL_CACHE_SIZE];
 } HceSearchContext;
@@ -191,6 +194,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .lmr_pv = 0,
     .lmr_cont_hist = 0,
     .lmr_capture = 0,
+    .capt_hist = 0,
 };
 
 static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
@@ -237,6 +241,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .lmr_pv = 0,
     .lmr_cont_hist = 0,
     .lmr_capture = 0,
+    .capt_hist = 0,
 };
 
 static HceSearchProfile g_hce_search_profile_nn = {
@@ -283,6 +288,7 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .lmr_pv = 0,
     .lmr_cont_hist = 0,
     .lmr_capture = 0,
+    .capt_hist = 0,
 };
 
 static HceTtEntry g_hce_tt_default[HCE_TT_SIZE];
@@ -420,6 +426,10 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
         *out = &g_hce_search_profile_nn.multi_cut;
         return true;
     }
+    if (hce_option_ieq(name, "NNCaptHist")) {
+        *out = &g_hce_search_profile_nn.capt_hist;
+        return true;
+    }
     if (hce_option_ieq(name, "NNLmrPv")) {
         *out = &g_hce_search_profile_nn.lmr_pv;
         return true;
@@ -547,6 +557,7 @@ bool hce_nn_search_set_option(const char *name, int value) {
                field == &g_hce_search_profile_nn.multi_cut ||
                field == &g_hce_search_profile_nn.tt_eval ||
                field == &g_hce_search_profile_nn.lmr_pv ||
+               field == &g_hce_search_profile_nn.capt_hist ||
                field == &g_hce_search_profile_nn.lmr_cont_hist ||
                field == &g_hce_search_profile_nn.lmr_capture ||
                field == &g_hce_search_profile_nn.twofold_draw ||
@@ -1408,6 +1419,9 @@ static int move_score(const GameState *s, Move m, Move tt_move, HceSearchContext
             victim = PIECE_PAWN;
         }
         int material_order = hce_piece_value[victim] * 16 - hce_piece_value[attacker];
+        if (search_profile(ctx)->capt_hist != 0) {
+            material_order += ctx->capt_hist[cont_key_of(s->side_to_move, m)][victim] / 8;
+        }
         if (search_profile(ctx)->capture_see_ordering != 0) {
             int see = static_exchange_eval(s, m);
             /*
@@ -1617,6 +1631,16 @@ static void cont_hist_update(HceSearchContext *ctx, int ply, int side, Move m, i
         int v = *h + bonus - (*h * magnitude) / 16384;
         *h = (int16_t)(v > 16384 ? 16384 : (v < -16384 ? -16384 : v));
     }
+}
+
+static void capt_hist_update(HceSearchContext *ctx, int side, int victim, Move m, int bonus) {
+    if (victim < 0 || victim >= PIECE_TYPE_COUNT) {
+        victim = PIECE_PAWN;
+    }
+    int16_t *h = &ctx->capt_hist[cont_key_of(side, m)][victim];
+    int magnitude = bonus >= 0 ? bonus : -bonus;
+    int v = *h + bonus - (*h * magnitude) / 16384;
+    *h = (int16_t)(v > 16384 ? 16384 : (v < -16384 ? -16384 : v));
 }
 
 // Quiet beta cutoff: reward the cutoff move, punish the quiets tried before it.
@@ -2174,6 +2198,9 @@ static int negamax(GameState *s,
     int searched = 0;
     Move failed_quiets[CHESS_MAX_MOVES];
     int failed_quiet_count = 0;
+    Move failed_caps[CHESS_MAX_MOVES];
+    int8_t failed_cap_victims[CHESS_MAX_MOVES];
+    int failed_cap_count = 0;
 
     for (int i = 0; i < n; ++i) {
         Move m = pick_next_move(moves, move_scores, i, n);
@@ -2182,6 +2209,8 @@ static int negamax(GameState *s,
         }
         bool quiet = is_quiet_move(m);
         bool recapture = is_recapture_move(s, m);
+        const int cap_victim = (profile->capt_hist != 0 && move_has_flag(m, MOVE_FLAG_CAPTURE))
+                                   ? captured_piece_for_move(s, m) : PIECE_NONE;
         if (quiet && !in_check && profile->lmp_max_depth > 0 &&
             depth <= profile->lmp_max_depth &&
             searched >= profile->lmp_base_moves + depth * 3) {
@@ -2325,6 +2354,16 @@ static int negamax(GameState *s,
                 if (quiet) {
                     cont_hist_on_cutoff(ctx, ply, side, m, failed_quiets, failed_quiet_count, depth);
                 }
+                if (profile->capt_hist != 0) {
+                    int cbonus = 120 * depth - 80;
+                    cbonus = cbonus > 1600 ? 1600 : (cbonus < 40 ? 40 : cbonus);
+                    if (move_has_flag(m, MOVE_FLAG_CAPTURE)) {
+                        capt_hist_update(ctx, side, cap_victim, m, cbonus);
+                    }
+                    for (int c = 0; c < failed_cap_count; ++c) {
+                        capt_hist_update(ctx, side, failed_cap_victims[c], failed_caps[c], -cbonus);
+                    }
+                }
                 if (quiet && static_eval_valid && beta > raw_static_eval) {
                     update_eval_correction(s, ctx, depth, raw_static_eval, beta);
                 }
@@ -2339,6 +2378,10 @@ static int negamax(GameState *s,
         }
         if (quiet && failed_quiet_count < CHESS_MAX_MOVES) {
             failed_quiets[failed_quiet_count++] = m;
+        }
+        if (cap_victim != PIECE_NONE && failed_cap_count < CHESS_MAX_MOVES) {
+            failed_caps[failed_cap_count] = m;
+            failed_cap_victims[failed_cap_count++] = (int8_t)cap_victim;
         }
     }
 
