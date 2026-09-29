@@ -228,7 +228,7 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .singular = 1,  // +33 Elo [-0.3, +67], P=97%, 200 games at 10+0.1 (2026-09-28)
     .history_gravity = 0,
     .internal_reduction = 1,
-    .probcut_min_depth = 0,
+    .probcut_min_depth = 5,  // +29.6 then +15.6: pooled ~+23, 400 games at 10+0.1 (2026-09-29)
     .probcut_margin = 200,
     .lmp_max_depth = 2,
     .lmp_base_moves = 4,
@@ -278,7 +278,7 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .singular = 1,
     .history_gravity = 0,
     .internal_reduction = 1,
-    .probcut_min_depth = 0,
+    .probcut_min_depth = 5,
     .probcut_margin = 200,
     .lmp_max_depth = 2,
     .lmp_base_moves = 4,
