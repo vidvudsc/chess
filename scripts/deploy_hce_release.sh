@@ -7,6 +7,7 @@
 # usage: deploy_hce_release.sh HOST [REMOTE_ROOT]
 # env:   SYZYGY_PATH (remote dir, default $REMOTE_ROOT/shared/syzygy)
 #        HASH_MB     (engine hash per game, default 64)
+#        BOOK_FILE   (local opening book to install; default keeps the live book)
 set -euo pipefail
 HOST="${1:?usage: deploy_hce_release.sh HOST [REMOTE_ROOT]}"
 REMOTE_ROOT="${2:-/home/umbrel/vidvuds-lab/chess/chessbot}"
@@ -29,6 +30,12 @@ rsync -a --prune-empty-dirs --include='*/' --include='*.c' --include='*.h' \
   --include='*.inc' --include='LICENSE' --include='UPSTREAM_COMMIT' --exclude='*' \
   "$REPO_ROOT/src/core/engine/" "$STAGE/engine/src/"
 cp "$REPO_ROOT/src/core/bot/run.py" "$STAGE/run.py"
+BOOK_CHANGED=0
+if [[ -n "${BOOK_FILE:-}" ]]; then
+  [[ -f "$BOOK_FILE" ]] || { echo "BOOK_FILE not found: $BOOK_FILE" >&2; exit 1; }
+  cp "$BOOK_FILE" "$STAGE/opening_book.txt"
+  BOOK_CHANGED=1
+fi
 cat > "$STAGE/BUILD_INFO.txt" <<EOF
 release=$RELEASE_ID
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -52,7 +59,7 @@ REMOTE
 rsync -a "$STAGE/" "$HOST:$REMOTE_ROOT/releases/$RELEASE_ID/"
 ssh "$HOST" "cd '$REMOTE_ROOT/releases/$RELEASE_ID/engine' && make -j\"\$(nproc)\" >build.log 2>&1 || { tail -20 build.log; exit 1; }"
 
-ssh "$HOST" python3 - "$REMOTE_ROOT" "$RELEASE_ID" "$SYZYGY_PATH" "$HASH_MB" <<'PY'
+ssh "$HOST" python3 - "$REMOTE_ROOT" "$RELEASE_ID" "$SYZYGY_PATH" "$HASH_MB" "$BOOK_CHANGED" <<'PY'
 import hashlib
 import json
 import os
@@ -68,14 +75,15 @@ import requests
 
 root = Path(sys.argv[1])
 release = root / 'releases' / sys.argv[2]
-syzygy, hash_mb = sys.argv[3], int(sys.argv[4])
+syzygy, hash_mb, book_changed = sys.argv[3], int(sys.argv[4]), sys.argv[5] == '1'
 previous = (root / 'current').resolve()
 py_compile.compile(str(release / 'run.py'), doraise=True)
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
-for name in ('nn_eval.bin', 'opening_book.txt'):
+preserved = ('nn_eval.bin',) if book_changed else ('nn_eval.bin', 'opening_book.txt')
+for name in preserved:
     old, new = previous / name, release / name
     if old.exists() and digest(old) != digest(new):
         raise RuntimeError(f'Preserved artifact changed: {name}')
@@ -173,7 +181,8 @@ except BaseException:
 manifest = {'release': str(release), 'previous': str(previous),
             'engine_sha256': digest(release / 'engine/chess_uci'),
             'run_sha256': digest(release / 'run.py'),
-            'syzygy_tables': tb_count, 'hash_mb': hash_mb}
+            'syzygy_tables': tb_count, 'hash_mb': hash_mb,
+            'book_sha256': digest(release / 'opening_book.txt'), 'book_changed': book_changed}
 (release / 'RELEASE.json').write_text(json.dumps(manifest, indent=2) + '\n')
 print(json.dumps(manifest, indent=2))
 PY
