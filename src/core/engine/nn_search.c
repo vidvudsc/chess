@@ -120,6 +120,9 @@ typedef struct HceSearchProfile {
     int singular_min_depth;   // depth at which the singular test runs
     int singular_double;      // extend 2 plies when the TT move is far more singular
     int singular_neg;         // reduce the TT move when a failed singular test still beats beta
+    int razor;                // depth <= 2: eval far below alpha drops straight into qsearch
+    int hist_prune;           // depth <= 3: skip quiets with very bad history
+    int check_ext_see;        // extend only checks that do not lose material by SEE
 } HceSearchProfile;
 
 typedef struct HceSearchContext {
@@ -203,6 +206,9 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_CLASSIC = {
     .singular_min_depth = 8,
     .singular_double = 0,
     .singular_neg = 0,
+    .razor = 0,
+    .hist_prune = 0,
+    .check_ext_see = 0,
 };
 
 static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
@@ -253,6 +259,9 @@ static const HceSearchProfile HCE_SEARCH_PROFILE_NN_DEFAULT = {
     .singular_min_depth = 8,
     .singular_double = 0,
     .singular_neg = 0,
+    .razor = 0,
+    .hist_prune = 0,
+    .check_ext_see = 0,
 };
 
 static HceSearchProfile g_hce_search_profile_nn = {
@@ -303,6 +312,9 @@ static HceSearchProfile g_hce_search_profile_nn = {
     .singular_min_depth = 8,
     .singular_double = 0,
     .singular_neg = 0,
+    .razor = 0,
+    .hist_prune = 0,
+    .check_ext_see = 0,
 };
 
 static HceTtEntry g_hce_tt_default[HCE_TT_SIZE];
@@ -438,6 +450,18 @@ static bool hce_nn_search_option_ref(const char *name, int **out) {
     }
     if (hce_option_ieq(name, "NNMultiCut")) {
         *out = &g_hce_search_profile_nn.multi_cut;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNRazor")) {
+        *out = &g_hce_search_profile_nn.razor;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNHistPrune")) {
+        *out = &g_hce_search_profile_nn.hist_prune;
+        return true;
+    }
+    if (hce_option_ieq(name, "NNCheckExtSee")) {
+        *out = &g_hce_search_profile_nn.check_ext_see;
         return true;
     }
     if (hce_option_ieq(name, "NNSingularDepth")) {
@@ -585,6 +609,9 @@ bool hce_nn_search_set_option(const char *name, int value) {
                field == &g_hce_search_profile_nn.lmr_pv ||
                field == &g_hce_search_profile_nn.capt_hist ||
                field == &g_hce_search_profile_nn.singular_double ||
+               field == &g_hce_search_profile_nn.razor ||
+               field == &g_hce_search_profile_nn.hist_prune ||
+               field == &g_hce_search_profile_nn.check_ext_see ||
                field == &g_hce_search_profile_nn.singular_neg ||
                field == &g_hce_search_profile_nn.lmr_cont_hist ||
                field == &g_hce_search_profile_nn.lmr_capture ||
@@ -2090,6 +2117,16 @@ static int negamax(GameState *s,
             return beta;
         }
     }
+    if (profile->razor != 0 && !in_check && depth <= 2 && static_eval_valid && excluded == 0 &&
+        alpha > -HCE_MATE_THRESHOLD && static_eval + 300 + 250 * depth * depth < alpha) {
+        int razor_score = quiescence(s, alpha - 1, alpha, ply, ctx);
+        if (ctx->timed_out) {
+            return alpha;
+        }
+        if (razor_score < alpha) {
+            return razor_score;
+        }
+    }
 
     if (null_move_candidate &&
         (profile->null_move_eval_gate == 0 ||
@@ -2283,6 +2320,24 @@ static int negamax(GameState *s,
             static_exchange_eval(s, m) < -profile->see_prune_margin_per_depth * depth) {
             continue;
         }
+        if (profile->hist_prune != 0 && quiet && !in_check && searched > 0 && depth <= 3 &&
+            m != tt_move && alpha > -HCE_MATE_THRESHOLD) {
+            int h = ctx->history[side][move_from(m)][move_to(m)];
+            if (ctx->cont_hist != NULL && ply >= 1) {
+                int cur = cont_key_of(side, m);
+                if (ctx->cont_key[ply - 1] >= 0) {
+                    h += ctx->cont_hist[ctx->cont_key[ply - 1]][cur];
+                }
+                if (ply >= 2 && ctx->cont_key[ply - 2] >= 0) {
+                    h += ctx->cont_hist[ctx->cont_key[ply - 2]][cur];
+                }
+            }
+            if (h < -4000 * depth) {
+                continue;
+            }
+        }
+        const bool check_see_bad = profile->check_ext_see != 0 && depth > 2 &&
+                                   static_exchange_eval(s, m) < 0;
         const bool bad_capture = profile->lmr_capture != 0 && !quiet && !in_check &&
                                  depth >= 3 && searched >= 2 &&
                                  move_has_flag(m, MOVE_FLAG_CAPTURE) &&
@@ -2305,6 +2360,9 @@ static int negamax(GameState *s,
         search_prepare_nn_child_frame(s, ctx, ply, ply + 1);
 
         int extension = search_move_extension(s, m, depth, ctx);
+        if (check_see_bad && extension == 1 && !move_has_flag(m, MOVE_FLAG_PROMOTION)) {
+            extension = 0;
+        }
         if (singular_extension > 0 && m == tt_move && extension == 0) {
             extension = singular_extension;
         } else if (singular_extension < 0 && m == tt_move) {

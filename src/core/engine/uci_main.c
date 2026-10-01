@@ -340,6 +340,9 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         str_ieq(name_buf, "NNNullEvalRed") ||
         str_ieq(name_buf, "NNMultiCut") ||
         str_ieq(name_buf, "NNTTEval") ||
+        str_ieq(name_buf, "NNRazor") ||
+        str_ieq(name_buf, "NNHistPrune") ||
+        str_ieq(name_buf, "NNCheckExtSee") ||
         str_ieq(name_buf, "NNSingularDepth") ||
         str_ieq(name_buf, "NNSingularDouble") ||
         str_ieq(name_buf, "NNSingularNeg") ||
@@ -767,6 +770,12 @@ static void print_uci_intro(const UciOptions *opt) {
            chess_ai_get_nn_search_option("NNMultiCut"));
     printf("option name NNTTEval type spin default %d min 0 max 1\n",
            chess_ai_get_nn_search_option("NNTTEval"));
+    printf("option name NNRazor type spin default %d min 0 max 1\n",
+           chess_ai_get_nn_search_option("NNRazor"));
+    printf("option name NNHistPrune type spin default %d min 0 max 1\n",
+           chess_ai_get_nn_search_option("NNHistPrune"));
+    printf("option name NNCheckExtSee type spin default %d min 0 max 1\n",
+           chess_ai_get_nn_search_option("NNCheckExtSee"));
     printf("option name NNSingularDepth type spin default %d min 4 max 16\n",
            chess_ai_get_nn_search_option("NNSingularDepth"));
     printf("option name NNSingularDouble type spin default %d min 0 max 1\n",
