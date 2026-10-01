@@ -311,6 +311,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=20260709)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--unfiltered", action="store_true")
+    p.add_argument("--pc-y", default=None,
+                   help="Five comma-separated loader piece-count weights at 0,8,16,24,32 pieces "
+                        "(nnue-pytorch pc_y0..pc_y4; default 0,0.4,1,1,0.75). Raise the last two "
+                        "to train on more middlegame positions.")
     return p
 
 
@@ -345,6 +349,13 @@ def main() -> int:
         wld_filtered=not args.unfiltered,
         soft_early_fen_skipping=20 if not args.unfiltered else -1,
     )
+    if args.pc_y is not None:
+        weights = [float(v) for v in args.pc_y.split(",")]
+        if len(weights) != 5 or min(weights) < 0.0:
+            raise SystemExit("--pc-y needs five non-negative comma-separated weights")
+        for i, w in enumerate(weights):
+            setattr(config, f"pc_y{i}", w)
+        print(f"[data] piece-count weights pc_y0..4 = {weights}", flush=True)
     input_paths = ([args.input] if args.input is not None else []) + list(args.extra_input)
     if args.input_dir is not None:
         input_paths.extend(sorted(args.input_dir.glob("*.binpack")))
