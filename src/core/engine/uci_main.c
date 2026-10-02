@@ -1007,6 +1007,31 @@ int main(void) {
             search_thread_join();
             continue;
         }
+        if (strcmp(line, "eval") == 0) {
+            // Static HCE evaluation split into its terms (White's view, blended).
+            search_thread_join();
+            ChessEvalBreakdown bd;
+            if (chess_ai_eval_breakdown(&state, &bd)) {
+                const char *names[] = {"material", "piece_square", "pawn_structure", "passed_pawns",
+                                       "extras", "rook_files", "mobility", "pawn_activity",
+                                       "king_safety", "hanging", "queen_trap", "total"};
+                const ChessEvalSideBreakdown *w = &bd.white, *b = &bd.black;
+                int wv[] = {w->material, w->piece_square, w->pawn_structure, w->passed_pawns,
+                            w->outposts, w->rook_files, w->mobility, w->pawn_activity,
+                            w->king_safety_penalty, w->hanging_penalty, w->queen_trap_penalty, w->total};
+                int bv[] = {b->material, b->piece_square, b->pawn_structure, b->passed_pawns,
+                            b->outposts, b->rook_files, b->mobility, b->pawn_activity,
+                            b->king_safety_penalty, b->hanging_penalty, b->queen_trap_penalty, b->total};
+                printf("info string eval phase %d (24 = opening)\n", bd.phase);
+                for (int i = 0; i < 12; ++i) {
+                    printf("info string %-15s white %6d  black %6d  diff %+6d\n",
+                           names[i], wv[i], bv[i], wv[i] - bv[i]);
+                }
+                printf("info string score white %+d  stm %+d\n", bd.score_cp_white, bd.score_cp_stm);
+            }
+            fflush(stdout);
+            continue;
+        }
         if (strcmp(line, "d") == 0) {
             search_thread_join();
             char fen[256];
