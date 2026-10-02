@@ -996,10 +996,14 @@ class BotRunner:
         elif etype in {"challengeCanceled", "challengeDeclined"}:
             challenge = event.get("challenge", {}) or event
             challenge_id = challenge.get("id")
+            reason = str(challenge.get("declineReasonKey") or challenge.get("declineReason") or "")
             if challenge_id:
-                cooldown_s = 900.0 if etype == "challengeDeclined" else 300.0
+                # A bot that declined us will most likely decline again soon
+                # (rating filter, rated/casual or time-control policy): rest it.
+                cooldown_s = 6 * 3600.0 if etype == "challengeDeclined" else 300.0
                 self._release_pending_slot(challenge_id, cooldown_s)
-            log_event("event", f"received {etype}{' id=' + challenge_id if challenge_id else ''}")
+            log_event("event", f"received {etype}{' id=' + challenge_id if challenge_id else ''}"
+                               f"{' reason=' + reason if reason else ''}")
         elif etype is not None:
             log_event("event", f"received {etype}")
 
