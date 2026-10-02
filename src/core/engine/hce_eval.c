@@ -169,6 +169,13 @@ static int g_opt_king_pst = 1;
 static int g_opt_ks_fade = 1;
 static int g_opt_passer = 1;
 static int g_opt_scale = 1;
+// King-zone diagonal pressure (UCI HceKingDiag): the weight W of a penalty
+// W * u^2 / 8 (mg, a quarter in eg), u = squares of the king zone hit by enemy
+// bishops/queens plus one per bishop/queen x-raying the zone through a pawn of
+// the defender. 0 = off. Added outside the Texel-tuned terms (residual), so a
+// refit keeps W fixed. Fitted on VidBot's Lichess positions (2026-10-02),
+// where the HCE overrated the side under such pressure by ~50 cp at u >= 5.
+static int g_opt_king_diag = 0;
 
 bool hce_eval_set_option(const char *name, int value) {
     int *slot = NULL;
@@ -182,6 +189,8 @@ bool hce_eval_set_option(const char *name, int value) {
         slot = &g_opt_passer;
     } else if (strcmp(name, "HceScale") == 0) {
         slot = &g_opt_scale;
+    } else if (strcmp(name, "HceKingDiag") == 0) {
+        slot = &g_opt_king_diag;
     }
     if (slot == NULL) {
         return false;
@@ -196,6 +205,7 @@ int hce_eval_get_option(const char *name) {
     if (strcmp(name, "HceKsFade") == 0) return g_opt_ks_fade;
     if (strcmp(name, "HcePasser") == 0) return g_opt_passer;
     if (strcmp(name, "HceScale") == 0) return g_opt_scale;
+    if (strcmp(name, "HceKingDiag") == 0) return g_opt_king_diag;
     return -1;
 }
 
@@ -601,6 +611,45 @@ static void safe_check_counts(const GameState *s,
     out[1] = chess_count_bits(b_check & atk->piece_atk[enemy][PIECE_BISHOP] & safe);
     out[2] = chess_count_bits(r_check & atk->piece_atk[enemy][PIECE_ROOK] & safe);
     out[3] = chess_count_bits((b_check | r_check) & atk->piece_atk[enemy][PIECE_QUEEN] & safe);
+}
+
+// Pressure on `side`'s king zone (king square, its neighbours and the three
+// squares two ranks ahead) from enemy bishops and queens: squares attacked,
+// plus one per slider whose diagonal reaches the zone through a defender pawn.
+static int king_diag_pressure(const GameState *s, int side) {
+    int king_sq = chess_find_king_square(s, side);
+    if (king_sq < 0) {
+        return 0;
+    }
+    int enemy = side ^ 1;
+    uint64_t zone = g_king_attacks[king_sq] | (1ULL << king_sq);
+    int file = square_file(king_sq);
+    int rank2 = square_rank(king_sq) + ((side == PIECE_WHITE) ? 2 : -2);
+    if (rank2 >= 0 && rank2 < 8) {
+        for (int df = -1; df <= 1; ++df) {
+            if (file + df >= 0 && file + df < 8) {
+                zone |= 1ULL << make_square(file + df, rank2);
+            }
+        }
+    }
+    uint64_t own_pawns = s->bb[side][PIECE_PAWN];
+    uint64_t queens = s->bb[enemy][PIECE_QUEEN];
+    uint64_t sliders = s->bb[enemy][PIECE_BISHOP] | queens;
+    int units = 0;
+    while (sliders != 0) {
+        int sq = chess_pop_lsb(&sliders);
+        uint64_t diag = hce_bishop_attacks(sq, s->occ_all);
+        uint64_t attacks = diag;
+        if ((queens >> sq) & 1ULL) {
+            attacks |= hce_rook_attacks(sq, s->occ_all);
+        }
+        units += chess_count_bits(attacks & zone);
+        uint64_t xray = hce_bishop_attacks(sq, s->occ_all & ~(diag & own_pawns)) & ~diag;
+        if ((xray & zone) != 0) {
+            units += 1;
+        }
+    }
+    return units;
 }
 
 static int king_safety_penalty(const GameState *s, int side, const AttackUnions *atk) {
@@ -1373,6 +1422,11 @@ static int eval_side(const GameState *s,
                       king_danger_fade_pct(s, side) / 100;
     if (g_opt_passer && passers != 0) {
         passer_extra_terms(s, side, passers, attack_unions, &terms.endgame_extra);
+    }
+    if (g_opt_king_diag != 0) {
+        int u = king_diag_pressure(s, side);
+        int pen = g_opt_king_diag * u * u / 8;
+        eval_term_add(&terms.endgame_extra, -pen, -pen / 4);
     }
     int hanging = hanging_piece_penalty(s, side, attack_unions);
     int queen_trap = queen_trap_penalty(s, side, attack_unions);

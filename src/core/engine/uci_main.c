@@ -271,6 +271,17 @@ static void parse_setoption(const char *line, UciOptions *opt) {
         return;
     }
 
+    if (str_ieq(name_buf, "HceKingDiag")) {
+        int v = 0;
+        if (parse_int_token(value_buf, &v) && v >= 0 && v <= 64) {
+            hce_eval_set_option("HceKingDiag", v);
+            chess_ai_clear_eval_caches();
+            printf("info string HceKingDiag set to %d\n", v);
+            fflush(stdout);
+        }
+        return;
+    }
+
     {
         static const char *const k_eval_switches[] = {
             "HcePawnPstFix", "HceKingPst", "HceKsFade", "HcePasser", "HceScale",
@@ -744,6 +755,7 @@ static void print_uci_intro(const UciOptions *opt) {
     printf("option name HceKsFade type spin default %d min 0 max 1\n", hce_eval_get_option("HceKsFade"));
     printf("option name HcePasser type spin default %d min 0 max 1\n", hce_eval_get_option("HcePasser"));
     printf("option name HceScale type spin default %d min 0 max 1\n", hce_eval_get_option("HceScale"));
+    printf("option name HceKingDiag type spin default %d min 0 max 64\n", hce_eval_get_option("HceKingDiag"));
     printf("option name SyzygyPath type string default <empty>\n");
     printf("option name Hash type spin default 16 min 1 max 1024\n");
     printf("option name HceQsearchTT type spin default %d min 0 max 1\n", hce_search_get_qsearch_tt());
