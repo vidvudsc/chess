@@ -176,6 +176,11 @@ static int g_opt_scale = 1;
 // refit keeps W fixed. Fitted on VidBot's Lichess positions (2026-10-02),
 // where the HCE overrated the side under such pressure by ~50 cp at u >= 5.
 static int g_opt_king_diag = 14;
+// Locked-pawn mobility (UCI HceLockedMob): a bonus W * locked * mobility / 4
+// (mg and eg), locked = white pawns blocked by black pawns. On VidBot's and
+// self-play positions the eval underrated a mobility edge by ~1.5 cp per
+// mobility unit per locked pawn (2026-10-02). 0 = off; outside the tuned terms.
+static int g_opt_locked_mob = 0;
 
 bool hce_eval_set_option(const char *name, int value) {
     int *slot = NULL;
@@ -191,6 +196,8 @@ bool hce_eval_set_option(const char *name, int value) {
         slot = &g_opt_scale;
     } else if (strcmp(name, "HceKingDiag") == 0) {
         slot = &g_opt_king_diag;
+    } else if (strcmp(name, "HceLockedMob") == 0) {
+        slot = &g_opt_locked_mob;
     }
     if (slot == NULL) {
         return false;
@@ -206,6 +213,7 @@ int hce_eval_get_option(const char *name) {
     if (strcmp(name, "HcePasser") == 0) return g_opt_passer;
     if (strcmp(name, "HceScale") == 0) return g_opt_scale;
     if (strcmp(name, "HceKingDiag") == 0) return g_opt_king_diag;
+    if (strcmp(name, "HceLockedMob") == 0) return g_opt_locked_mob;
     return -1;
 }
 
@@ -1422,6 +1430,15 @@ static int eval_side(const GameState *s,
                       king_danger_fade_pct(s, side) / 100;
     if (g_opt_passer && passers != 0) {
         passer_extra_terms(s, side, passers, attack_unions, &terms.endgame_extra);
+    }
+    if (g_opt_locked_mob != 0) {
+        int locked = chess_count_bits((s->bb[PIECE_WHITE][PIECE_PAWN] << 8) & s->bb[PIECE_BLACK][PIECE_PAWN]);
+        if (locked != 0) {
+            int mob = attack_unions->mobility[side][PIECE_KNIGHT] + attack_unions->mobility[side][PIECE_BISHOP] +
+                      attack_unions->mobility[side][PIECE_ROOK] + attack_unions->mobility[side][PIECE_QUEEN];
+            int bonus = g_opt_locked_mob * locked * mob / 4;
+            eval_term_add(&terms.endgame_extra, bonus, bonus);
+        }
     }
     if (g_opt_king_diag != 0) {
         int u = king_diag_pressure(s, side);
