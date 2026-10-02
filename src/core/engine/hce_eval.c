@@ -5,10 +5,10 @@
 
 const int hce_piece_value[PIECE_TYPE_COUNT] = {
     0,
-    1367,
-    435,
-    455,
-    678,
+    1346,
+    424,
+    454,
+    669,
     100,
 };
 
@@ -31,129 +31,129 @@ static uint64_t g_passed_masks[PIECE_COLOR_COUNT][64];
 
 static const int k_pawn_pst[64] = {
        0,    0,    0,    0,    0,    0,    0,    0,
-      44,   83,   33,   37,   61,   38,    5,   59,
-       8,   17,   42,   40,   67,   42,   29,   39,
-       4,    8,   41,   71,   53,   68,   13,    2,
-     -13,  -10,   11,   33,   35,   30,    3,  -13,
-     -17,  -17,   -9,   -4,    8,   15,   25,  -14,
-     -30,  -15,   -4,  -14,  -10,   30,   19,  -21,
+      55,  151,   48,   36,  102,   52,   -6,   66,
+       8,   30,   58,   58,   78,   67,   35,   47,
+       0,    5,   36,   76,   57,   81,   16,    6,
+     -19,  -11,    7,   30,   30,   31,    5,  -15,
+     -26,  -21,  -17,   -7,    1,   18,   27,  -13,
+     -40,  -23,  -11,  -20,  -16,   33,   23,  -24,
        0,    0,    0,    0,    0,    0,    0,    0,
 };
 static const int k_pawn_pst_eg[64] = {
        0,    0,    0,    0,    0,    0,    0,    0,
-      27,   14,   37,   13,   38,   24,   19,   40,
-      34,   11,    4,   23,   12,   17,   23,   23,
-      27,   28,   13,    7,    9,    5,   29,   17,
-      16,   17,   15,   10,   10,    1,   18,   18,
-      12,   11,   11,   16,   16,   12,   -1,    9,
-      18,   11,   17,   18,   19,    6,    2,   16,
+      20,    7,   63,   12,   34,   35,   17,   39,
+      46,   18,    4,   23,   15,   20,   26,   27,
+      31,   36,   20,    9,    6,    5,   34,   22,
+      27,   26,   19,   11,   13,    2,   24,   26,
+      19,   16,   17,   22,   21,   16,    3,   14,
+      27,   17,   22,   24,   21,    7,    4,   19,
        0,    0,    0,    0,    0,    0,    0,    0,
 };
 
 static const int k_knight_pst[64] = {
-     -84,  -43,  -32,  -35,  -20,  -29,  -46,  -63,
-     -69,  -17,  -12,   10,   11,    2,  -28,  -42,
-     -23,    0,    4,   14,   17,   17,   13,  -23,
-      -4,  -18,   19,   25,   31,   25,   -4,    3,
-     -17,   -2,   24,   45,   35,   18,   -4,   27,
-     -12,    4,   19,   50,   41,   14,   35,  -25,
-     -43,  -26,   -4,   10,    7,   10,  -38,  -42,
-    -206,  -35,  -38,  -23,  -23,  -49,  -46,  -89,
+    -109,  -48,  -35,  -48,  -12,  -34,  -49,  -72,
+     -88,  -19,  -13,    8,    7,    1,  -29,  -48,
+     -27,    1,   -1,   13,   18,   18,   19,  -22,
+     -11,  -35,   23,   26,   31,   29,    2,   12,
+     -11,   -6,   21,   59,   39,   34,   -4,   46,
+      -3,   17,   27,   93,   77,   28,   61,  -20,
+     -31,  -40,   -4,   24,    5,   28,  -65,  -26,
+    -313,  -31,  -34,  -19,  -21, -102,  -49, -154,
 };
 static const int k_knight_pst_eg[64] = {
-     -38,  -39,  -38,  -23,  -34,  -28,  -44,  -32,
-     -30,  -25,   -9,  -17,  -17,  -16,  -24,  -25,
-     -34,  -13,    3,   11,   -1,   -4,  -10,  -17,
-     -15,   -1,   14,   21,   26,   12,    6,  -23,
-     -11,   14,   24,   27,   23,   22,   13,  -15,
-     -12,    1,    3,   17,   11,   13,    0,  -11,
-     -25,  -19,   -9,   16,    9,    9,  -13,  -33,
-     -55,  -21,  -25,  -14,   -7,  -25,  -17,  -32,
+     -58,  -57,  -53,  -31,  -44,  -54,  -64,  -34,
+     -40,  -37,  -15,  -22,  -20,  -28,  -37,  -31,
+     -48,  -21,    4,   12,    1,   -6,  -15,  -23,
+     -14,    1,   20,   25,   32,   16,   11,  -29,
+      -9,   15,   33,   26,   21,   31,   16,  -21,
+     -14,    5,   -1,    9,    5,   19,   -5,  -11,
+     -33,  -22,  -14,   28,   12,    7,  -12,  -51,
+     -79,  -22,  -26,  -11,   -2,  -27,  -14,  -37,
 };
 
 static const int k_bishop_pst[64] = {
-     -22,   -1,  -12,  -20,    0,  -18,   -5,  -22,
-     -16,   28,   14,   -3,   14,    3,   39,   -5,
-     -11,   16,   21,   -8,    5,   26,   24,    5,
-      11,  -12,  -19,   19,   12,   -8,  -10,   10,
-       3,   -7,  -13,   25,   16,   -9,   -3,   -8,
-      -7,   -1,   10,   20,   14,    4,    6,   15,
-      -5,   -1,  -23,    5,    4,   -8,    9,  -40,
-     -31,   -4,  -13,   -8,   -9,  -17,   -6,  -22,
+     -21,    7,   -9,  -32,   11,  -16,    1,  -24,
+      -3,   32,   41,   -2,   17,    4,   47,    6,
+      -8,   15,   26,   -5,    4,   33,   19,   10,
+       6,  -21,  -22,   20,   12,  -13,   -9,   17,
+       9,   -9,  -16,   28,   14,  -11,   -4,  -15,
+       5,   -6,   16,   16,   23,   13,   11,   27,
+       3,    7,  -39,    5,    3,  -23,    8,  -71,
+     -40,    0,  -15,   -4,   -7,  -28,   -3,  -19,
 };
 static const int k_bishop_pst_eg[64] = {
-     -20,   -6,  -17,   -6,   -9,   -4,    3,   -5,
-      -3,  -29,   -9,   -6,  -13,  -13,  -27,  -12,
-      -8,    3,  -11,   14,    3,   -2,  -13,  -18,
-      -9,   -3,    8,    4,    9,    7,    5,   -5,
-      -5,   18,    8,    8,    4,   -3,   -7,  -15,
-     -15,   13,    5,    5,   -6,    7,   10,    7,
-     -11,    0,   -7,    7,   10,    5,   15,    3,
-     -14,    2,    3,    2,   -4,   -9,    4,  -12,
+     -25,  -11,  -21,   -5,  -14,   -4,    2,   -6,
+      -6,  -40,  -19,   -7,  -18,  -17,  -33,  -19,
+      -5,    5,  -16,    9,    3,   -8,  -27,  -25,
+     -17,   -1,    6,    3,    4,    5,    1,   -9,
+      -7,   19,    7,    6,   -4,   -4,  -12,  -22,
+     -18,   23,    6,    2,  -10,   13,   12,   16,
+     -15,    6,   -1,    6,   12,   11,   21,    1,
+     -15,    4,    6,    5,   -3,  -13,    7,  -10,
 };
 
 static const int k_rook_pst[64] = {
-     -13,   -5,   -6,    5,    5,   12,  -23,  -20,
-     -40,  -32,  -10,  -13,  -14,   -8,  -25,  -57,
-     -29,  -24,  -30,   -7,  -12,   -6,  -16,  -28,
-     -17,  -16,   -3,  -15,   -2,  -21,    2,  -16,
-       6,    2,    2,   -4,   -6,   -2,    7,  -10,
-       4,   13,    6,   -4,   16,   13,   10,   -2,
-      13,   28,   20,   13,   24,   -1,   11,   13,
-      17,    9,   15,    0,   -3,    4,    2,    1,
+     -23,  -13,  -16,  -16,    5,   -1,  -28,  -31,
+     -62,  -50,  -32,  -25,  -28,  -11,  -35,  -73,
+     -45,  -44,  -54,  -16,   -6,  -20,  -28,  -35,
+     -28,  -36,  -18,  -34,  -14,  -36,   -4,  -25,
+       5,   -4,   -4,  -14,  -15,    0,    8,   -9,
+       4,   19,   10,   -1,   30,   27,   20,    0,
+       8,   38,   16,   15,   37,  -14,    9,    4,
+      29,   13,   25,    2,   -3,    6,    5,    2,
 };
 static const int k_rook_pst_eg[64] = {
-      -8,  -16,  -18,  -27,  -26,  -27,   -5,  -10,
-     -16,  -13,   -8,  -12,  -20,  -15,  -16,   -7,
-       1,    6,    1,   -1,   -4,   -7,    2,    2,
-       8,   11,    2,    5,   -5,    7,    1,   -3,
-      19,   14,   16,    5,   11,   10,   -3,    9,
-      37,   23,   20,   20,   20,   20,   16,    9,
-      23,   14,   25,   20,   17,   27,   20,   24,
-      14,   19,   10,   12,    7,   23,   13,   13,
+      -6,  -18,  -20,  -23,  -35,  -26,   -9,  -11,
+     -11,   -8,   -6,  -11,  -19,  -16,  -25,   -6,
+       5,   15,    8,   -2,   -8,   -4,    7,    3,
+      18,   20,   11,   17,   -6,   15,   -3,   -5,
+      29,   23,   26,    9,   17,   17,   -2,   10,
+      53,   30,   31,   27,   31,   29,   27,   15,
+      27,   20,   33,   30,   20,   40,   22,   30,
+      15,   28,   17,   18,   18,   43,   21,   21,
 };
 
 static const int k_queen_pst[64] = {
-     -32,    2,    0,   -1,    5,   -4,    3,   -9,
-     -24,  -31,   -2,   -8,    8,    9,   15,   -3,
-     -18,   -2,    4,    7,   17,   13,   16,    4,
-     -22,   -9,   -2,    7,   10,   -2,   -9,    1,
-       0,  -20,  -13,  -10,    1,   -4,   -4,  -27,
-     -26,   -3,    9,    6,    4,   12,   12,   -1,
-     -16,   16,   15,   12,   25,   10,   -3,   -6,
-     -20,  -13,  -14,   -4,  -25,  -10,   -9,  -18,
+     -47,    4,    8,    5,   13,    7,   12,    0,
+     -46,  -56,   -3,   -7,   10,   15,   17,    3,
+     -23,   -3,    7,    4,   27,   17,   26,    8,
+     -31,  -12,  -12,    6,  -10,   -1,  -22,   -1,
+       1,  -17,  -24,  -17,   -7,  -14,    0,  -30,
+     -31,    4,    8,    7,    5,   14,   17,    4,
+     -21,   14,   23,   18,   35,   13,   -1,   -3,
+     -27,  -19,   -9,    4,  -28,  -12,   -9,  -15,
 };
 static const int k_queen_pst_eg[64] = {
-     -12,    7,    3,    3,    6,    0,    5,   -5,
-      -1,    6,    2,   -4,    9,    7,    6,   -2,
-      -5,   -5,   -8,    3,    7,    8,    5,    9,
-      -9,   -8,   -2,    0,   -1,    9,   -3,   -2,
-       4,    3,    8,   14,    1,    6,   -7,    5,
-      -7,   -7,   19,   -7,    6,    6,    8,   -6,
-     -12,    0,  -21,  -18,  -12,   -4,   -6,   -4,
-     -17,  -12,  -10,  -26,   -9,  -11,   -5,  -11,
+     -14,   11,    7,   13,   13,   10,   12,    1,
+      10,   18,    7,   -4,   13,   11,    8,    1,
+      -2,   -7,  -10,    8,   14,   17,    7,   19,
+     -11,  -13,   -3,    4,   -6,   12,   -8,   -5,
+       1,   11,   12,   21,    0,    4,   -9,   12,
+     -10,  -19,   26,  -17,   12,    8,   12,   -9,
+     -18,   -2,  -43,  -30,  -25,  -10,  -12,   -5,
+     -28,  -25,  -16,  -45,  -14,  -21,   -6,  -11,
 };
 
 static const int k_king_mid_pst[64] = {
-      -4,   21,   47,  -12,   25,  -14,   43,   10,
-       3,   -8,    6,   -9,   -5,    2,    3,    7,
-       2,    0,  -24,  -13,  -34,   -7,   -5,  -20,
-       2,    0,   -5,   -6,   -8,  -15,   -1,  -17,
-       5,    2,   -2,    2,   -2,   -8,   -4,    0,
-       2,    6,    0,    4,    4,    4,    6,    1,
-       0,    5,    1,    2,    1,    1,    2,    1,
-      -1,    3,    0,    0,    1,    1,    1,    0,
+      -6,   39,   55,  -14,   27,  -16,   55,   26,
+       9,  -17,   12,   -7,   -8,   11,   15,   11,
+       7,   -2,  -29,  -15,  -46,  -14,    6,  -36,
+       4,   -4,   -4,   -6,  -18,  -29,   -2,  -32,
+       7,   -4,   -4,    0,   -4,  -13,   -9,    0,
+       1,    8,    1,    6,    7,    6,    9,    1,
+       1,    7,    2,    3,    2,    1,    2,   -1,
+      -1,    6,    0,    0,    3,    1,    1,    0,
 };
 
 static const int k_king_end_pst[64] = {
-     -31,  -28,   -5,    0,  -15,   -6,  -42,  -47,
-     -27,   -5,   -9,  -10,  -11,  -13,   -1,  -28,
-     -12,    6,  -16,  -23,  -19,  -17,   -8,  -11,
-       8,   10,  -11,   -7,  -11,  -21,   17,   -4,
-      14,   37,    7,    7,   11,    3,   34,   19,
-      25,   28,    4,   23,   17,   15,   22,   28,
-      -4,   20,    7,   17,    9,   25,   21,    9,
-     -14,    2,   -1,    3,    1,    5,    5,   -3,
+     -49,  -50,  -18,   -9,  -22,  -13,  -58,  -73,
+     -38,   -8,  -15,  -14,  -16,  -23,  -11,  -39,
+     -24,    0,  -20,  -31,  -22,  -18,  -14,  -15,
+      13,   10,  -14,  -11,  -14,  -28,   16,   -3,
+      21,   50,    9,    5,    6,    7,   54,   28,
+      38,   49,   10,   40,   19,   30,   30,   52,
+      -8,   35,   13,   27,   14,   43,   37,    7,
+     -23,    8,    5,    3,    2,    8,    8,   -3,
 };
 
 static inline int mirror_sq(int sq) {
@@ -175,7 +175,7 @@ static int g_opt_scale = 1;
 // the defender. 0 = off. Added outside the Texel-tuned terms (residual), so a
 // refit keeps W fixed. Fitted on VidBot's Lichess positions (2026-10-02),
 // where the HCE overrated the side under such pressure by ~50 cp at u >= 5.
-static int g_opt_king_diag = 0;
+static int g_opt_king_diag = 14;
 
 bool hce_eval_set_option(const char *name, int value) {
     int *slot = NULL;
@@ -828,60 +828,60 @@ typedef struct EvalSideTerms {
     EvalTermPair endgame_extra;
 } EvalSideTerms;
 
-static const int k_passed_mg_scale = -23;
-static const int k_passed_eg_scale = 88;
-static const int k_king_mg_scale = -119;
-static const int k_king_eg_scale = -236;
-static const int k_hanging_mg_scale = -22;
-static const int k_hanging_eg_scale = -74;
-static const int k_queen_mg_scale = -14;
-static const int k_queen_eg_scale = -60;
-static const int k_pawn_push_mg = 18;
-static const int k_pawn_push_eg = 11;
-static const int k_pawn_threat_minor_mg = 61;
-static const int k_pawn_threat_minor_eg = 10;
-static const int k_pawn_threat_major_mg = 2;
-static const int k_pawn_threat_major_eg = 18;
+static const int k_passed_mg_scale = -26;
+static const int k_passed_eg_scale = 71;
+static const int k_king_mg_scale = -101;
+static const int k_king_eg_scale = -294;
+static const int k_hanging_mg_scale = -21;
+static const int k_hanging_eg_scale = -66;
+static const int k_queen_mg_scale = -13;
+static const int k_queen_eg_scale = -39;
+static const int k_pawn_push_mg = 20;
+static const int k_pawn_push_eg = 9;
+static const int k_pawn_threat_minor_mg = 66;
+static const int k_pawn_threat_minor_eg = 19;
+static const int k_pawn_threat_major_mg = -3;
+static const int k_pawn_threat_major_eg = 26;
 // Named copies of eval literals that appear in both the cached pawn path and
 // the feature-dump path, so texel_apply_tune.py can patch one definition.
-static const int k_iso_mg = -18;
-static const int k_iso_eg = -19;
-static const int k_dbl_mg = -12;
-static const int k_dbl_eg = -2;
-static const int k_mob_n_mg = -11;
-static const int k_mob_n_eg = -3;
-static const int k_mob_b_mg = 2;
-static const int k_mob_b_eg = 6;
+static const int k_iso_mg = -16;
+static const int k_iso_eg = -18;
+static const int k_dbl_mg = -14;
+static const int k_dbl_eg = -3;
+static const int k_mob_n_mg = -13;
+static const int k_mob_n_eg = -5;
+static const int k_mob_b_mg = 1;
+static const int k_mob_b_eg = 5;
 static const int k_mob_r_mg = -6;
-static const int k_mob_r_eg = 5;
-static const int k_mob_q_mg = -9;
-static const int k_mob_q_eg = 17;
-static const int k_rook_open_mg = 59;
-static const int k_rook_open_eg = -11;
-static const int k_rook_semi_mg = 30;
+static const int k_mob_r_eg = 3;
+static const int k_mob_q_mg = -8;
+static const int k_mob_q_eg = 18;
+static const int k_rook_open_mg = 70;
+static const int k_rook_open_eg = -17;
+static const int k_rook_semi_mg = 34;
 static const int k_rook_semi_eg = 8;
 // Stage-B feature weights: zero until texel-fitted, so the engine plays
 // identically to the pre-stage-B build while the tunedump exposes the counts.
-static const int k_safe_check_n_mg = -58;
-static const int k_safe_check_n_eg = 2;
-static const int k_safe_check_b_mg = -22;
-static const int k_safe_check_b_eg = -19;
-static const int k_safe_check_r_mg = -58;
-static const int k_safe_check_r_eg = -12;
-static const int k_safe_check_q_mg = -36;
-static const int k_safe_check_q_eg = -14;
-static const int k_bishop_pair_mg = 53;
-static const int k_bishop_pair_eg = 55;
-static const int k_mob_safe_n_mg = 21;
+static const int k_safe_check_n_mg = -83;
+static const int k_safe_check_n_eg = 7;
+static const int k_safe_check_b_mg = -26;
+static const int k_safe_check_b_eg = -25;
+static const int k_safe_check_r_mg = -87;
+static const int k_safe_check_r_eg = -6;
+static const int k_safe_check_q_mg = -41;
+static const int k_safe_check_q_eg = -15;
+static const int k_bishop_pair_mg = 57;
+static const int k_bishop_pair_eg = 61;
+static const int k_mob_safe_n_mg = 22;
 static const int k_mob_safe_n_eg = 2;
 static const int k_mob_safe_b_mg = 10;
-static const int k_mob_safe_b_eg = -2;
-static const int k_mob_safe_r_mg = 10;
-static const int k_mob_safe_r_eg = 4;
+static const int k_mob_safe_b_eg = -1;
+static const int k_mob_safe_r_mg = 9;
+static const int k_mob_safe_r_eg = 6;
 static const int k_mob_safe_q_mg = 10;
-static const int k_mob_safe_q_eg = -13;
-static const int k_passer_rank_mg[6] = {-31, -20, -24, 1, 22, 38};
-static const int k_passer_rank_eg[6] = {2, -12, -9, -14, 19, 24};
+static const int k_mob_safe_q_eg = -14;
+static const int k_passer_rank_mg[6] = {-37, -33, -32, 5, 38, 71};
+static const int k_passer_rank_eg[6] = {4, -10, -6, -14, 23, 24};
 
 #define HCE_PAWN_CACHE_BITS 16u
 #define HCE_PAWN_CACHE_SIZE (1u << HCE_PAWN_CACHE_BITS)
