@@ -496,6 +496,9 @@ class BotRunner:
         self.next_pair_attempt_at = time.time() + max(0.0, cfg.initial_pair_delay_seconds)
         self.pair_rate_limit_count = 0
         self.outgoing_challenge_times: deque[float] = deque()
+        # Our own ratings per speed (refreshed now and then) for rating-aware pairing.
+        self.my_ratings: Dict[str, int] = {}
+        self.my_ratings_at = 0.0
         self.pair_wait_logs: Dict[str, float] = {}
         self.rng = random.SystemRandom()
         self.lock = threading.Lock()
@@ -570,6 +573,35 @@ class BotRunner:
         if slot_kind == "human":
             return reserved_human < self.cfg.max_human_games
         return False
+
+    @staticmethod
+    def _speed_of(spec: SeekSpec) -> str:
+        # Lichess speed categories by estimated game time (limit + 40 * increment).
+        est = spec.initial_minutes * 60 + 40 * spec.increment_seconds
+        if est < 29:
+            return "ultraBullet"
+        if est < 179:
+            return "bullet"
+        if est < 479:
+            return "blitz"
+        if est < 1499:
+            return "rapid"
+        return "classical"
+
+    def _refresh_my_ratings(self) -> None:
+        if time.time() - self.my_ratings_at < 900.0:
+            return
+        try:
+            perfs = self.api.get_json("/api/account").get("perfs", {}) or {}
+            ratings = {k: int(v["rating"]) for k, v in perfs.items()
+                       if isinstance(v, dict) and isinstance(v.get("rating"), (int, float))}
+        except Exception as exc:  # pairing still works without ratings
+            log_event("pair", f"could not refresh own ratings: {exc}")
+            ratings = {}
+        with self.lock:
+            if ratings:
+                self.my_ratings = ratings
+            self.my_ratings_at = time.time()
 
     def _choose_bot_spec(self) -> SeekSpec:
         spec = self.cfg.seek_specs[self.spec_cursor % len(self.cfg.seek_specs)]
@@ -666,13 +698,14 @@ class BotRunner:
         self.pair_wait_logs[key] = now
         log_event("pair", message)
 
-    def _eligible_bot_username_locked(self, bots: List[dict]) -> Optional[str]:
+    def _eligible_bot_username_locked(self, bots: List[dict], speed: str = "") -> Optional[str]:
         if not bots:
             return None
 
         active_targets = {game.target.lower() for game in self.active_games.values() if game.target}
         pending_targets = {slot.target.lower() for slot in self.pending_slots.values() if slot.target}
         candidates: List[str] = []
+        ratings: Dict[str, int] = {}
         now = time.time()
 
         for _ in range(len(bots)):
@@ -691,9 +724,22 @@ class BotRunner:
             if cooldown_until > now:
                 continue
             candidates.append(username)
+            perf = ((entry.get("perfs") or {}).get(speed) or {}) if speed else {}
+            if isinstance(perf.get("rating"), (int, float)):
+                ratings[username] = int(perf["rating"])
         if not candidates:
             return None
-        return self.rng.choice(candidates)
+        mine = self.my_ratings.get(speed) if speed else None
+        if mine is None or not ratings:
+            return self.rng.choice(candidates)
+        # Prefer opponents near our rating (most bots decline far-off ratings);
+        # if none are within the window, take one of the closest few.
+        rated = [c for c in candidates if c in ratings]
+        near = [c for c in rated if abs(ratings[c] - mine) <= 350]
+        if near:
+            return self.rng.choice(near)
+        rated.sort(key=lambda c: abs(ratings[c] - mine))
+        return self.rng.choice(rated[:5]) if rated else self.rng.choice(candidates)
 
     def _create_outgoing_bot_challenge(self, reserved_id: str, username: str, spec: SeekSpec) -> bool:
         form = {
@@ -739,9 +785,22 @@ class BotRunner:
                 body = (response.text or "").strip().replace("\n", " ")
                 if body:
                     details = f" body={body[:180]}"
+            opponent_capped_s = 0.0
+            if response is not None and status_code == 400:
+                try:
+                    limit = (response.json() or {}).get("ratelimit") or {}
+                    if limit.get("key") == "bot.vsBot.day":
+                        opponent_capped_s = float(limit.get("seconds") or 0.0)
+                except ValueError:
+                    pass
             with self.lock:
                 self.pending_slots.pop(reserved_id, None)
-                self.bot_cooldowns[username.lower()] = time.time() + 900.0
+                self.bot_cooldowns[username.lower()] = time.time() + max(900.0, opponent_capped_s)
+                if opponent_capped_s > 0 and self.outgoing_challenge_times:
+                    # The opponent hit its daily bot-game cap: skip it until the
+                    # cap resets and do not count this attempt against our hour.
+                    self.outgoing_challenge_times.pop()
+                    self.next_pair_attempt_at = time.time() + 30.0
                 if status_code == 429:
                     self.pair_rate_limit_count += 1
                     backoff_s = max(
@@ -795,6 +854,7 @@ class BotRunner:
                 self._log_pair_wait("slots", f"all bot slots busy ({self._counts_text_locked()})")
                 return
 
+        self._refresh_my_ratings()
         online_bots = self._fetch_online_bots(limit=self.cfg.online_bot_fetch_limit)
         if not online_bots:
             log_event("pair", "no online bots returned from /api/bot/online")
@@ -803,14 +863,14 @@ class BotRunner:
         with self.lock:
             if not self._can_reserve_slot_locked("bot"):
                 return
-            username = self._eligible_bot_username_locked(online_bots)
+            spec = self._choose_bot_spec()
+            username = self._eligible_bot_username_locked(online_bots, self._speed_of(spec))
             if username is None:
                 self._log_pair_wait(
                     "eligible",
                     f"no eligible online bot found among {len(online_bots)} fetched bots; cooldowns/active games may be filtering them",
                 )
                 return
-            spec = self._choose_bot_spec()
             now = time.time()
             reserved_id = f"outgoing:{username.lower()}:{int(now * 1000)}"
             self._reserve_pending_slot_locked(reserved_id, "bot", target=username, outgoing=True)
