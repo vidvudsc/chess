@@ -124,6 +124,9 @@ class BotConfig:
     initial_pair_delay_seconds: float = 0.0
     syzygy_path: str = ""
     hash_mb: int = 0
+    # Accounts never to challenge or accept (e.g. a sibling bot of the same
+    # owner, so the two never trade rating points). Lowercase usernames.
+    avoid_users: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -680,7 +683,7 @@ class BotRunner:
             if not username:
                 continue
             username_lc = username.lower()
-            if username_lc == self.username_lc:
+            if username_lc == self.username_lc or username_lc in self.cfg.avoid_users:
                 continue
             if username_lc in active_targets or username_lc in pending_targets:
                 continue
@@ -994,6 +997,9 @@ class BotRunner:
 
         challenger_title = challenge.get("challenger", {}).get("title")
         is_bot = challenger_title == "BOT"
+        if challenger_id in self.cfg.avoid_users or str(challenger_name).lower() in self.cfg.avoid_users:
+            self._decline(cid, "generic", f"{challenger_name} is on the avoid list")
+            return
         if is_bot and not self.cfg.accept_bots:
             self._decline(cid, "noBot", "bot challenge")
             return
@@ -2152,6 +2158,8 @@ def parse_args() -> BotConfig:
         initial_pair_delay_seconds=initial_pair_delay_seconds,
         syzygy_path=args.syzygy_path,
         hash_mb=max(0, args.hash_mb),
+        avoid_users=frozenset(u.strip().lower() for u in
+                              os.environ.get("LICHESS_BOT_AVOID_USERS", "").split(",") if u.strip()),
     )
 
 
