@@ -1061,8 +1061,9 @@ class BotRunner:
 
         challenger_title = challenge.get("challenger", {}).get("title")
         is_bot = challenger_title == "BOT"
-        if challenger_id in self.cfg.avoid_users or str(challenger_name).lower() in self.cfg.avoid_users:
-            self._decline(cid, "generic", f"{challenger_name} is on the avoid list")
+        if rated and (challenger_id in self.cfg.avoid_users or str(challenger_name).lower() in self.cfg.avoid_users):
+            # Sibling bots of the same owner may play casual games, never rated.
+            self._decline(cid, "casual", f"{challenger_name} is on the avoid list (rated)")
             return
         if is_bot and not self.cfg.accept_bots:
             self._decline(cid, "noBot", "bot challenge")
