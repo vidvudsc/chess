@@ -771,7 +771,10 @@ class BotRunner:
                     created_at=slot.created_at,
                 )
                 now = time.time()
-                self.bot_cooldowns[username.lower()] = now + 900.0
+                # Rest an opponent we just challenged for two hours so the games
+                # spread over many bots; with few rating-matched bots online a
+                # 15-minute rest made one strong engine 22 of 30 opponents.
+                self.bot_cooldowns[username.lower()] = now + 7200.0
                 self.pair_rate_limit_count = 0
                 counts_text = self._counts_text_locked()
             log_event("pair", f"challenged {username} {spec.label} id={challenge_id} ({counts_text})")
