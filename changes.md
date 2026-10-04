@@ -4,6 +4,20 @@ Branch: `engine-strength/king-safety-quiet-checks`
 
 Goal: improve the HCE search/eval toward much stronger Lichess bot play without using AI/NN backends. Keep only changes that survive tests and statistically useful matches. When a change creates massive blunders, inspect and understand before continuing.
 
+## 2026-09-25 HCE Runtime Repair
+
+Fixed finished-game engine leaks, cancellable stream cleanup, clean-EOF retry
+spinning, and missed-event game reconciliation. Added an HCE-only clock policy
+that preserves deployed fast-control caps while spending available rapid and
+classical time, with existing panic limits. Added a runtime-only Umbrel rollout
+that preserves the exact live engine/model and enforces a four-logical-CPU
+service ceiling. NN evaluator, search, training, and model files are unchanged.
+
+Targeted rook-endgame search/evaluation candidates failed to recover the
+reference move and were not promoted. Runtime tests and clock-match evidence,
+including the distinction between local and deployed baselines, are documented
+in `docs/HCE_RUNTIME_REPAIR_20260925.md`.
+
 ## 2026-07-05 HCE Audit: Solid Opening Book Kept
 
 - Full HCE pass reviewed search/eval/book surfaces for already-rejected ideas

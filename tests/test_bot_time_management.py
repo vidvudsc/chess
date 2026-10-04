@@ -302,6 +302,7 @@ def test_event_handler_failure_does_not_stop_main_stream() -> None:
     runner = object.__new__(BotRunner)
     runner.api = FakeApi()
     runner.cfg = FakeConfig()
+    runner._maintain_games = lambda stop: stop.wait()
     handled = []
 
     def dispatch(event: dict) -> None:

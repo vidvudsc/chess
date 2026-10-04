@@ -10,6 +10,7 @@ __pycache__/
 *.bin
 *.jsonl
 !data/positions/hce_position_suite.jsonl
+!data/positions/hce_quiet_diagnostic_cases.jsonl
 *.nnb
 *.pt
 src/core/bot/nn/model/*

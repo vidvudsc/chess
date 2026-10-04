@@ -1,5 +1,31 @@
 # HCE Experiments
 
+## 2026-09-12: Quiet-move search/evaluation diagnosis
+Status: diagnostic tooling and corpus kept; no production search change.
+
+Replayed 137 distinct quiet-move errors from 20 historical losses against the
+current `c3514fc` HCE with fresh processes, one thread, and no book. Compared
+120 ms and 1,200 ms baseline searches with isolated 1,200 ms no-LMP, no-LMR,
+and combined ablations. Stockfish 18 rescored all candidate moves at the same
+root and depth 14. Nine mate-horizon cases were kept separate.
+
+Mean errors on the shared 128 non-mate cases were 66.88, 57.62, 57.39, 65.76,
+and 58.45 cp respectively. The no-LMP difference is effectively a tie in this
+diagnostic; no-LMR loses depth without improving choice quality. Of the 128
+historical labels, only 87 still exceeded the 50 cp error threshold under the
+current reference configuration. Do not treat all archived labels as ground
+truth for another tune.
+
+Forty cases remained poor under all settings. A follow-up on eight difficult
+competitive positions from different games used 12-second HCE searches and
+depth-18 reference comparisons: two recovered the best reference choice; six
+remained 64–207 cp behind. This supports focused evaluation/search tracing,
+not a global pruning change or an Elo claim. No candidate was promoted or
+deployed. The four builds were warning-free and three diagnostic tests passed.
+
+Full method, results, limits, and reproduction commands:
+[`HCE_QUIET_DIAGNOSIS_20260912.md`](HCE_QUIET_DIAGNOSIS_20260912.md).
+
 ## 2026-07-12: Lazy SMP + opponent-time pondering
 Status: SMP confirmed and committed; pondering confirmed at 60g, 120g running.
 
