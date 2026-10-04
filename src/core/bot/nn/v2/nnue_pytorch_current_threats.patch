@@ -1,0 +1,178 @@
+diff --git a/data_loader/cpp/lib/parallel_dataloader.h b/data_loader/cpp/lib/parallel_dataloader.h
+index 1b4cd27..8768340 100644
+--- a/data_loader/cpp/lib/parallel_dataloader.h
++++ b/data_loader/cpp/lib/parallel_dataloader.h
+@@ -173,7 +173,11 @@ namespace binpack
+                                     #if defined(_MSC_VER)
+                                     gmtime_s(&result, &time);
+                                     #else
++#ifdef _WIN32
++                                    gmtime_s(&result, &time);
++#else
+                                     gmtime_r(&time, &result);
++#endif
+                                     #endif
+                                 };
+ 
+diff --git a/data_loader/cpp/training_data_loader.cpp b/data_loader/cpp/training_data_loader.cpp
+index 328db6a..7bcc8c8 100644
+--- a/data_loader/cpp/training_data_loader.cpp
++++ b/data_loader/cpp/training_data_loader.cpp
+@@ -82,7 +82,9 @@ struct HalfKAv2_hmExtractor: IFeatureExtractor {
+     }
+ };
+ 
+-constexpr int numvalidtargets[12] = {6, 6, 10, 10, 8, 8, 8, 8, 10, 10, 0, 0};
++// Stockfish master (July 2026): pawn diagonal threats only target knights and
++// rooks. Pawn structure is learned by its separate pawn feature block there.
++constexpr int numvalidtargets[12] = {4, 4, 10, 10, 8, 8, 8, 8, 10, 10, 0, 0};
+ 
+ using ThreatOffsetTable = std::array<std::array<int, 66>, 12>;
+ 
+@@ -119,9 +121,6 @@ constexpr auto threatfeaturecalc = []() {
+                 {
+                     Bitboard attacks =
+                       bb::pawnAttacks(Bitboard::square(Square(from)), piecetbl[piece].color());
+-                    int      push = piecetbl[piece].color() == Color::White ? 8 : -8;
+-                    Bitboard s    = Bitboard::square(Square(from + push));
+-                    attacks |= s;
+                     squareoffset += attacks.count();
+                 }
+             }
+@@ -134,7 +133,7 @@ constexpr auto threatfeaturecalc = []() {
+ 
+ constexpr ThreatOffsetTable threatoffsets  = threatfeaturecalc.table;
+ constexpr int               threatfeatures = threatfeaturecalc.totalfeatures;
+-static_assert(threatfeatures == 60720);
++static_assert(threatfeatures == 59808);
+ 
+ struct FullThreats {
+     static constexpr std::string_view NAME = "Full_Threats";
+@@ -143,9 +142,9 @@ struct FullThreats {
+     static constexpr int PIECE_NB            = 12;
+     static constexpr int COLOR_NB            = 2;
+     static constexpr int PIECE_TYPE_NB       = 6;
+-    static constexpr int MAX_ACTIVE_FEATURES = 128;
++    static constexpr int MAX_ACTIVE_FEATURES = 256;
+ 
+-    static constexpr int INPUTS = threatfeatures;  // 60,720
++    static constexpr int INPUTS = threatfeatures;  // 59,808
+ 
+     // clang-format off
+     static constexpr Square OrientTBL[COLOR_NB][SQUARE_NB] = {
+@@ -168,7 +167,7 @@ struct FullThreats {
+     };
+ 
+     static constexpr int map[PIECE_TYPE_NB][PIECE_TYPE_NB] = {
+-      {0, 1, -1, 2, -1, -1},
++      {-1, 0, -1, 1, -1, -1},
+       {0, 1, 2, 3, 4, -1},
+       {0, 1, 2, 3, -1, -1},
+       {0, 1, 2, 3, -1, -1},
+@@ -196,17 +195,6 @@ struct FullThreats {
+         Bitboard attacks = (attkr.type() == PieceType::Pawn)
+                            ? bb::pawnAttacks(Bitboard::square(Square(from)), attkr.color())
+                            : bb::detail::pseudoAttacks()[attkr.type()][Square(from)];
+-        if (attkr.type() == PieceType::Pawn)
+-        {
+-            if (attkr.color() == Color::White)
+-            {
+-                attacks |= Bitboard::square(Square(int(from) + 8));
+-            }
+-            else
+-            {
+-                attacks |= Bitboard::square(Square(int(from) - 8));
+-            }
+-        }
+         return int(threatoffsets[(int) attkr][65]
+                    + (int(attkd.color()) * (numvalidtargets[(int) attkr] / 2)
+                       + map[(int) attkr.type()][(int) attkd.type()])
+@@ -234,11 +222,8 @@ struct FullThreats {
+                 {
+                     auto right         = (c == Color::White) ? Offset(1, 1) : Offset(-1, -1);
+                     auto left          = (c == Color::White) ? Offset(-1, 1) : Offset(1, -1);
+-                    auto push          = (c == Color::White) ? Offset(0, 1) : Offset(0, -1);
+                     auto attacks_left  = bb.shifted(right) & pieces;
+                     auto attacks_right = bb.shifted(left) & pieces;
+-                    auto attacks_forward =
+-                      bb.shifted(push) & (pos.piecesBB(whitePawn) | pos.piecesBB(blackPawn));
+                     for (Square to : attacks_left)
+                     {
+                         Square from  = Square((int) to - (c == Color::White ? 9 : -9));
+@@ -261,17 +246,6 @@ struct FullThreats {
+                             k++;
+                         }
+                     }
+-                    for (Square to : attacks_forward)
+-                    {
+-                        Square from  = Square((int) to - (c == Color::White ? 8 : -8));
+-                        Piece  attkd = pos.pieceAt(to);
+-                        int    index = threat_index(color, attkr, from, to, attkd, ksq);
+-                        if (index >= 0)
+-                        {
+-                            features[k] = index;
+-                            k++;
+-                        }
+-                    }
+                 }
+                 else
+                 {
+diff --git a/data_loader/_native.py b/data_loader/_native.py
+index 6293b41..e5409fe 100644
+--- a/data_loader/_native.py
++++ b/data_loader/_native.py
+@@ -200,8 +200,8 @@ class CDataLoaderAPI:
+         ]
+ 
+ 
+-type SparseBatchPtr = ctypes._Pointer[SparseBatch]
+-type FenBatchPtr = ctypes._Pointer[FenBatch]
++SparseBatchPtr = ctypes.POINTER(SparseBatch)
++FenBatchPtr = ctypes.POINTER(FenBatch)
+ 
+ try:
+     c_lib = CDataLoaderAPI()
+diff --git a/data_loader/cpp/training_data_loader_abi.cpp b/data_loader/cpp/training_data_loader_abi.cpp
+--- a/data_loader/cpp/training_data_loader_abi.cpp
++++ b/data_loader/cpp/training_data_loader_abi.cpp
+@@ -52,5 +52,10 @@ NNUE_API NNUE_COLD void NNUE_CDECL destroy_fen_batch_stream(FenBatchStream* stre
+     delete stream;
+ }
+ 
++#if defined(__GNUC__) && !defined(__clang__)
++NNUE_API __attribute__((optimize("O1")))
++#else
++NNUE_API
++#endif
+-NNUE_API SparseBatchStream* NNUE_CDECL create_sparse_batch_stream(const char* feature_set_c,
++SparseBatchStream* NNUE_CDECL create_sparse_batch_stream(const char* feature_set_c,
+                                                              int                  concurrency,
+diff --git a/data_loader/cpp/training_data_loader.cpp b/data_loader/cpp/training_data_loader.cpp
+--- a/data_loader/cpp/training_data_loader.cpp
++++ b/data_loader/cpp/training_data_loader.cpp
+@@ -651,5 +651,8 @@ SparseBatch* FeaturedBatchStream::next() {
+     return nullptr;
+ }
+ 
++#if defined(__GNUC__) && !defined(__clang__)
++__attribute__((optimize("O1")))
++#endif
+ std::function<bool(const TrainingDataEntry&)> make_skip_predicate(DataloaderSkipConfig config) {
+     if (!config.filtered && !config.wld_filtered && config.random_fen_skipping <= 0
+@@ -675,6 +675,6 @@ std::function<bool(const TrainingDataEntry&)> make_skip_predicate(DataloaderSkip
+     std::array<double, 33> target_pc_weights_lut{};
+     double                 target_pc_weights_total = 0.0;
+ 
+-    auto desired_piece_count_weights = [&config](int pc) -> double {
++    auto desired_piece_count_weights = [config](int pc) -> double {
+         double x    = static_cast<double>(pc);
+         double y[5] = {config.pc_y0, config.pc_y1, config.pc_y2, config.pc_y3, config.pc_y4};
+@@ -730,7 +730,7 @@ std::function<bool(const TrainingDataEntry&)> make_skip_predicate(DataloaderSkip
+         size_t lut_size = static_cast<size_t>(config.soft_early_fen_skipping) + 1;
+         early_ply_accept_prob.resize(lut_size);
+ 
+-        auto interpolate_ply = [&config](double ply) -> double {
++        auto interpolate_ply = [config](double ply) -> double {
+             struct Pt {
+                 double x, y;
+             };

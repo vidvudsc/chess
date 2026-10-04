@@ -9,7 +9,14 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "core" / "bot" / "nn"))
 
-from features import encode_fen, encode_fen_halfka, encode_fen_slow  # noqa: E402
+from features import (  # noqa: E402
+    FULL_THREATS_DIM,
+    HALFKA_DIM,
+    encode_fen,
+    encode_fen_halfka,
+    encode_fen_halfka_threats,
+    encode_fen_slow,
+)
 from v2.train_binpack import mirror_halfkp_indices  # noqa: E402
 from v2.train_value import mirror_halfkp_indices as mirror_training_indices  # noqa: E402
 
@@ -74,9 +81,27 @@ def test_halfka_adds_both_kings_and_mirrors_in_range() -> None:
         raise AssertionError(f"mirrored HalfKAv2 feature out of range: {mapped.tolist()}")
 
 
+def test_full_threats_are_compressed_and_perspective_specific() -> None:
+    fen = "r1bq1rk1/ppp2ppp/2n2n2/3pp3/2B1P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - -"
+    base_white, base_black, _ = encode_fen_halfka(fen)
+    white, black, _ = encode_fen_halfka_threats(fen)
+    white_threats = white[len(base_white):]
+    black_threats = black[len(base_black):]
+    if not white_threats or not black_threats:
+        raise AssertionError("Full_Threats should activate tactical piece relationships")
+    for index in white_threats + black_threats:
+        if not (HALFKA_DIM <= index < HALFKA_DIM + FULL_THREATS_DIM):
+            raise AssertionError(f"compressed threat feature out of range: {index}")
+    if white_threats == black_threats:
+        raise AssertionError("threat features should be oriented to each king perspective")
+
+
 def main() -> None:
     test_fast_halfkp_matches_python_chess_encoder()
     test_fast_halfkp_rejects_missing_king()
+    test_mirrored_halfkp_collapses_horizontal_symmetry()
+    test_halfka_adds_both_kings_and_mirrors_in_range()
+    test_full_threats_are_compressed_and_perspective_specific()
     print("test_nn_features: OK")
 
 

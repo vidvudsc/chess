@@ -71,10 +71,15 @@ The current best-first order is:
 6. `google-deepmind/searchless_chess` for policy/search help, not first value NNUE
 
 The binpack datasets are the strongest public trail for NNUE value training.
-`train_binpack.py` now consumes them directly through Stockfish's official
-`nnue-pytorch` loader. Apply `nnue_pytorch_legacy_halfkp.patch` to that loader
-to expose the engine's exact 40,960-input HalfKP feature layout. The trainer
-uses both the search score and game outcome instead of CP-only regression.
+`train_binpack.py` consumes them through Stockfish's official `nnue-pytorch`
+loader and uses both the search score and game outcome instead of CP-only
+regression. Apply `nnue_pytorch_legacy_halfkp.patch` for old HalfKP models, or
+`nnue_pytorch_current_threats.patch` for the current 59,808-row Full Threats
+mapping. The trainer remaps the loader's 12 HalfKA planes to the engine's
+11-plane HalfKAv2 representation without changing the source data. This also
+reverses nnue-pytorch's h8-to-e1 king-bucket numbering into the engine's
+e1-to-h8 order; preserving the native bucket number silently trains against
+the wrong piece rows.
 
 Example direct-binpack run:
 
@@ -97,6 +102,46 @@ python src/core/bot/nn/v2/train_binpack.py \
   --batches 2000 \
   --score-lambda 0.70
 ```
+
+For a HalfKAv2 + Full Threats model, use `--input-dir` with raw binpack shards,
+`--feature-set HalfKAv2_hm+Full_Threats`, and the
+`linear-head-screlu-halfka-threats-hm-buckets-psqt` architecture when extending
+the current production network. `--new-features-only` preserves the proven
+piece transform and search head while learning only the new HalfKAv2 king and
+Full Threats rows. Export version 15 stores threat rows as i8 while retaining
+the shared feature-transform scale, reducing update bandwidth without changing
+the accumulator format. When widening a trained network, `--new-channels-only`
+copies the parent exactly and trains only the added accumulator columns plus
+their matching head inputs; this avoids destroying the useful 128-channel
+subnetwork while the new capacity learns. `--new-hidden-only` similarly keeps
+the transformer and existing head fixed, zero-initializes the new units'
+output weights for an exact warm start, and trains only the wider head. Resumed
+runs preserve the native loader offset by default, while
+`--resume-fresh-loader` deliberately starts a new pass over the shards.
+For calibration or replay experiments on an already strong model,
+`--freeze-accumulator` holds both feature-transformer tables fixed and updates
+only the bucketed value head and PSQT. This limits destructive feature drift
+when changing the score/outcome target blend or mixing new binpack shards.
+
+`export_inference.py --all-i8-ft` writes experimental version 16 models. It
+keeps version 15's shared scale, clips the rare base-transform outliers to i8,
+and halves storage and update bandwidth for every feature row. Keep this format
+behind parity, NPS, and match gates until it is validated for the target model.
+`export_inference.py --per-row-head-scales` writes experimental version 17
+models with one int8 scale per bucketed head row. The feature transformer and
+SIMD dot products stay unchanged, while head quantization no longer lets one
+outlier determine every neuron's precision.
+
+The NN search defaults use `NNQDeltaMargin=300` and
+`NNNullMoveBaseReduction=2`, and allow a new iteration to start through 85% of
+the soft time budget. Deep non-check nodes without a transposition-table move
+also use the validated one-ply internal reduction. These settings were
+promoted only after paired matches on the Full Threats network; the classic/HCE
+search profile is unchanged.
+
+The helper
+`scripts/download_hf_binpacks.py` downloads an evenly spaced, resumable sample
+of raw shards without materializing a multi-gigabyte compressed archive.
 
 Check local tools:
 
