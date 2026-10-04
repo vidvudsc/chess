@@ -151,7 +151,7 @@ else
 	$(MAKE) run-bin
 endif
 
-test: $(BIN_DIR)/test_rules $(BIN_DIR)/test_clock $(BIN_DIR)/test_perft_suite $(BIN_DIR)/test_ai $(BIN_DIR)/test_tactical_regressions test_bot_time test_texel test_nn_v2 test_nn_policy test_nn_policy_infer
+test: $(BIN_DIR)/test_rules $(BIN_DIR)/test_clock $(BIN_DIR)/test_perft_suite $(BIN_DIR)/test_ai $(BIN_DIR)/test_tactical_regressions test_bot_time test_texel test_hce_pairwise test_nn_v2 test_nn_policy test_nn_policy_infer
 	./$(BIN_DIR)/test_rules
 	./$(BIN_DIR)/test_clock
 	./$(BIN_DIR)/test_perft_suite
@@ -163,6 +163,9 @@ test_bot_time:
 
 test_texel: $(BIN_DIR)/chess_uci
 	python3 tests/test_texel_pipeline.py
+
+test_hce_pairwise: $(BIN_DIR)/chess_uci
+	python3 tests/test_hce_pairwise_pipeline.py
 
 test_nn_v2: $(BIN_DIR)/chess_uci
 	python3 tests/test_nn_features.py
