@@ -169,7 +169,7 @@ test_bot_time: $(BIN_DIR)/chess_uci
 	python3 tests/test_bot_time_management.py
 	python3 -m pytest -q tests/test_bot_lifecycle.py
 
-test_nn_v2: $(BIN_DIR)/chess_uci
+test_nn_v2: $(BIN_DIR)/chess_uci $(BIN_DIR)/nn_eval_probe
 	python3 tests/test_nn_features.py
 	python3 tests/test_nn_v2_data.py
 	python3 tests/test_nn_v2_build_dataset.py

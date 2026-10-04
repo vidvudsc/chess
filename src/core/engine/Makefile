@@ -58,11 +58,6 @@ $(BUILD_DIR)/nn_search.o: $(SRC_DIR)/nn_search.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(filter-out -O%,$(CFLAGS)) $(HCE_SEARCH_OPT) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
-# Vendored Fathom (MIT): upstream code, built without our pedantic warnings.
-$(BUILD_DIR)/fathom/tbprobe.o: $(SRC_DIR)/fathom/tbprobe.c | $(BUILD_DIR)
-	@mkdir -p $(dir $@)
-	$(CC) $(filter-out -Wall -Wextra -Wpedantic -std=c11,$(CFLAGS)) -std=gnu11 -w $(DEPFLAGS) $(INCLUDES) -c $< -o $@
-
 $(ENGINE): $(OBJS)
 	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(OBJS) -o $@ $(LDFLAGS) $(LDLIBS)
 

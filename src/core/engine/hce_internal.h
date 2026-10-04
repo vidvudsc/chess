@@ -92,9 +92,10 @@ int hce_score_search_draw_stm(const GameState *s);
 int hce_qsearch_eval_cp_stm(const GameState *root);
 bool hce_pick_opening_move(const GameState *s, Move *out_move);
 bool hce_pick_move(const GameState *state, const AiSearchConfig *cfg, AiSearchResult *out);
+// Resize the NN transposition table independently of the classic table.
+int nn_search_set_hash_mb(int mb);
 // Ask a running search to stop at its next node-count check (~2k nodes).
 // Safe to call from any thread; a no-op when no search is running.
-int nn_search_set_hash_mb(int mb);
 void hce_search_request_stop(void);
 bool hce_search_stop_requested(void);
 // Clear a pending stop request. Must be called by the thread that issues

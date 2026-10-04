@@ -109,16 +109,16 @@ int main(void) {
          "NN history gravity should remain disabled until promoted");
     must(chess_ai_get_nn_search_option("NNInternalReduction") == 1,
          "NN internal reduction should restore the validated default");
-    must(chess_ai_get_nn_search_option("NNProbCutMinDepth") == 0,
-         "NN ProbCut should remain disabled until promoted");
+    must(chess_ai_get_nn_search_option("NNProbCutMinDepth") == 5,
+         "NN ProbCut should restore the promoted minimum depth");
     must(chess_ai_get_nn_search_option("NNProbCutMargin") == 200,
          "NN ProbCut should restore its conservative margin");
     must(chess_ai_get_nn_search_option("NNFutilityMaxDepth") == 2,
          "NN search reset should restore the validated futility depth");
     must(chess_ai_get_nn_search_option("NNPawnCorrectionWeight") == 0,
          "NN pawn correction should remain disabled until promoted");
-    must(chess_ai_get_nn_search_option("NNStructureCorrectionWeight") == 0,
-         "NN structure correction should remain disabled until promoted");
+    must(chess_ai_get_nn_search_option("NNStructureCorrectionWeight") == 1000,
+         "NN structure correction should restore the promoted weight");
     must(chess_ai_get_nn_search_option("NNCaptureSeeOrdering") == 0,
          "NN capture SEE ordering should remain disabled until promoted");
     must(chess_ai_get_nn_search_option("NNCheckExtensions") == 1,
